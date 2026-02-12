@@ -23,7 +23,7 @@ JueLab_toolbox/
 
 ### TECAN Growth Curves
 
-End-to-end pipeline for TECAN plate reader growth curve analysis:
+End-to-end pipeline for TECAN plate reader growth curve analysis + view all synthetic data/test set:
 
 1. **Parse** - Read raw TECAN output files
 2. **Process** - Clean, normalize, and format plate reader data
