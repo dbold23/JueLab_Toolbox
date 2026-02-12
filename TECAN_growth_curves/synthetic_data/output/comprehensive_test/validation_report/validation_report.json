@@ -1,0 +1,59 @@
+{
+  "summary": {
+    "n_ground_truth": 480,
+    "n_pipeline_results": 480,
+    "n_matched": 480,
+    "n_failures": 75
+  },
+  "classification": {
+    "accuracy": 0.84375,
+    "precision": 0.8534031413612565,
+    "recall": 0.9449275362318841,
+    "f1_score": 0.8968363136176065,
+    "confusion_matrix": {
+      "true_positives": 326,
+      "true_negatives": 79,
+      "false_positives": 56,
+      "false_negatives": 19
+    }
+  },
+  "parameter_recovery": {
+    "A": {
+      "mean_error": 0.01990869086729578,
+      "rmse": 0.04183244759391712,
+      "r_squared": 0.9848637993637729,
+      "bias": 0.01990869086729578,
+      "n_samples": 326
+    },
+    "mu": {
+      "mean_error": -0.0073722732884614894,
+      "rmse": 0.030362759437546925,
+      "r_squared": 0.9058237083773787,
+      "bias": -0.0073722732884614894,
+      "n_samples": 326
+    },
+    "lambda": {
+      "mean_error": -0.3662623241834368,
+      "rmse": 1.0126588953133624,
+      "r_squared": 0.9834284642094676,
+      "bias": -0.3662623241834368,
+      "n_samples": 326
+    }
+  },
+  "failure_analysis": {
+    "n_false_positives": 56,
+    "n_false_negatives": 19,
+    "failure_scenarios": {
+      "borderline_noise": 15,
+      "borderline_r2_bad": 15,
+      "high_noise": 10,
+      "minimal_growth": 8,
+      "truncation_challenge": 7,
+      "logistic_generated": 7,
+      "pesticide_only": 6,
+      "baranyi_generated": 3,
+      "short_lag": 2,
+      "erratic": 2
+    }
+  }
+}

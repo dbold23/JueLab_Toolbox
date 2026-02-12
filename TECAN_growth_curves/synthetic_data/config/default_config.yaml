@@ -1,0 +1,297 @@
+# =============================================================================
+# Synthetic Growth Curve Generator - Default Configuration
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# General Settings
+# -----------------------------------------------------------------------------
+general:
+  seed: 42                          # Random seed for reproducibility
+  output_dir: "output"              # Default output directory
+  n_points: 97                      # Number of time points per curve
+  duration_hours: 48.0              # Experiment duration in hours
+
+# -----------------------------------------------------------------------------
+# Growth Models
+# -----------------------------------------------------------------------------
+models:
+  default: "gompertz"               # Default model type
+  available:
+    - gompertz                      # Modified Gompertz model
+    - baranyi                       # Baranyi-Roberts model (better stationary phase)
+    - logistic                      # Symmetric S-curve
+    - richards                      # Flexible shape parameter
+
+# -----------------------------------------------------------------------------
+# Death Phase Extension
+# -----------------------------------------------------------------------------
+death_phase:
+  enabled: false                    # Enable by default for appropriate scenarios
+  default_k_death: 0.02             # Default death rate constant
+  default_t_death_offset: 5.0       # Hours after plateau to begin decline
+  decay_range:
+    min: 0.01
+    max: 0.1
+
+# -----------------------------------------------------------------------------
+# Noise Models
+# -----------------------------------------------------------------------------
+noise:
+  default_type: "rmse_based"        # Default noise type
+  presets:
+    very_low:
+      sigma: 0.002
+      target_r2: 0.995
+    low:
+      sigma: 0.005
+      target_r2: 0.985
+    medium:
+      sigma: 0.015
+      target_r2: 0.96
+    high:
+      sigma: 0.03
+      target_r2: 0.92
+    very_high:
+      sigma: 0.06
+      target_r2: 0.85
+
+  # OD-dependent noise settings
+  od_dependent:
+    sigma_base: 0.002
+    sigma_scale: 0.01
+
+  # Instrument noise settings
+  instrument:
+    baseline_sigma: 0.001
+    proportional_sigma: 0.005
+    drift_amplitude: 0.005
+    drift_period: 24.0
+    outlier_probability: 0.005
+    outlier_magnitude: 3.0
+
+# -----------------------------------------------------------------------------
+# Parameter Ranges (for realistic synthetic data)
+# -----------------------------------------------------------------------------
+parameters:
+  # Based on analysis of real TECAN data
+  realistic:
+    A:                              # Maximum OD600 increase
+      min: 0.1
+      max: 2.0
+      typical_min: 0.5
+      typical_max: 1.5
+    mu:                             # Maximum growth rate (1/hour)
+      min: 0.01
+      max: 0.8
+      typical_min: 0.1
+      typical_max: 0.3
+    lambda:                         # Lag phase duration (hours)
+      min: 0.0
+      max: 80.0
+      typical_min: 2.0
+      typical_max: 15.0
+    initial_od:                     # Starting OD600
+      min: 0.01
+      max: 0.15
+      typical: 0.05
+
+  # For edge case testing
+  extreme:
+    A:
+      min: 0.02
+      max: 3.0
+    mu:
+      min: 0.005
+      max: 1.0
+    lambda:
+      min: 0.0
+      max: 100.0
+
+# -----------------------------------------------------------------------------
+# Scenario Configurations
+# -----------------------------------------------------------------------------
+scenarios:
+  # Good growth scenarios (should classify as GOOD)
+  good_growth:
+    standard:
+      n_curves: 20
+      A: [0.8, 1.5]
+      mu: [0.1, 0.3]
+      lambda: [2.0, 8.0]
+      noise_level: "low"
+
+    high_A:
+      n_curves: 15
+      A: [1.5, 2.0]
+      mu: [0.15, 0.35]
+      lambda: [1.0, 5.0]
+      noise_level: "low"
+
+    low_A:
+      n_curves: 15
+      A: [0.1, 0.3]
+      mu: [0.05, 0.15]
+      lambda: [3.0, 10.0]
+      noise_level: "very_low"
+
+    fast_growth:
+      n_curves: 15
+      A: [1.0, 1.5]
+      mu: [0.4, 0.75]
+      lambda: [0.5, 2.0]
+      noise_level: "low"
+
+    slow_growth:
+      n_curves: 15
+      A: [0.8, 1.2]
+      mu: [0.02, 0.08]
+      lambda: [5.0, 15.0]
+      duration_hours: 72.0
+      noise_level: "low"
+
+    short_lag:
+      n_curves: 15
+      A: [1.0, 1.5]
+      mu: [0.15, 0.25]
+      lambda: [0.1, 1.0]
+      noise_level: "low"
+
+    long_lag:
+      n_curves: 15
+      A: [1.0, 1.4]
+      mu: [0.1, 0.2]
+      lambda: [20.0, 50.0]
+      duration_hours: 72.0
+      noise_level: "low"
+
+  # Bad curve scenarios (should classify as BAD)
+  bad_curves:
+    flat_no_growth:
+      n_curves: 20
+      description: "H2O control - no growth"
+
+    contamination:
+      n_curves: 15
+      initial_od: [0.15, 0.4]
+      description: "High initial OD indicates contamination"
+
+    minimal_growth:
+      n_curves: 15
+      delta_od_max: 0.05
+      description: "Insufficient growth"
+
+    high_noise:
+      n_curves: 15
+      noise_level: "very_high"
+      target_r2_max: 0.88
+      description: "Valid growth but poor fit quality"
+
+    erratic:
+      n_curves: 15
+      description: "Non-biological random pattern"
+
+    declining:
+      n_curves: 10
+      description: "Only declining OD (dead culture)"
+
+    sparse_data:
+      n_curves: 10
+      n_points: 20
+      description: "Insufficient data points"
+
+    truncated_early:
+      n_curves: 10
+      duration_hours: 15.0
+      description: "Experiment ended too early"
+
+  # Edge cases (challenging scenarios)
+  edge_cases:
+    borderline_r2:
+      n_curves: 20
+      target_r2: [0.94, 0.96]
+      description: "Near classification threshold"
+
+    truncation_challenge:
+      n_curves: 15
+      description: "Multiple local maxima"
+
+    death_phase:
+      n_curves: 15
+      include_death_phase: true
+      description: "Clear decline after plateau"
+
+    diauxic_growth:
+      n_curves: 10
+      description: "Two growth phases"
+
+    very_short_experiment:
+      n_curves: 10
+      duration_hours: 20.0
+
+    very_long_experiment:
+      n_curves: 10
+      duration_hours: 120.0
+
+    baranyi_generated:
+      n_curves: 15
+      model: "baranyi"
+      description: "Test Gompertz fitting on Baranyi-generated data"
+
+    logistic_generated:
+      n_curves: 10
+      model: "logistic"
+      description: "Test Gompertz fitting on Logistic-generated data"
+
+    richards_generated:
+      n_curves: 10
+      model: "richards"
+      description: "Test Gompertz fitting on Richards-generated data"
+
+    high_initial_od_valid:
+      n_curves: 10
+      initial_od: [0.08, 0.12]
+      description: "Higher initial OD but valid growth"
+
+    parameter_boundary:
+      n_curves: 10
+      description: "Parameters at detection limits"
+
+    realistic_noise_patterns:
+      n_curves: 15
+      noise_type: "instrument"
+      description: "Realistic instrument noise patterns"
+
+# -----------------------------------------------------------------------------
+# Comprehensive Test Set Configuration
+# -----------------------------------------------------------------------------
+comprehensive_test:
+  n_per_scenario: 15                # Default curves per scenario
+  include_good_growth: true
+  include_bad_curves: true
+  include_edge_cases: true
+  total_target: 400                 # Approximate total curves
+
+# -----------------------------------------------------------------------------
+# Output Format
+# -----------------------------------------------------------------------------
+output_format:
+  csv_format: "tecan"               # TECAN-compatible CSV format
+  time_column: "TIME[H]"
+  strain_prefix: "CURVE"
+  treatment_prefix: "SYNTHETIC"
+  include_ground_truth: true
+
+# -----------------------------------------------------------------------------
+# Validation Settings
+# -----------------------------------------------------------------------------
+validation:
+  classification_threshold: 0.95    # R² threshold for good/bad
+  parameter_error_threshold: 0.20   # 20% parameter error threshold
+  metrics:
+    - accuracy
+    - precision
+    - recall
+    - f1_score
+    - confusion_matrix
+    - parameter_rmse
+    - parameter_r2
