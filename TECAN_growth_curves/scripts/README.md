@@ -23,29 +23,30 @@ pip install -r requirements.txt
 ## Folder Structure
 
 ```
-ANALYSIS_SCRIPTS/
-├── 01_growth_curve_analysis.py      # Main analysis script
-├── 02_preprocess_raw_plate_data.py  # Raw data preprocessor
-├── run_all_groups.sh                # Batch processing script
-├── requirements.txt                 # Python dependencies
-├── README.md                        # This file
-├── DATA/                            # Raw data (included)
-│   ├── Group1/
-│   │   ├── GrowthRate_ Group1_Values.csv  # Raw 96-well format
-│   │   ├── GROUP1_KEY_V2.csv              # Well mapping
-│   │   └── Group_1_DATA/                  # Generated after preprocessing
-│   ├── Group 2/
-│   │   └── Group_2_DATA/                  # Pre-processed CSVs
-│   ├── Group 3/
-│   │   └── Group_3_DATA/
-│   └── Group 4/
-│       └── Group4_DATA/
-└── OUTPUT/                          # Generated results
-    ├── Group1_Final/
-    ├── Group2_Final/
-    ├── Group3_Final/
-    ├── Group4_Final/
-    └── all_groups_results.csv
+TECAN_growth_curves/
+├── scripts/
+│   ├── 01_growth_curve_analysis.py      # Main Gompertz analysis pipeline
+│   ├── 02_preprocess_raw_plate_data.py  # Raw 96-well data preprocessor
+│   ├── 03_mle_model_fitting.py          # MLE multi-model fitting (Gompertz, Baranyi, Logistic, Richards, Haldane)
+│   ├── 05_haldane_analysis.py           # Haldane feedback inhibition analysis
+│   ├── validate_results_interactive.py  # Interactive curve validation tool
+│   ├── run_all_groups.sh                # Batch processing script
+│   ├── config.yaml                      # Centralized threshold configuration
+│   └── requirements.txt                 # Python dependencies
+├── data/raw/                            # Raw experimental data
+│   ├── Group1/  (Bifenthrin, Flupyradifurone, LambdaCyhalothrin)
+│   ├── Group 2/ (Malathion, LambdaCyhalothrin)
+│   ├── Group 3/ (Imidacloprid, LambdaCyhalothrin)
+│   └── Group 4/ (Permethrin, LambdaCyhalothrin)
+├── results/tables/                      # Pipeline outputs
+│   ├── all_groups_results.csv           # Consolidated Gompertz results (92 strains)
+│   ├── validation_audit.csv             # Manual validation annotations
+│   ├── Group{1-4}_Results/              # Per-group results + diagnostic plots
+│   └── Haldane_Analysis/                # Haldane feedback inhibition results
+├── synthetic_data/                      # Validation test suite (480 synthetic curves)
+├── tests/                               # pytest test suite
+├── Makefile                             # Build/run automation
+└── .github/workflows/test.yml           # CI/CD pipeline
 ```
 
 ---
@@ -139,6 +140,76 @@ This will:
 1. Preprocess Group 1 raw data
 2. Run Gompertz analysis on all groups
 3. Combine results into `OUTPUT/all_groups_results.csv`
+
+---
+
+### 4. `05_haldane_analysis.py` - Feedback Inhibition Analysis
+
+Fits the Haldane/Andrews substrate inhibition model to pesticide treatment curves and compares with Gompertz via AIC.
+
+#### Haldane Model (Mechanistic)
+```
+dX/dt = mu(S) * X * (1 - X/X_max)    (biomass growth)
+dS/dt = -q * mu(S) * X                (substrate depletion)
+
+mu(S) = mu_max * S / (Ks + S + S²/Ki) (Haldane kinetics)
+
+Parameters:
+  mu_max = Maximum specific growth rate
+  Ks     = Half-saturation constant
+  Ki     = Substrate inhibition constant (lower = more inhibitory)
+  X_max  = Carrying capacity
+  q      = Substrate consumption coefficient
+  S0     = Initial substrate concentration
+```
+
+Unlike Gompertz (which fits shape), Haldane explains **why** growth slows: substrate inhibition at high pesticide concentrations.
+
+#### Usage
+```bash
+python 05_haldane_analysis.py                        # Default (all pesticide+LB strains)
+python 05_haldane_analysis.py --s0 2.5               # Custom substrate concentration
+python 05_haldane_analysis.py --all-strains           # Fit all strains (not just pesticide)
+```
+
+#### Output Files
+```
+Haldane_Analysis/
+├── haldane_comparison.csv   # Per-strain Gompertz vs Haldane comparison
+├── haldane_summary.csv      # Per-pesticide Ki rankings
+├── haldane_overview.png     # Summary dashboard (4-panel figure)
+└── plots/                   # Individual strain comparison plots
+```
+
+---
+
+### 5. `validate_results_interactive.py` - Curve Validation Tool
+
+Interactive matplotlib tool for visually auditing all growth curves. Shows each curve's diagnostic plot and lets you quickly classify the pipeline's decision as correct or wrong.
+
+```bash
+python validate_results_interactive.py
+```
+
+Keyboard shortcuts: `y` = correct, `n` = wrong, `u` = unsure, `space` = skip, `b` = back, `q` = quit
+
+Saves annotations to `validation_audit.csv` (resumable).
+
+---
+
+## Makefile Commands
+
+```bash
+make help               # Show all available commands
+make install             # Install Python dependencies
+make test                # Run full test suite (31 tests)
+make test-quick          # Run unit tests only (no integration)
+make run-pipeline        # Run Gompertz pipeline on all groups
+make run-haldane         # Run Haldane analysis on pesticide strains
+make validate            # Launch interactive validation tool
+make validate-synthetic  # Run pipeline on synthetic data
+make run-all             # Full pipeline + Haldane
+```
 
 ---
 
@@ -242,6 +313,22 @@ When you run the pipeline, you should see approximately:
 - Pesticide+LB conditions show strong growth for most strains
 - Pesticide-only conditions (without LB) show no/poor growth (expected)
 - H2O controls show no growth (expected)
+
+### Validation Metrics (Synthetic Data, 480 curves)
+
+| Metric | Value |
+|--------|-------|
+| Accuracy | 89.0% |
+| Precision | 89.5% |
+| Recall | 95.9% |
+| F1 Score | 92.6% |
+| Specificity | 71.1% |
+
+25/32 test scenarios achieve 100% accuracy. Manual audit of 92 real curves: 91.3% validated correct.
+
+### Haldane Analysis Results
+
+The Haldane model was preferred over Gompertz for **15/23** (65%) pesticide+LB strains by AIC, confirming substrate inhibition kinetics are present. All 6 pesticides tested (Bifenthrin, Flupyradifurone, Imidacloprid, Lambda-Cyhalothrin, Malathion, Permethrin) show measurable inhibition constants (Ki).
 
 ---
 

@@ -344,6 +344,157 @@ class RichardsModel:
         }
 
 
+class HaldaneModel:
+    """
+    Haldane/Andrews substrate inhibition growth model.
+
+    Coupled ODE system:
+        dX/dt = mu(S) * X * (1 - X/X_max)
+        dS/dt = -q * mu(S) * X
+
+    where mu(S) = mu_max * S / (Ks + S + S^2/Ki)
+
+    Parameters:
+        mu_max (float): Maximum specific growth rate (per hour)
+        Ks (float): Half-saturation constant
+        Ki (float): Substrate inhibition constant
+        X_max (float): Maximum biomass (carrying capacity, OD units)
+        q (float): Substrate consumption rate per unit biomass growth
+        X0 (float): Initial biomass (OD600)
+        S0 (float): Initial substrate concentration
+
+    The Haldane model is mechanistic: it predicts both biomass growth and
+    substrate depletion, and captures feedback inhibition at high substrate
+    concentrations. At low S, growth is Monod-like; at high S, growth is
+    inhibited (mu decreases).
+
+    References:
+        - Andrews (1968) - A mathematical model for the continuous culture
+          of microorganisms utilizing inhibitory substrates
+        - Haldane (1930) - Enzymes
+    """
+
+    name = "haldane"
+
+    @staticmethod
+    def _ode(t, y, mu_max, Ks, Ki, X_max, q):
+        """Haldane ODE system."""
+        X, S = y
+        S = max(S, 0)
+        X = max(X, 0)
+
+        if S < 1e-10:
+            mu_S = 0.0
+        else:
+            mu_S = mu_max * S / (Ks + S + S**2 / Ki)
+
+        dXdt = mu_S * X * (1 - X / X_max)
+        dSdt = -q * mu_S * X
+
+        return [dXdt, dSdt]
+
+    @staticmethod
+    def compute(t: np.ndarray, mu_max: float, Ks: float, Ki: float,
+                X_max: float, q: float, X0: float, S0: float) -> np.ndarray:
+        """
+        Compute biomass OD600 over time using Haldane kinetics.
+
+        Args:
+            t: Time values in hours
+            mu_max: Maximum specific growth rate
+            Ks: Half-saturation constant
+            Ki: Substrate inhibition constant
+            X_max: Carrying capacity (max OD)
+            q: Substrate consumption coefficient
+            X0: Initial biomass OD
+            S0: Initial substrate concentration
+
+        Returns:
+            OD600 (biomass) values at each time point
+        """
+        from scipy.integrate import solve_ivp
+
+        try:
+            sol = solve_ivp(
+                HaldaneModel._ode,
+                [t[0], t[-1]],
+                [X0, S0],
+                args=(mu_max, Ks, Ki, X_max, q),
+                t_eval=t,
+                method='RK45',
+                max_step=0.5,
+                rtol=1e-8,
+                atol=1e-10
+            )
+            if sol.success:
+                return sol.y[0]  # Biomass (X)
+            else:
+                return np.full_like(t, X0, dtype=float)
+        except Exception:
+            return np.full_like(t, X0, dtype=float)
+
+    @staticmethod
+    def compute_full(t: np.ndarray, mu_max: float, Ks: float, Ki: float,
+                     X_max: float, q: float, X0: float, S0: float
+                     ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute both biomass and substrate over time.
+
+        Returns:
+            (X(t), S(t)) -- biomass and substrate arrays
+        """
+        from scipy.integrate import solve_ivp
+
+        try:
+            sol = solve_ivp(
+                HaldaneModel._ode,
+                [t[0], t[-1]],
+                [X0, S0],
+                args=(mu_max, Ks, Ki, X_max, q),
+                t_eval=t,
+                method='RK45',
+                max_step=0.5,
+                rtol=1e-8,
+                atol=1e-10
+            )
+            if sol.success:
+                return sol.y[0], sol.y[1]
+            else:
+                return np.full_like(t, X0, dtype=float), np.full_like(t, S0, dtype=float)
+        except Exception:
+            return np.full_like(t, X0, dtype=float), np.full_like(t, S0, dtype=float)
+
+    @staticmethod
+    def from_gompertz_params(A: float, mu: float, lambda_: float,
+                             S0: float = 1.0, Ki: float = 10.0) -> dict:
+        """
+        Convert Gompertz parameters to approximate Haldane parameters.
+
+        This provides a reasonable starting point. The Gompertz mu is the
+        maximum slope of the OD curve; the Haldane mu_max is the intrinsic
+        maximum specific growth rate (generally higher).
+
+        Args:
+            A: Gompertz A (max OD)
+            mu: Gompertz mu (growth rate)
+            lambda_: Gompertz lambda (lag time)
+            S0: Initial substrate concentration
+            Ki: Substrate inhibition constant
+
+        Returns:
+            dict with Haldane parameters
+        """
+        return {
+            'mu_max': mu * 2.5,     # Haldane mu_max > apparent growth rate
+            'Ks': 0.1,              # Half-saturation (typical)
+            'Ki': Ki,               # Inhibition constant
+            'X_max': A,             # Carrying capacity ≈ Gompertz A
+            'q': 0.1,              # Substrate consumption coefficient
+            'X0': 0.01,            # Initial biomass
+            'S0': S0,              # Initial substrate
+        }
+
+
 class DeathPhaseExtension:
     """
     Extends any growth model with a death/decline phase.
@@ -415,7 +566,8 @@ class DeathPhaseExtension:
             'gompertz': GompertzModel,
             'baranyi': BaranyiModel,
             'logistic': LogisticModel,
-            'richards': RichardsModel
+            'richards': RichardsModel,
+            'haldane': HaldaneModel
         }
 
         if model_type not in models:
@@ -443,7 +595,8 @@ def get_model(model_type: str):
         'gompertz': GompertzModel,
         'baranyi': BaranyiModel,
         'logistic': LogisticModel,
-        'richards': RichardsModel
+        'richards': RichardsModel,
+        'haldane': HaldaneModel
     }
 
     if model_type not in models:
@@ -473,7 +626,8 @@ def convert_parameters(from_model: str, to_model: str, **params) -> dict:
     converters = {
         'baranyi': BaranyiModel.from_gompertz_params,
         'logistic': LogisticModel.from_gompertz_params,
-        'richards': RichardsModel.from_gompertz_params
+        'richards': RichardsModel.from_gompertz_params,
+        'haldane': HaldaneModel.from_gompertz_params
     }
 
     if to_model == 'gompertz':

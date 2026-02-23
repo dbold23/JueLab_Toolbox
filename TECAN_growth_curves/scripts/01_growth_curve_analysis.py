@@ -175,7 +175,9 @@ def classify_growth_curve(
 
 def classify_by_fit_quality(
     fit_result: 'FitResult',
-    thresholds: Optional[Dict[str, float]] = None
+    thresholds: Optional[Dict[str, float]] = None,
+    time: Optional[np.ndarray] = None,
+    od600: Optional[np.ndarray] = None
 ) -> ClassificationResult:
     """
     Classify a growth curve based on Gompertz fit quality.
@@ -184,12 +186,21 @@ def classify_by_fit_quality(
     because it judges whether the curve is actually fittable, regardless of
     the absolute OD magnitude.
 
+    Includes secondary quality gates:
+    - SNR filter (signal must exceed noise floor)
+    - Delta-OD confidence interval (growth must be statistically significant)
+    - Flatness check (fitted amplitude must exceed noise)
+
     Parameters
     ----------
     fit_result : FitResult
         Result from fit_gompertz()
     thresholds : Optional[Dict[str, float]]
         Custom fit quality thresholds. Uses FIT_QUALITY_THRESHOLDS if None.
+    time : Optional[np.ndarray]
+        Original time array (for secondary quality checks)
+    od600 : Optional[np.ndarray]
+        Original OD600 array (for secondary quality checks)
 
     Returns
     -------
@@ -230,6 +241,49 @@ def classify_by_fit_quality(
         reasons.append(f"High A error: {metrics['a_err_pct']:.1f}% > {max_err}%")
     if metrics['mu_err_pct'] > max_err:
         reasons.append(f"High mu error: {metrics['mu_err_pct']:.1f}% > {max_err}%")
+
+    # =====================================================================
+    # Secondary quality gates (require raw data)
+    # Only apply noise-based gates when R² is mediocre. If the Gompertz
+    # fit is excellent (R² >= 0.98), the fit itself proves signal > noise.
+    # =====================================================================
+    if od600 is not None and len(od600) > 10:
+        n_baseline = min(10, len(od600) // 5)
+        baseline = od600[:n_baseline]
+        baseline_mean = float(np.mean(baseline))
+        baseline_std = float(np.std(baseline)) if float(np.std(baseline)) > 1e-8 else 1e-8
+        max_od = float(np.max(od600))
+        delta_od = max_od - baseline_mean
+
+        snr = (max_od - baseline_mean) / baseline_std
+
+        # Only enforce noise-based gates when fit quality is not already excellent
+        fit_is_excellent = fit_result.r_squared >= 0.98
+
+        if not fit_is_excellent:
+            # SNR filter: signal must meaningfully exceed noise floor
+            min_snr = thresholds.get('min_snr', 5.0)
+            if snr < min_snr:
+                reasons.append(f"Low SNR: {snr:.1f} < {min_snr}")
+
+            # Delta-OD confidence interval: growth must be statistically significant
+            delta_od_ci_lower = delta_od - 2 * baseline_std
+            min_delta_od_ci = thresholds.get('min_delta_od_ci', 0.1)
+            if delta_od_ci_lower < min_delta_od_ci:
+                reasons.append(f"Delta OD not significant: CI lower={delta_od_ci_lower:.3f} < {min_delta_od_ci}")
+
+        # Absolute minimum delta-OD (always enforced)
+        min_delta_od = thresholds.get('min_absolute_delta_od', 0.15)
+        if delta_od < min_delta_od:
+            reasons.append(f"Insufficient growth: delta_od={delta_od:.3f} < {min_delta_od}")
+
+        # Flatness check: fitted A must exceed noise level (always enforced)
+        if fit_result.a_opt < 3 * baseline_std:
+            reasons.append(f"Growth amplitude below noise: A={fit_result.a_opt:.3f} < 3*noise={3*baseline_std:.3f}")
+
+        metrics['snr'] = snr
+        metrics['delta_od'] = delta_od
+        metrics['baseline_std'] = baseline_std
 
     is_good = len(reasons) == 0
     reason = "GOOD: Fit quality passed" if is_good else "BAD: " + "; ".join(reasons)
@@ -1486,6 +1540,56 @@ def process_growth_curves(
             # FIT-FIRST APPROACH (New, more rigorous)
             # =================================================================
             if use_fit_based_classification:
+
+                # Pre-fit noise filter: skip fitting if signal is buried in noise
+                n_baseline = min(15, len(od600_clean) // 5)
+                noise_std = float(np.std(od600_clean[:n_baseline])) if n_baseline > 2 else 1e-8
+                signal_range = float(np.max(od600_clean) - np.mean(od600_clean[:min(5, len(od600_clean))]))
+                pre_fit_snr = signal_range / max(noise_std, 1e-8)
+
+                if pre_fit_snr < 3.0 and signal_range < 0.5:
+                    # Signal is buried in noise AND growth is small -- skip fitting, classify BAD
+                    # (If signal_range >= 0.5 we let the fitter decide; large growth overrides low SNR)
+                    classification = ClassificationResult(
+                        is_good=False,
+                        reason=f"BAD: Pre-fit SNR too low ({pre_fit_snr:.1f} < 3.0)",
+                        metrics={'snr': pre_fit_snr, 'delta_od': signal_range,
+                                 'max_od': float(np.max(od600_clean))}
+                    )
+                    truncation = TruncationResult(
+                        truncation_index=len(od600_clean)-1,
+                        truncation_time=float(time_clean[-1]),
+                        max_od=float(np.max(od600_clean)),
+                        time_truncated=time_clean, od_truncated=od600_clean,
+                        time_original=time_clean, od_original=od600_clean,
+                        smoothed_od=od600_clean
+                    )
+                    fit = FitResult(
+                        success=False, a_opt=0, mu_opt=0, lambda_opt=0,
+                        a_err=0, mu_err=0, lambda_err=0,
+                        mae=0, mse=0, rmse=0, r_squared=0,
+                        predicted=np.array([]), residuals=np.array([]),
+                        error_message=f"Skipped: pre-fit SNR={pre_fit_snr:.1f}"
+                    )
+
+                    if verbose:
+                        print(f"  {strain_name}: BAD (pre-fit SNR={pre_fit_snr:.1f})")
+
+                    plot_bad_curve_with_fit(
+                        time_clean, od600_clean,
+                        truncation, fit,
+                        classification, strain_name,
+                        plots_dir
+                    )
+
+                    results[strain_name] = ProcessingResult(
+                        strain_name=strain_name,
+                        classification=classification,
+                        truncation=truncation,
+                        fit=fit
+                    )
+                    continue
+
                 # Step 1: Truncate (using specified method)
                 truncation = truncate_at_max(
                     time_clean, od600_clean,
@@ -1501,11 +1605,32 @@ def process_growth_curves(
                     truncation.od_truncated
                 )
 
-                # Step 3: Classify based on fit quality
-                classification = classify_by_fit_quality(fit, fit_quality_thresholds)
+                # Step 2b: If Gompertz fit is poor, retry with adaptive truncation
+                if fit.r_squared < 0.90 and not truncation_params.get('use_adaptive', False):
+                    adaptive_trunc = truncate_at_max(
+                        time_clean, od600_clean,
+                        smoothing_window=truncation_params['smoothing_window'],
+                        buffer_points=truncation_params['buffer_points'],
+                        use_first_peak=False,
+                        use_adaptive=True
+                    )
+                    adaptive_fit = fit_gompertz(
+                        adaptive_trunc.time_truncated,
+                        adaptive_trunc.od_truncated
+                    )
+                    if adaptive_fit.r_squared > fit.r_squared:
+                        truncation = adaptive_trunc
+                        fit = adaptive_fit
+
+                # Step 3: Classify based on fit quality (with secondary quality gates)
+                classification = classify_by_fit_quality(
+                    fit, fit_quality_thresholds,
+                    time=time_clean, od600=od600_clean
+                )
 
                 # Add basic OD metrics to classification for reference
-                classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
+                if 'delta_od' not in classification.metrics:
+                    classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
                 classification.metrics['max_od'] = np.max(od600_clean)
 
                 if verbose:
