@@ -14,7 +14,7 @@ from dataclasses import dataclass
 import warnings
 
 from .growth_models import (
-    GompertzModel, BaranyiModel, LogisticModel, RichardsModel,
+    GompertzModel, BaranyiModel, LogisticModel, RichardsModel, HaldaneModel,
     DeathPhaseExtension, get_model, convert_parameters, generate_curve
 )
 from .noise_models import (
@@ -135,6 +135,9 @@ class SyntheticGrowthCurveGenerator:
         elif model_type == 'richards':
             richards_params = RichardsModel.from_gompertz_params(A, mu, lambda_)
             clean_od = RichardsModel.compute(time, **richards_params)
+        elif model_type == 'haldane':
+            haldane_params = HaldaneModel.from_gompertz_params(A, mu, lambda_)
+            clean_od = HaldaneModel.compute(time, **haldane_params)
         else:
             raise ValueError(f"Unknown model type: {model_type}")
 

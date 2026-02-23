@@ -445,6 +445,42 @@ EDGE_CASE_SCENARIOS = {
         noise_level='low',
         tags=['borderline', 'low_signal']
     ),
+
+    'haldane_mild_inhibition': ScenarioConfig(
+        name='haldane_mild_inhibition',
+        description='Haldane model with mild substrate inhibition (Ki >> Ks)',
+        expected_class='GOOD',
+        A=(1.0, 1.5),
+        mu=(0.15, 0.30),
+        lambda_=(2.0, 6.0),
+        model='haldane',
+        noise_level='medium',
+        tags=['haldane', 'inhibition', 'mild']
+    ),
+
+    'haldane_strong_inhibition': ScenarioConfig(
+        name='haldane_strong_inhibition',
+        description='Haldane model with strong substrate inhibition (Ki ~ Ks)',
+        expected_class='GOOD',
+        A=(0.5, 1.0),
+        mu=(0.10, 0.20),
+        lambda_=(3.0, 8.0),
+        model='haldane',
+        noise_level='medium',
+        tags=['haldane', 'inhibition', 'strong', 'edge']
+    ),
+
+    'haldane_total_inhibition': ScenarioConfig(
+        name='haldane_total_inhibition',
+        description='Haldane with very high substrate causing total inhibition (no growth)',
+        expected_class='BAD',
+        A=(0.02, 0.05),
+        mu=(0.01, 0.03),
+        lambda_=(10.0, 50.0),
+        model='haldane',
+        noise_level='low',
+        tags=['haldane', 'inhibition', 'total', 'no_growth']
+    ),
 }
 
 

@@ -1,0 +1,71 @@
+# =============================================================================
+# TECAN Growth Curve Pipeline Configuration
+# BIO380SP25 - Pesticide Bioremediating Bacteria Research Project
+# =============================================================================
+
+# Gompertz fit-quality classification thresholds
+classification:
+  min_r_squared: 0.95          # Minimum R-squared for GOOD classification
+  max_param_error_pct: 20.0    # Maximum relative parameter error (%)
+  min_points_for_fit: 15       # Minimum data points to attempt fitting
+
+# Secondary quality gates (applied after Gompertz fit)
+quality_gates:
+  min_snr: 5.0                 # Minimum signal-to-noise ratio
+  min_delta_od_ci: 0.1         # Minimum delta-OD confidence interval lower bound
+  min_absolute_delta_od: 0.15  # Absolute minimum delta-OD for growth detection
+  pre_fit_snr_threshold: 3.0   # Pre-fit SNR threshold (skip fitting below this)
+  pre_fit_delta_od_override: 0.5  # If delta-OD > this, bypass low pre-fit SNR
+  excellent_r2_threshold: 0.98 # R-squared above which noise-based gates are bypassed
+
+# Truncation parameters
+truncation:
+  smoothing_window: 5          # Rolling average window for peak detection
+  buffer_points: 3             # Points to keep after max for fit stability
+  min_points_for_fit: 20       # Minimum points after truncation
+  use_first_peak: true         # Truncate at first local max (vs global max)
+  use_adaptive: false          # Adaptive R-squared-optimizing truncation
+
+# OD-threshold classification (legacy, use --od-based flag)
+od_thresholds:
+  min_delta_od: 0.3            # Minimum OD change for good classification
+  min_max_od: 0.5              # Minimum peak OD
+  min_snr: 5.0                 # Minimum signal-to-noise ratio
+  max_initial_od: 0.15         # Maximum starting OD (contamination check)
+
+# Haldane model settings
+haldane:
+  default_S0: 1.0              # Default substrate concentration (arbitrary units)
+  parameter_bounds:
+    mu_max: [0.001, 5.0]
+    Ks: [0.001, 10.0]
+    Ki: [0.1, 1000.0]
+    X_max: [0.05, 5.0]
+    q: [0.001, 10.0]
+    X0: [0.000001, 0.5]
+    S0: [0.01, 100.0]
+
+# Data directories (relative to TECAN_growth_curves/)
+paths:
+  raw_data: data/raw
+  results: results/tables
+  scripts: scripts
+
+# Group definitions
+groups:
+  Group1:
+    data_dir: data/raw/Group1/Group_1_DATA
+    output_dir: results/tables/Group1_Results
+    pesticides: [Bifenthrin, Flupyradifurone, LambdaCyhalothrin]
+  Group2:
+    data_dir: data/raw/Group 2/Group_2_DATA
+    output_dir: results/tables/Group2_Results
+    pesticides: [Malathion, LambdaCyhalothrin]
+  Group3:
+    data_dir: data/raw/Group 3/Group_3_DATA
+    output_dir: results/tables/Group3_Results
+    pesticides: [Imidacloprid, LambdaCyhalothrin]
+  Group4:
+    data_dir: data/raw/Group 4/Group4_DATA
+    output_dir: results/tables/Group4_Results
+    pesticides: [Permethrin, LambdaCyhalothrin]
