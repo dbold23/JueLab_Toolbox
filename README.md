@@ -34,7 +34,7 @@ End-to-end pipeline for TECAN plate reader growth curve analysis + view all synt
 ## Getting Started
 
 ```bash
-git clone <repo-url>
+git clone <https://github.com/dbold23/JueLab_Toolbox>
 cd JueLab_toolbox
 ```
 
