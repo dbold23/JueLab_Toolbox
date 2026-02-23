@@ -40,7 +40,7 @@ make test            # Run 31-test suite
 
 Manual visual audit: **91.3%** of classifications validated correct (84/92).
 
-### Haldane Analysis (23 pesticide+LB strains)
+### Haldane Analysis (23 pesticide+LB strains) (uses S0=1.0 until real substrat [] known)
 
 - Haldane model preferred over Gompertz for **15/23 strains (65%)** by AIC
 - All 6 pesticides show measurable inhibition constants (Ki)
@@ -85,3 +85,4 @@ TECAN_growth_curves/
 ## Detailed Documentation
 
 See [scripts/README.md](scripts/README.md) for full usage, all CLI options, model equations, classification methods, truncation strategies, output column descriptions, and troubleshooting.
+
