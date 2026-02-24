@@ -9,7 +9,7 @@ DATA = data/raw
 RESULTS = results/tables
 SYNTH = synthetic_data
 
-.PHONY: help install test run-pipeline run-haldane validate validate-synthetic clean
+.PHONY: help install test run-pipeline run-haldane run-advanced run-advanced-gp run-advanced-bootstrap run-advanced-gompertz run-advanced-haldane validate validate-synthetic clean
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -38,7 +38,22 @@ validate-synthetic: ## Run pipeline on synthetic data and compute metrics
 		$(SYNTH)/output/comprehensive_test/test_data/DATA \
 		-o $(SYNTH)/output/comprehensive_test/validation_latest -q
 
-run-all: run-pipeline run-haldane ## Run full pipeline + Haldane analysis
+run-advanced: ## Run all advanced fitting (GP + Bootstrap + Bayesian)
+	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py
+
+run-advanced-gp: ## Run GP truncation only
+	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --gp-only
+
+run-advanced-bootstrap: ## Run bootstrap CIs only
+	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --bootstrap-only
+
+run-advanced-gompertz: ## Run Bayesian Gompertz only
+	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --gompertz-only
+
+run-advanced-haldane: ## Run Bayesian Haldane only
+	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --haldane-only
+
+run-all: run-pipeline run-haldane run-advanced ## Run full pipeline + Haldane + Advanced
 
 clean: ## Remove generated output (keeps raw data and results)
 	rm -rf $(SYNTH)/output/comprehensive_test/validation_v*/

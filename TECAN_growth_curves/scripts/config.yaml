@@ -69,3 +69,60 @@ groups:
     data_dir: data/raw/Group 4/Group4_DATA
     output_dir: results/tables/Group4_Results
     pesticides: [Permethrin, LambdaCyhalothrin]
+
+# =============================================================================
+# Advanced Statistical Methods (06_advanced_fitting.py)
+# =============================================================================
+
+advanced:
+  # GP-based truncation
+  gp:
+    kernel_length_scale: 2.0       # RBF initial length scale (hours)
+    kernel_noise: 0.01             # WhiteKernel noise level
+    derivative_threshold: 0.01     # dmu/dt threshold for phase boundary
+    n_restarts: 5                  # kernel optimization restarts
+    min_length_scale: 0.5          # prevent overfitting on sparse data
+
+  # Bayesian sampling
+  bayesian:
+    gompertz:
+      draws: 2000
+      tune: 1000
+      chains: 4
+      target_accept: 0.90
+    haldane:
+      draws: 5000
+      tune: 3000
+      chains: 4
+      sampler: DEMetropolisZ       # gradient-free (ODE model)
+
+  # Bayesian priors
+  priors:
+    # Gompertz hyperpriors (based on observed data ranges)
+    mu_A: [1.3, 0.5]              # Normal(mu, sigma) for max OD
+    mu_mu: [0.25, 0.15]           # Normal(mu, sigma) for growth rate
+    mu_lam: [2.0, 2.0]            # Normal(mu, sigma) for lag time
+    sigma_obs: 0.05               # HalfNormal sigma for observation noise
+    # Haldane hyperpriors
+    mu_log_Ki: [2.0, 1.0]         # Normal(mu, sigma) for log(Ki) population mean
+    sigma_log_Ki: 1.0             # HalfNormal sigma for between-pesticide Ki variance
+
+  # Bootstrap settings
+  bootstrap:
+    n_resamples: 1000
+    ci_level: 0.95
+
+  # Bayesian classification thresholds
+  classification:
+    p_good_high: 0.90             # high confidence GOOD
+    p_good_low: 0.50              # moderate confidence GOOD
+    borderline_range: [0.30, 0.70]
+
+  # Convergence diagnostics
+  convergence:
+    max_rhat: 1.05
+    min_ess_bulk: 400
+    min_ess_tail: 200
+
+  # Output
+  output_dir: results/tables/Advanced_Analysis
