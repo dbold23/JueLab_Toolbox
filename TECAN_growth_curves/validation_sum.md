@@ -192,6 +192,55 @@ Scenarios are sorted from lowest to highest accuracy. Each scenario contains 15 
 
 ---
 
+## Advanced Analysis Validation
+
+The advanced statistical methods in `06_advanced_fitting.py` were validated via
+unit tests (`tests/test_advanced.py`) and end-to-end runs on real data.
+
+### Unit Test Coverage (18 tests, all passing)
+
+| Test Class | Tests | What is validated |
+|-----------|-------|-------------------|
+| TestGPTruncation | 4 | GP R² > 0.99 on clean sigmoid, truncation in correct region, 3-phase identification, sparse data handling |
+| TestBootstrap | 3 | 95% CI contains true params, P(good) high for growth curves, P(good) low for flat curves |
+| TestHaldaneODE | 3 | Biomass increases, substrate depletes, strong inhibition slows growth |
+| TestDataLoading | 3 | Pesticide name extraction, strain identification, config loading |
+| TestAdvancedOutputs | 2 | GP/bootstrap output files exist with expected columns |
+| TestThinning | 3 | Short data preserved, long data reduced, endpoints kept |
+
+### GP Truncation (57 strains)
+
+- Successfully fit RBF + WhiteKernel GP to all 57 good strains
+- Identifies lag, exponential, and stationary phases from GP derivative
+- No heuristic parameters needed (GP learns noise level automatically)
+
+### Bootstrap CIs (57 strains)
+
+- Produced 95% confidence intervals on A, mu, lambda for all good strains
+- P(good) classification confidence computed for each strain
+- Clean growth curves: P(good) >= 0.90; flat/noisy curves: P(good) < 0.50
+
+### Bayesian Gompertz (verified on 3 strains)
+
+- NUTS sampler produced posterior summaries with mean, median, and 95% HDI
+- Convergence diagnostics: ESS values 25-85 (low due to minimal test config: 1 chain, 50 draws)
+- PPC (posterior predictive check) plots generated for each strain
+- Bayesian classification: P(good) computed from posterior draws
+
+### Bayesian Haldane
+
+- Custom PyTensor Op wrapping scipy solve_ivp validated against direct `solve_haldane()`
+- DEMetropolisZ sampler handles ODE-based likelihood without gradients
+- Hierarchical Ki posteriors separate pesticide groups
+
+### Recommendations for Advanced Methods
+
+1. **Accept Xcode license** (`sudo xcodebuild -license`) to enable PyTensor C compilation. Without it, NUTS sampling is ~100x slower (Python-only mode).
+2. **Production Bayesian runs** should use 4 chains, 2000 draws, 1000 tune for proper convergence diagnostics (R-hat, ESS).
+3. **Data thinning** (`--thin 50`) is recommended for Bayesian models to reduce observation count while preserving curve shape.
+
+---
+
 ## Appendix: Summary Statistics
 
 - **Total curves:** 480
