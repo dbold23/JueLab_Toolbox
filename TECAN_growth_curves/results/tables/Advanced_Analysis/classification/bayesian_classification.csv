@@ -1,0 +1,4 @@
+strain,p_good,label,is_borderline
+FlupyradifuroneANDLB-FLUPC8,1.0,GOOD (high confidence),False
+BifenthrinANDLB-BIF2,1.0,GOOD (high confidence),False
+BifenthrinANDLB-BiF7,1.0,GOOD (high confidence),False

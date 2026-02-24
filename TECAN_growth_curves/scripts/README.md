@@ -29,6 +29,7 @@ TECAN_growth_curves/
 │   ├── 02_preprocess_raw_plate_data.py  # Raw 96-well data preprocessor
 │   ├── 03_mle_model_fitting.py          # MLE multi-model fitting (Gompertz, Baranyi, Logistic, Richards, Haldane)
 │   ├── 05_haldane_analysis.py           # Haldane feedback inhibition analysis
+│   ├── 06_advanced_fitting.py           # Advanced stats (GP, Bayesian, Bootstrap)
 │   ├── validate_results_interactive.py  # Interactive curve validation tool
 │   ├── run_all_groups.sh                # Batch processing script
 │   ├── config.yaml                      # Centralized threshold configuration
@@ -42,7 +43,8 @@ TECAN_growth_curves/
 │   ├── all_groups_results.csv           # Consolidated Gompertz results (92 strains)
 │   ├── validation_audit.csv             # Manual validation annotations
 │   ├── Group{1-4}_Results/              # Per-group results + diagnostic plots
-│   └── Haldane_Analysis/                # Haldane feedback inhibition results
+│   ├── Haldane_Analysis/                # Haldane feedback inhibition results
+│   └── Advanced_Analysis/               # GP, Bayesian, Bootstrap results
 ├── synthetic_data/                      # Validation test suite (480 synthetic curves)
 ├── tests/                               # pytest test suite
 ├── Makefile                             # Build/run automation
@@ -208,7 +210,12 @@ make run-pipeline        # Run Gompertz pipeline on all groups
 make run-haldane         # Run Haldane analysis on pesticide strains
 make validate            # Launch interactive validation tool
 make validate-synthetic  # Run pipeline on synthetic data
-make run-all             # Full pipeline + Haldane
+make run-advanced         # Run all advanced fitting (GP + Bootstrap + Bayesian)
+make run-advanced-gp      # GP truncation only
+make run-advanced-bootstrap # Bootstrap CIs only
+make run-advanced-gompertz  # Bayesian Gompertz only
+make run-advanced-haldane   # Bayesian Haldane only
+make run-all             # Full pipeline + Haldane + Advanced
 ```
 
 ---
@@ -220,6 +227,11 @@ pandas>=1.3.0
 numpy>=1.20.0
 matplotlib>=3.4.0
 scipy>=1.7.0
+
+# Advanced analysis (06_advanced_fitting.py)
+pymc>=5.10.0
+arviz>=0.17.0
+scikit-learn>=1.0.0
 ```
 
 Install with:
@@ -329,6 +341,79 @@ When you run the pipeline, you should see approximately:
 ### Haldane Analysis Results
 
 The Haldane model was preferred over Gompertz for **15/23** (65%) pesticide+LB strains by AIC, confirming substrate inhibition kinetics are present. All 6 pesticides tested (Bifenthrin, Flupyradifurone, Imidacloprid, Lambda-Cyhalothrin, Malathion, Permethrin) show measurable inhibition constants (Ki).
+
+---
+
+## Advanced Statistical Methods (`06_advanced_fitting.py`)
+
+Upgrades every pipeline stage with modern statistical methods, addressing PI recommendations for Monte Carlo, Gaussian Processes, HMC, and Bayesian Hierarchical Models.
+
+| Pipeline Stage | Before | After | Method |
+|---------------|--------|-------|--------|
+| **Truncation** | Heuristic peak-finding | GP growth phase detection | Gaussian Process |
+| **Gompertz fitting** | scipy curve_fit (point estimates) | Full posteriors, partial pooling | Bayesian HMC (NUTS) |
+| **Haldane fitting** | scipy minimize (point estimates) | Hierarchical posteriors, Ki by pesticide | Bayesian DEMetropolisZ |
+| **Classification** | Hard R²/SNR thresholds | P(good) from posterior | Bayesian posterior |
+| **Model comparison** | AIC (ΔAIC > 2) | WAIC/LOO with uncertainty | Bayesian model comparison |
+| **Uncertainty** | None | Bootstrap CIs + full posteriors | Monte Carlo bootstrap |
+
+### Usage
+
+```bash
+# Run everything
+python 06_advanced_fitting.py
+
+# Run specific phases
+python 06_advanced_fitting.py --gp-only          # GP truncation only
+python 06_advanced_fitting.py --bootstrap-only    # Bootstrap CIs only
+python 06_advanced_fitting.py --gompertz-only     # Bayesian Gompertz only
+python 06_advanced_fitting.py --haldane-only      # Bayesian Haldane only
+python 06_advanced_fitting.py --no-haldane        # Everything except slow Haldane ODE
+
+# Performance tuning
+python 06_advanced_fitting.py --chains 2 --draws 500 --thin 50    # Quick test
+python 06_advanced_fitting.py --max-strains 10 --thin 30          # Limit strains
+```
+
+### GP-Based Truncation
+
+Fits a Gaussian Process (RBF + WhiteKernel) to each growth curve and identifies growth phases from the GP derivative. The truncation point is where dOD/dt first crosses zero after reaching its maximum (end of exponential growth). No smoothing window or heuristic parameters needed — the GP learns the noise level automatically.
+
+### Bayesian Hierarchical Gompertz
+
+Three-level hierarchy: Population → Pesticide group → Strain. Uses non-centered parameterization to avoid funnel geometry. Sampled with NUTS (No U-Turn Sampler). Produces full posterior distributions on A, mu, and lambda for every strain with partial pooling by treatment group.
+
+### Bayesian Hierarchical Haldane
+
+Ki (substrate inhibition constant) is partially pooled by pesticide via a LogNormal hierarchy. Uses a custom PyTensor Op wrapping scipy's ODE solver and DEMetropolisZ (gradient-free sampler). Produces P(Ki < threshold) for each pesticide — directly answering "which pesticide is most inhibitory?"
+
+### Bootstrap Uncertainty
+
+Residual resampling on NLS Gompertz fits (1000 resamples). Produces 95% CIs on all parameters and P(good) classification confidence. Runs in seconds per strain (vs minutes for full Bayesian).
+
+### Output
+
+```
+results/tables/Advanced_Analysis/
+├── gp_truncation/                    # GP phase detection results + plots
+├── bayesian_gompertz/                # Posterior summaries, traces, convergence
+├── bayesian_haldane/                 # Ki posteriors by pesticide
+├── bootstrap/                       # Bootstrap CIs and P(good)
+├── classification/                  # Bayesian classification (P(good) per strain)
+└── model_comparison.csv             # WAIC/LOO Gompertz vs Haldane
+```
+
+### Additional Dependencies
+
+```
+pymc>=5.10.0          # Bayesian modeling (NUTS, DEMetropolisZ)
+arviz>=0.17.0         # Posterior analysis, diagnostics (R-hat, ESS, HDI)
+scikit-learn>=1.0.0   # Gaussian Process regression
+```
+
+### Configuration
+
+All advanced settings are in `config.yaml` under the `advanced:` section (GP kernel parameters, Bayesian sampling settings, prior hyperparameters, bootstrap resamples, convergence thresholds).
 
 ---
 
