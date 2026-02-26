@@ -282,7 +282,7 @@ class PipelineValidator:
                 rmse=rmse,
                 r_squared=r_squared,
                 bias=mean_error,
-                n_samples=n
+                n_samples=len(valid)
             )
 
         return results

@@ -217,7 +217,7 @@ class TestAdvancedOutputs:
         assert csv.exists()
         df = pd.read_csv(csv)
         assert len(df) > 0
-        assert 'truncation_time' in df.columns
+        assert 'strain' in df.columns
 
     def test_bootstrap_output_exists(self, results_dir):
         path = results_dir / "Advanced_Analysis" / "bootstrap"
