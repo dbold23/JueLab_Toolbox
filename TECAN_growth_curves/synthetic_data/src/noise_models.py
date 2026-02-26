@@ -350,9 +350,11 @@ class RMSEBasedNoise:
         target_ss_res = (1 - target_r2) * ss_tot
         target_rmse = np.sqrt(target_ss_res / len(signal))
 
-        # Generate noise with this RMSE
+        # Generate noise with this RMSE (use local override, don't mutate instance)
+        saved_rmse = self.target_rmse
         self.target_rmse = target_rmse
         noisy, actual_rmse = self.apply(signal, seed=None)  # Don't re-seed
+        self.target_rmse = saved_rmse  # Restore original
 
         # Calculate actual R²
         ss_res = np.sum((noisy - signal)**2)
