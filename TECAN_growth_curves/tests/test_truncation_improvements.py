@@ -167,17 +167,17 @@ class TestTightenedClassification:
         defaults.update(overrides)
         return analysis.FitResult(**defaults)
 
-    def test_excellent_r2_bypass_raised(self):
-        """R² = 0.985 should NOT bypass noise gates anymore (threshold raised to 0.995)."""
-        fit = self._make_fit_result(r_squared=0.985, a_opt=0.05)
-        # Create data with low SNR
+    def test_non_excellent_fit_checked_by_secondary_gates(self):
+        """R² = 0.96 (below 0.98 bypass) should have noise gates enforced."""
+        fit = self._make_fit_result(r_squared=0.96, a_opt=0.05)
+        # Create data with low SNR — pure noise
         rng = np.random.default_rng(42)
         time = np.linspace(0, 50, 100)
-        od = 0.01 + rng.normal(0, 0.01, 100)  # pure noise
+        od = 0.01 + rng.normal(0, 0.01, 100)
         thresholds = {
             'min_r_squared': 0.95,
             'max_param_error_pct': 20.0,
-            'excellent_r2_threshold': 0.995,
+            'excellent_r2_threshold': 0.98,
             'min_snr': 5.0,
             'min_delta_od_ci': 0.1,
             'min_absolute_delta_od': 0.15,

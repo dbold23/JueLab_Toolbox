@@ -244,10 +244,12 @@ def classify_by_fit_quality(
 
     # =====================================================================
     # Secondary quality gates (require raw data)
-    # Tightened: the R² >= 0.98 bypass was too permissive — noisy non-
-    # growth curves could get a decent R² by chance. Now raised to 0.995.
-    # SNR gate raised to 5.0 and always enforced with min delta-OD.
-    # Added: residual autocorrelation check and monotonicity gate.
+    # The R² bypass skips SNR/delta-OD-CI checks when the fit is good
+    # enough that the model itself proves real growth. Kept at 0.98 to
+    # avoid reclassifying strains with small but real growth signals
+    # (e.g. H2O controls, pesticide-only with low delta-OD).
+    # Added: residual autocorrelation check and monotonicity gate (these
+    # target noise/non-growth specifically without hurting real low-OD growth).
     # =====================================================================
     if od600 is not None and len(od600) > 10:
         n_baseline = min(10, len(od600) // 5)
@@ -259,8 +261,8 @@ def classify_by_fit_quality(
 
         snr = (max_od - baseline_mean) / baseline_std
 
-        # Only bypass noise gates when fit is truly excellent (raised from 0.98)
-        excellent_threshold = thresholds.get('excellent_r2_threshold', 0.995)
+        # Bypass noise-based gates when fit quality is excellent
+        excellent_threshold = thresholds.get('excellent_r2_threshold', 0.98)
         fit_is_excellent = fit_result.r_squared >= excellent_threshold
 
         if not fit_is_excellent:
@@ -1669,10 +1671,9 @@ def process_growth_curves(
                 signal_range = float(np.max(od600_clean) - np.mean(od600_clean[:min(5, len(od600_clean))]))
                 pre_fit_snr = signal_range / max(noise_std, 1e-8)
 
-                if pre_fit_snr < 5.0 and signal_range < 0.5:
+                if pre_fit_snr < 3.0 and signal_range < 0.5:
                     # Signal is buried in noise AND growth is small -- skip fitting, classify BAD
                     # (If signal_range >= 0.5 we let the fitter decide; large growth overrides low SNR)
-                    # Raised from 3.0 to 5.0 to catch high_noise and borderline_noise FPs
                     classification = ClassificationResult(
                         is_good=False,
                         reason=f"BAD: Pre-fit SNR too low ({pre_fit_snr:.1f} < 3.0)",
