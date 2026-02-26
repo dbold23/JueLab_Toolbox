@@ -253,3 +253,163 @@ class TestThinning:
         result = adv.thin_strain_data([(t, od)], max_points=50)
         assert result[0][0][0] == t[0], "First point should be preserved"
         assert result[0][0][-1] == t[-1], "Last point should be preserved"
+
+
+# =============================================================================
+# Ensemble Truncation Tests
+# =============================================================================
+
+class TestEnsembleTruncation:
+
+    def test_weighted_median_basic(self):
+        """Weighted median of [1,2,3] with equal weights is 2."""
+        result = adv.weighted_median(np.array([1.0, 2.0, 3.0]),
+                                      np.array([1.0, 1.0, 1.0]))
+        assert abs(result - 2.0) < 0.01
+
+    def test_weighted_median_skewed(self):
+        """Heavy weight on first value should pull median down."""
+        result = adv.weighted_median(np.array([1.0, 2.0, 3.0]),
+                                      np.array([10.0, 1.0, 1.0]))
+        assert result < 2.0, f"Expected < 2.0, got {result}"
+
+    def test_ensemble_runs_on_clean_sigmoid(self, good_gompertz_curve):
+        """Ensemble should succeed on a clean Gompertz curve."""
+        t, od = good_gompertz_curve
+        result = adv.ensemble_truncate(t, od)
+        assert isinstance(result, adv.EnsembleTruncationResult)
+        assert result.n_methods_succeeded >= 1
+        assert 0 <= result.consensus_idx < len(t)
+
+    def test_ensemble_consensus_in_valid_range(self, good_gompertz_curve):
+        """Consensus time should be within the data time range."""
+        t, od = good_gompertz_curve
+        result = adv.ensemble_truncate(t, od)
+        assert t[0] <= result.consensus_time <= t[-1], \
+            f"Consensus {result.consensus_time} outside [{t[0]}, {t[-1]}]"
+
+    def test_ensemble_consensus_near_plateau(self, good_gompertz_curve):
+        """For A=1.2, mu=0.2, lam=4.0, consensus should be in 10-24h range."""
+        t, od = good_gompertz_curve
+        result = adv.ensemble_truncate(t, od)
+        assert 8.0 < result.consensus_time < 24.5, \
+            f"Consensus at {result.consensus_time:.1f}h, expected 8-24h"
+
+    def test_ensemble_high_confidence_for_clean_curve(self, good_gompertz_curve):
+        """Clean curve should yield moderate-to-high confidence (methods agree)."""
+        t, od = good_gompertz_curve
+        result = adv.ensemble_truncate(t, od)
+        assert result.consensus_confidence >= 0.3, \
+            f"Confidence {result.consensus_confidence:.2f}, expected >= 0.3"
+
+    def test_ensemble_handles_flat_curve(self, flat_curve):
+        """Ensemble should not crash on flat/noisy data."""
+        t, od = flat_curve
+        result = adv.ensemble_truncate(t, od)
+        assert isinstance(result, adv.EnsembleTruncationResult)
+        # Should still produce a consensus (even if some methods fail)
+        assert 0 <= result.consensus_idx < len(t)
+
+    def test_ensemble_sparse_data(self):
+        """Ensemble should work on sparse data (20 points)."""
+        t = np.linspace(0, 24, 20)
+        np.random.seed(42)
+        od = adv.gompertz_model(t, 1.0, 0.3, 3.0) + np.random.normal(0, 0.02, 20)
+        result = adv.ensemble_truncate(t, od)
+        assert isinstance(result, adv.EnsembleTruncationResult)
+        assert result.n_methods_succeeded >= 1
+
+    def test_ensemble_result_has_method_details(self, good_gompertz_curve):
+        """Result should contain details for each attempted method."""
+        t, od = good_gompertz_curve
+        result = adv.ensemble_truncate(t, od)
+        assert isinstance(result.method_results, dict)
+        assert len(result.method_results) >= 1
+        for method_name, mdata in result.method_results.items():
+            assert 'idx' in mdata
+            assert 'time' in mdata
+            assert 'confidence' in mdata
+
+
+class TestChangepointTruncation:
+
+    def test_changepoint_detects_transition(self, good_gompertz_curve):
+        """Changepoint should detect at least one regime transition in sigmoid."""
+        if not adv.HAS_RUPTURES:
+            pytest.skip("ruptures not installed")
+        t, od = good_gompertz_curve
+        idx, conf, changepoints, n_cp = adv.changepoint_truncate(t, od)
+        assert idx is not None, "Should find a changepoint"
+        assert 0 < idx < len(t), f"Changepoint idx {idx} out of range"
+        assert n_cp >= 1, "Should detect at least one changepoint"
+
+    def test_changepoint_handles_missing_ruptures(self, good_gompertz_curve):
+        """If ruptures is unavailable, changepoint should fail gracefully."""
+        # Simulate missing ruptures by temporarily overriding
+        orig = adv.HAS_RUPTURES
+        adv.HAS_RUPTURES = False
+        try:
+            t, od = good_gompertz_curve
+            idx, conf, changepoints, n_cp = adv.changepoint_truncate(t, od)
+            assert idx is None
+            assert conf == 0.0
+        finally:
+            adv.HAS_RUPTURES = orig
+
+
+class TestEnsembleOutputs:
+
+    @pytest.fixture
+    def results_dir(self):
+        return Path(__file__).parent.parent / "results" / "tables"
+
+    def test_ensemble_output_exists(self, results_dir):
+        path = results_dir / "Advanced_Analysis" / "ensemble_truncation"
+        if not path.exists():
+            pytest.skip("Ensemble truncation not yet run")
+        csv = path / "ensemble_truncation_results.csv"
+        assert csv.exists()
+        df = pd.read_csv(csv)
+        assert len(df) > 0
+        assert 'consensus_time' in df.columns
+        assert 'consensus_confidence' in df.columns
+        assert 'n_methods_succeeded' in df.columns
+
+
+class TestTruncationComparison:
+
+    @pytest.fixture
+    def results_dir(self):
+        return Path(__file__).parent.parent / "results" / "tables"
+
+    def test_comparison_output_exists(self, results_dir):
+        path = results_dir / "Advanced_Analysis" / "truncation_comparison"
+        if not path.exists():
+            pytest.skip("Comparison not yet run")
+        csv = path / "method_comparison.csv"
+        assert csv.exists()
+        df = pd.read_csv(csv)
+        assert len(df) > 0
+        assert 'method' in df.columns
+        assert 'r_squared' in df.columns
+
+    def test_comparison_has_all_methods(self, results_dir):
+        path = results_dir / "Advanced_Analysis" / "truncation_comparison"
+        if not path.exists():
+            pytest.skip("Comparison not yet run")
+        df = pd.read_csv(path / "method_comparison.csv")
+        methods = set(df['method'].unique())
+        expected = {'first_peak', 'stationary_phase', 'adaptive_r2',
+                    'gp_derivative', 'changepoint', 'consensus'}
+        assert expected.issubset(methods), f"Missing methods: {expected - methods}"
+
+    def test_method_summary_exists(self, results_dir):
+        path = results_dir / "Advanced_Analysis" / "truncation_comparison"
+        if not path.exists():
+            pytest.skip("Comparison not yet run")
+        csv = path / "method_summary.csv"
+        assert csv.exists()
+        df = pd.read_csv(csv)
+        assert len(df) == 6  # 5 methods + consensus
+        assert 'mean_r2' in df.columns
+        assert 'pct_good' in df.columns

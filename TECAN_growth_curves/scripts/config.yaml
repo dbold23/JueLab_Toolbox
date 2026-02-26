@@ -124,5 +124,22 @@ advanced:
     min_ess_bulk: 400
     min_ess_tail: 200
 
+  # Ensemble truncation
+  ensemble:
+    enabled: true                        # Use ensemble truncation by default
+    consensus_method: weighted_median    # weighted_median | median | weighted_mean
+    max_disagreement_hours: 4.0          # Flag if methods disagree > this
+    min_methods_required: 3              # Flag if fewer methods succeed
+    methods:
+      first_peak: true
+      stationary_phase: true
+      adaptive_r2: true
+      gp_derivative: true
+      changepoint: true
+    changepoint:
+      model: rbf                         # ruptures cost model
+      penalty: null                      # null = auto: 3*log(n)
+      min_size: null                     # null = auto: max(10, n//10)
+
   # Output
   output_dir: results/tables/Advanced_Analysis

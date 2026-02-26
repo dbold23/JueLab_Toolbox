@@ -9,7 +9,7 @@ DATA = data/raw
 RESULTS = results/tables
 SYNTH = synthetic_data
 
-.PHONY: help install test run-pipeline run-haldane run-advanced run-advanced-gp run-advanced-bootstrap run-advanced-gompertz run-advanced-haldane validate validate-synthetic clean
+.PHONY: help install test run-pipeline run-haldane run-advanced run-advanced-gp run-advanced-bootstrap run-advanced-gompertz run-advanced-haldane run-advanced-ensemble run-compare-methods run-compare-bad validate validate-synthetic validate-truncation clean
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -52,6 +52,18 @@ run-advanced-gompertz: ## Run Bayesian Gompertz only
 
 run-advanced-haldane: ## Run Bayesian Haldane only
 	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --haldane-only
+
+run-advanced-ensemble: ## Run ensemble truncation only
+	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --ensemble-only
+
+run-compare-methods: ## Compare truncation methods (requires ensemble run first)
+	$(PYTHON) $(SCRIPTS)/07_compare_truncation_methods.py
+
+run-compare-bad: ## Compare methods + rescue bad strains
+	$(PYTHON) $(SCRIPTS)/07_compare_truncation_methods.py --include-bad
+
+validate-truncation: ## Launch interactive truncation method validator
+	$(PYTHON) $(SCRIPTS)/08_validate_truncation.py
 
 run-all: run-pipeline run-haldane run-advanced ## Run full pipeline + Haldane + Advanced
 

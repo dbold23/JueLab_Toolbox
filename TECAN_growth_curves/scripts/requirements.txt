@@ -11,3 +11,4 @@ pyyaml>=5.4.0
 pymc>=5.10.0
 arviz>=0.17.0
 scikit-learn>=1.0.0
+ruptures>=1.1.0
