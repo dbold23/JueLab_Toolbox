@@ -177,7 +177,8 @@ def classify_by_fit_quality(
     fit_result: 'FitResult',
     thresholds: Optional[Dict[str, float]] = None,
     time: Optional[np.ndarray] = None,
-    od600: Optional[np.ndarray] = None
+    od600: Optional[np.ndarray] = None,
+    is_incomplete: bool = False
 ) -> ClassificationResult:
     """
     Classify a growth curve based on Gompertz fit quality.
@@ -316,7 +317,7 @@ def classify_by_fit_quality(
             else:
                 lag1_autocorr = 0.0
             max_autocorr = thresholds.get('max_residual_autocorr', 0.7)
-            if lag1_autocorr > max_autocorr and not fit_is_excellent:
+            if lag1_autocorr > max_autocorr and not fit_is_excellent and not is_incomplete:
                 reasons.append(
                     f"High residual autocorrelation: {lag1_autocorr:.2f} > {max_autocorr}"
                 )
@@ -914,7 +915,7 @@ def truncate_at_max(
     # Check if curve is incomplete (still rising at experiment end)
     is_incomplete, incomplete_meta = detect_incomplete_curve(time, od600)
 
-    if is_incomplete and not use_adaptive:
+    if is_incomplete:
         # Curve never reached stationary phase — use all data (no truncation)
         # This prevents false negatives on truncation_challenge-type curves
         truncation_idx = len(od600) - 1
@@ -1024,6 +1025,81 @@ def gompertz_model(t: np.ndarray, a: float, mu: float, lam: float) -> np.ndarray
     return a * np.exp(-np.exp((mu * np.e / a) * (lam - t) + 1))
 
 
+def logistic_model(t: np.ndarray, A: float, k: float, t_mid: float) -> np.ndarray:
+    """
+    Logistic growth model: y(t) = A / (1 + exp(-k*(t - t_mid)))
+
+    Parameters
+    ----------
+    t : np.ndarray
+        Time values
+    A : float
+        Maximum population (carrying capacity)
+    k : float
+        Growth rate coefficient
+    t_mid : float
+        Midpoint time (inflection point)
+    """
+    return A / (1 + np.exp(-k * (t - t_mid)))
+
+
+def baranyi_model(t: np.ndarray, y0: float, y_max: float, mu_max: float, h0: float) -> np.ndarray:
+    """
+    Baranyi-Roberts growth model with lag adjustment function.
+
+    Parameters
+    ----------
+    t : np.ndarray
+        Time values
+    y0 : float
+        Initial population
+    y_max : float
+        Maximum population
+    mu_max : float
+        Maximum specific growth rate
+    h0 : float
+        Physiological state parameter (controls lag duration)
+    """
+    with np.errstate(over='ignore', invalid='ignore'):
+        term1 = np.exp(-mu_max * t)
+        term2 = np.exp(-h0)
+        term3 = np.exp(-mu_max * t - h0)
+        inner = np.clip(term1 + term2 - term3, 1e-10, None)
+        A_t = t + (1.0 / mu_max) * np.log(inner)
+        growth_term = mu_max * A_t
+        saturation = np.log(1 + (np.exp(np.clip(growth_term, -50, 50)) - 1) /
+                           np.exp(np.clip(y_max - y0, -50, 50)))
+        y = y0 + growth_term - saturation
+    return np.clip(np.nan_to_num(y, nan=y0, posinf=y_max), y0, y_max)
+
+
+def richards_model(t: np.ndarray, A: float, k: float, t_mid: float, nu: float) -> np.ndarray:
+    """
+    Richards growth model (generalised logistic).
+
+    y(t) = A * (1 + nu*exp(-k*(t-t_mid)))^(-1/nu)
+
+    Parameters
+    ----------
+    t : np.ndarray
+        Time values
+    A : float
+        Maximum population (carrying capacity)
+    k : float
+        Growth rate coefficient
+    t_mid : float
+        Midpoint time
+    nu : float
+        Shape parameter (asymmetry)
+    """
+    if abs(nu) < 1e-6:
+        return gompertz_model(t, A, k * A / np.e, t_mid - A / (k * np.e))
+    with np.errstate(over='ignore', invalid='ignore'):
+        base = np.clip(1 + nu * np.exp(-k * (t - t_mid)), 1e-10, None)
+        y = A * np.power(base, -1.0 / nu)
+    return np.nan_to_num(y, nan=0.0, posinf=A)
+
+
 def fit_gompertz(
     time: np.ndarray,
     od600: np.ndarray,
@@ -1125,6 +1201,153 @@ def fit_gompertz(
             residuals=np.array([]),
             error_message=str(e)
         )
+
+
+# =============================================================================
+# Multi-Model Fallback
+# =============================================================================
+
+# Map of alternative models: name -> (function, param_names, n_params)
+ALTERNATIVE_MODELS = {
+    'logistic': (logistic_model, ['A', 'k', 't_mid'], 3),
+    'baranyi': (baranyi_model, ['y0', 'y_max', 'mu_max', 'h0'], 4),
+    'richards': (richards_model, ['A', 'k', 't_mid', 'nu'], 4),
+}
+
+
+def try_alternative_models(
+    time: np.ndarray,
+    od600: np.ndarray,
+    gompertz_r2: float = 0.0,
+    max_iterations: int = 5000
+) -> Tuple[Optional[FitResult], str]:
+    """
+    Try fitting alternative growth models when Gompertz fit is poor.
+
+    Uses lightweight curve_fit (not full MLE) for speed. Returns the best
+    alternative fit (if it beats the Gompertz R²) along with the model name.
+
+    Parameters
+    ----------
+    time : np.ndarray
+        Time values
+    od600 : np.ndarray
+        OD600 values (truncated)
+    gompertz_r2 : float
+        R² from the Gompertz fit (alternative must beat this)
+    max_iterations : int
+        Max iterations for curve_fit
+
+    Returns
+    -------
+    Tuple[Optional[FitResult], str]
+        (best_fit_result, model_name) or (None, 'gompertz') if no improvement
+    """
+    import warnings as _warnings
+
+    a_init = float(np.max(od600))
+    a_init = max(a_init, 0.05)
+
+    diff = np.diff(od600)
+    dt = np.diff(time)
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")
+        growth_rates = diff / np.maximum(dt, 1e-6)
+    mu_init = max(float(np.max(growth_rates)), 0.01)
+    max_growth_idx = int(np.argmax(growth_rates))
+    lambda_init = float(time[max_growth_idx]) if max_growth_idx > 0 else float(time[0])
+    t_max = float(time[-1])
+    y0_init = float(np.mean(od600[:min(5, len(od600))]))
+
+    # Define initial guesses and bounds for each model
+    model_configs = {
+        'logistic': {
+            'p0': [a_init, 4 * mu_init / (np.e * max(a_init, 0.01)),
+                   lambda_init + a_init / (mu_init * np.e + 1e-6)],
+            'bounds': ([0.01, 0.001, 0], [3 * a_init, 20, t_max * 1.5]),
+        },
+        'baranyi': {
+            'p0': [max(y0_init, 0.001), a_init, mu_init,
+                   mu_init * max(lambda_init, 0.1)],
+            'bounds': ([1e-6, 0.01, 0.001, 0.001],
+                       [a_init + 0.01, 3 * a_init, 10 * mu_init + 1, 200]),
+        },
+        'richards': {
+            'p0': [a_init,
+                   mu_init * np.e / max(a_init, 0.01) * 1.5,
+                   lambda_init + a_init / (mu_init * np.e + 1e-6),
+                   0.5],
+            'bounds': ([0.01, 0.001, 0, 0.01],
+                       [3 * a_init, 20, t_max * 1.5, 5.0]),
+        },
+    }
+
+    best_fit = None
+    best_model = 'gompertz'
+    best_r2 = gompertz_r2
+
+    for model_name, (model_func, param_names, n_params) in ALTERNATIVE_MODELS.items():
+        cfg = model_configs[model_name]
+        try:
+            popt, pcov = curve_fit(
+                model_func,
+                time, od600,
+                p0=cfg['p0'],
+                bounds=cfg['bounds'],
+                maxfev=max_iterations
+            )
+
+            predicted = model_func(time, *popt)
+            if np.any(np.isnan(predicted)) or np.any(np.isinf(predicted)):
+                continue
+
+            residuals = od600 - predicted
+            ss_res = np.sum(residuals ** 2)
+            ss_tot = np.sum((od600 - np.mean(od600)) ** 2)
+            r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+
+            if r2 > best_r2:
+                perr = np.sqrt(np.diag(pcov))
+
+                # Map params to Gompertz-equivalent fields for FitResult
+                if model_name == 'logistic':
+                    a_opt, mu_opt, lambda_opt = popt[0], popt[1], popt[2]
+                    a_err, mu_err, lambda_err = perr[0], perr[1], perr[2]
+                elif model_name == 'baranyi':
+                    a_opt = popt[1]           # y_max
+                    mu_opt = popt[2]          # mu_max
+                    lambda_opt = popt[3] / max(popt[2], 1e-6)  # h0/mu_max ≈ lag
+                    a_err = perr[1]
+                    mu_err = perr[2]
+                    lambda_err = perr[3]
+                elif model_name == 'richards':
+                    a_opt, mu_opt, lambda_opt = popt[0], popt[1], popt[2]
+                    a_err, mu_err, lambda_err = perr[0], perr[1], perr[2]
+                else:
+                    continue
+
+                mae = float(np.mean(np.abs(residuals)))
+                mse = float(np.mean(residuals ** 2))
+                rmse = float(np.sqrt(mse))
+
+                best_fit = FitResult(
+                    success=True,
+                    a_opt=float(a_opt), mu_opt=float(mu_opt),
+                    lambda_opt=float(lambda_opt),
+                    a_err=float(a_err), mu_err=float(mu_err),
+                    lambda_err=float(lambda_err),
+                    mae=mae, mse=mse, rmse=rmse,
+                    r_squared=float(r2),
+                    predicted=predicted, residuals=residuals,
+                    error_message=""
+                )
+                best_r2 = r2
+                best_model = model_name
+
+        except Exception:
+            continue
+
+    return best_fit, best_model
 
 
 # =============================================================================
@@ -1714,6 +1937,9 @@ def process_growth_curves(
                     )
                     continue
 
+                # Check if curve is incomplete (still rising at experiment end)
+                is_incomplete, _ = detect_incomplete_curve(time_clean, od600_clean)
+
                 # Step 1: Truncate (using specified method)
                 truncation = truncate_at_max(
                     time_clean, od600_clean,
@@ -1729,38 +1955,69 @@ def process_growth_curves(
                     truncation.od_truncated
                 )
 
-                # Step 2b: If Gompertz fit is poor, retry with adaptive truncation
-                if fit.r_squared < 0.90 and not truncation_params.get('use_adaptive', False):
-                    adaptive_trunc = truncate_at_max(
+                # Step 2b: Try alternative truncation strategy and keep the best
+                best_model_name = 'gompertz'
+                if truncation_params.get('use_adaptive', False):
+                    # Started with adaptive — also try first_peak
+                    alt_trunc = truncate_at_max(
+                        time_clean, od600_clean,
+                        smoothing_window=truncation_params['smoothing_window'],
+                        buffer_points=truncation_params['buffer_points'],
+                        use_first_peak=True,
+                        use_adaptive=False
+                    )
+                else:
+                    # Started with first_peak — also try adaptive
+                    alt_trunc = truncate_at_max(
                         time_clean, od600_clean,
                         smoothing_window=truncation_params['smoothing_window'],
                         buffer_points=truncation_params['buffer_points'],
                         use_first_peak=False,
                         use_adaptive=True
                     )
-                    adaptive_fit = fit_gompertz(
-                        adaptive_trunc.time_truncated,
-                        adaptive_trunc.od_truncated
+                alt_fit = fit_gompertz(
+                    alt_trunc.time_truncated,
+                    alt_trunc.od_truncated
+                )
+                if alt_fit.r_squared > fit.r_squared:
+                    truncation = alt_trunc
+                    fit = alt_fit
+
+                # Step 2c: Multi-model fallback — try alternative growth models
+                # when Gompertz R² is below the classification threshold
+                min_r2 = fit_quality_thresholds.get('min_r_squared', 0.95)
+                if fit.r_squared < min_r2:
+                    gompertz_r2_val = fit.r_squared
+                    alt_fit, alt_model = try_alternative_models(
+                        truncation.time_truncated,
+                        truncation.od_truncated,
+                        gompertz_r2=gompertz_r2_val
                     )
-                    if adaptive_fit.r_squared > fit.r_squared:
-                        truncation = adaptive_trunc
-                        fit = adaptive_fit
+                    if alt_fit is not None:
+                        fit = alt_fit
+                        best_model_name = alt_model
+                        if verbose:
+                            print(f"    Multi-model: {alt_model} R²={alt_fit.r_squared:.3f} "
+                                  f"(Gompertz was {gompertz_r2_val:.3f})")
 
                 # Step 3: Classify based on fit quality (with secondary quality gates)
                 classification = classify_by_fit_quality(
                     fit, fit_quality_thresholds,
-                    time=time_clean, od600=od600_clean
+                    time=time_clean, od600=od600_clean,
+                    is_incomplete=is_incomplete
                 )
 
                 # Add basic OD metrics to classification for reference
                 if 'delta_od' not in classification.metrics:
                     classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
                 classification.metrics['max_od'] = np.max(od600_clean)
+                classification.metrics['best_model'] = best_model_name
 
                 if verbose:
                     status = "GOOD" if classification.is_good else "BAD"
                     r2 = fit.r_squared if fit.success else 0
-                    print(f"  {strain_name}: {status} (R²={r2:.3f}, A={fit.a_opt:.3f})")
+                    model_tag = f" [{best_model_name}]" if best_model_name != 'gompertz' else ""
+                    print(f"  {strain_name}: {status} (R²={r2:.3f}, A={fit.a_opt:.3f}){model_tag}")
                     if not classification.is_good:
                         print(f"    Reason: {classification.reason}")
 
@@ -1893,6 +2150,7 @@ def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str)
             'r_squared': metrics.get('r_squared'),
             'a_err_pct': metrics.get('a_err_pct'),
             'mu_err_pct': metrics.get('mu_err_pct'),
+            'best_model': metrics.get('best_model', 'gompertz'),
         }
 
         if result.truncation:
