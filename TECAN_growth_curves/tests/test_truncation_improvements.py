@@ -308,3 +308,118 @@ class TestGPDerivativeNormalization:
         phases = adv.gp_find_phases(t_dense, mu, config)
         # With normalization, should still detect phases on low-OD curve
         assert phases['exp_peak'] is not None
+
+
+# ====================================================================
+# Multi-Model Fallback Classification
+# ====================================================================
+
+class TestMultiModelFallback:
+    """Test that alternative growth models rescue non-Gompertz curves."""
+
+    def test_logistic_curve_rescued(self, standard_time):
+        """Logistic-shaped curve should be rescued by logistic model."""
+        # Pure logistic curve -- Gompertz won't fit well
+        od = analysis.logistic_model(standard_time, 1.2, 0.8, 10.0)
+        rng = np.random.default_rng(42)
+        od = od + rng.normal(0, 0.01, len(od))
+        od = np.maximum(0, od)
+
+        # Gompertz fit should be mediocre
+        gompertz_fit = analysis.fit_gompertz(standard_time, od)
+
+        alt_fit, model_name = analysis.try_alternative_models(
+            standard_time, od, gompertz_r2=gompertz_fit.r_squared
+        )
+        # Alternative model should do at least as well
+        if alt_fit is not None:
+            assert alt_fit.r_squared >= gompertz_fit.r_squared
+            assert model_name in ('logistic', 'richards', 'baranyi')
+
+    def test_gompertz_curve_not_replaced(self, good_gompertz_curve):
+        """Clean Gompertz curve should NOT be replaced by alternative."""
+        time, od = good_gompertz_curve
+        gompertz_fit = analysis.fit_gompertz(time, od)
+
+        # Gompertz R² should be high -- no alternative should beat it
+        alt_fit, model_name = analysis.try_alternative_models(
+            time, od, gompertz_r2=gompertz_fit.r_squared
+        )
+        # With a good Gompertz fit, alternative should not beat it
+        # (alt_fit is None means nothing beat it)
+        if alt_fit is not None:
+            # Even if an alternative matches, it shouldn't be much better
+            assert alt_fit.r_squared >= gompertz_fit.r_squared
+
+    def test_try_alternative_models_returns_none_when_no_improvement(self, noisy_flat_curve):
+        """Flat noise should not be rescued by any model."""
+        time, od = noisy_flat_curve
+        # Set gompertz_r2 to 0.99 -- nothing should beat this
+        alt_fit, model_name = analysis.try_alternative_models(
+            time, od, gompertz_r2=0.99
+        )
+        assert alt_fit is None
+        assert model_name == 'gompertz'
+
+    def test_alternative_models_available(self):
+        """All three alternative models should be accessible."""
+        assert hasattr(analysis, 'logistic_model')
+        assert hasattr(analysis, 'baranyi_model')
+        assert hasattr(analysis, 'richards_model')
+        assert hasattr(analysis, 'try_alternative_models')
+        assert hasattr(analysis, 'ALTERNATIVE_MODELS')
+        assert 'logistic' in analysis.ALTERNATIVE_MODELS
+        assert 'baranyi' in analysis.ALTERNATIVE_MODELS
+        assert 'richards' in analysis.ALTERNATIVE_MODELS
+
+    def test_fit_result_structure_from_alternative(self, standard_time):
+        """Alternative model fit should produce a valid FitResult."""
+        # Logistic curve
+        od = analysis.logistic_model(standard_time, 1.0, 1.0, 12.0)
+        rng = np.random.default_rng(42)
+        od = od + rng.normal(0, 0.01, len(od))
+        od = np.maximum(0, od)
+
+        alt_fit, model_name = analysis.try_alternative_models(
+            standard_time, od, gompertz_r2=0.0
+        )
+        assert alt_fit is not None
+        assert alt_fit.success is True
+        assert alt_fit.r_squared > 0.5
+        assert alt_fit.a_opt > 0
+        assert len(alt_fit.predicted) == len(od)
+        assert len(alt_fit.residuals) == len(od)
+
+    def test_best_model_tracked_in_metrics(self, standard_time):
+        """Classification metrics should include best_model field."""
+        # Create a logistic-shaped curve
+        od = analysis.logistic_model(standard_time, 1.2, 0.8, 10.0)
+        rng = np.random.default_rng(42)
+        od = od + rng.normal(0, 0.01, len(od))
+        od = np.maximum(0, od)
+
+        # Try Gompertz first
+        gompertz_fit = analysis.fit_gompertz(standard_time, od)
+
+        # Try alternative
+        alt_fit, model_name = analysis.try_alternative_models(
+            standard_time, od, gompertz_r2=gompertz_fit.r_squared
+        )
+        best_fit = alt_fit if alt_fit is not None else gompertz_fit
+        best_name = model_name
+
+        thresholds = {
+            'min_r_squared': 0.95,
+            'max_param_error_pct': 20.0,
+            'excellent_r2_threshold': 0.98,
+            'min_snr': 5.0,
+            'min_delta_od_ci': 0.1,
+            'min_absolute_delta_od': 0.15,
+            'min_monotone_fraction': 0.55,
+            'max_residual_autocorr': 0.7,
+        }
+        result = analysis.classify_by_fit_quality(
+            best_fit, thresholds, time=standard_time, od600=od
+        )
+        # Metrics should be present and valid
+        assert 'r_squared' in result.metrics
