@@ -50,19 +50,19 @@
     "specificity_std": 0.016000000000000014
   },
   "postfit_metrics": {
-    "accuracy": 0.9873417721518989,
-    "precision": 0.9963636363636363,
+    "accuracy": 0.9873417721518987,
+    "precision": 0.9963636363636365,
     "recall": 0.9853198653198654,
-    "f1": 0.9907218279383765,
-    "specificity": 0.992,
-    "accuracy_std": 0.008005766228274386,
-    "precision_std": 0.007272727272727275,
+    "f1": 0.9907551890726548,
+    "specificity": 0.9916666666666668,
+    "accuracy_std": 0.011321863177214135,
+    "precision_std": 0.007272727272727276,
     "recall_std": 0.013822932873611008,
-    "f1_std": 0.005967917391522656,
-    "specificity_std": 0.016000000000000014
+    "f1_std": 0.008287489877125015,
+    "specificity_std": 0.016666666666666653
   },
   "postfit_feature_importance": {},
-  "training_date": "2026-02-26T14:04:47.929851",
+  "training_date": "2026-02-26T14:59:13.498658",
   "n_training_samples": 565,
   "class_distribution": {
     "GOOD": 389,
