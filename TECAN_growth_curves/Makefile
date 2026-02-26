@@ -65,6 +65,9 @@ run-compare-bad: ## Compare methods + rescue bad strains
 validate-truncation: ## Launch interactive truncation method validator
 	$(PYTHON) $(SCRIPTS)/08_validate_truncation.py
 
+train-classifier: ## Train ML classifier on synthetic data
+	$(PYTHON) $(SCRIPTS)/09_train_classifier.py --compare
+
 run-all: run-pipeline run-haldane run-advanced ## Run full pipeline + Haldane + Advanced
 
 clean: ## Remove generated output (keeps raw data and results)

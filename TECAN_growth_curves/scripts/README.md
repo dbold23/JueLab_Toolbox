@@ -32,6 +32,8 @@ TECAN_growth_curves/
 │   ├── 06_advanced_fitting.py           # Advanced stats (GP, Bayesian, Bootstrap, Ensemble)
 │   ├── 07_compare_truncation_methods.py # Truncation method comparison & bad strain rescue
 │   ├── 08_validate_truncation.py        # Interactive truncation method validator
+│   ├── 09_train_classifier.py           # ML classifier training (70/30 holdout)
+│   ├── ml_classifier.py                 # ML classifier runtime (PreFitGate + PostFitClassifier)
 │   ├── validate_results_interactive.py  # Interactive curve validation tool
 │   ├── run_all_groups.sh                # Batch processing script
 │   ├── config.yaml                      # Centralized threshold configuration
@@ -88,6 +90,7 @@ python 01_growth_curve_analysis.py "DATA/Group 2/Group_2_DATA" -o "OUTPUT/Group2
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--adaptive` | Optimize truncation point for best R² | Off |
+| `--ml-classify` | Enable ML classifier (requires trained models in models/) | Off |
 | `--od-based` | Use OD-threshold classification instead of fit-based | Fit-based |
 | `--min-r2` | Minimum R² for good classification | 0.95 |
 | `--max-param-error` | Maximum parameter error % | 20.0 |
@@ -250,7 +253,8 @@ Saves annotations to `truncation_validation_audit.csv` (resumable).
 ```bash
 make help                  # Show all available commands
 make install               # Install Python dependencies
-make test                  # Run full test suite (93 tests)
+make test                  # Run full test suite (114 tests)
+make train-classifier      # Train ML classifier on synthetic + real data
 make test-quick            # Run unit tests only (no integration)
 make run-pipeline          # Run Gompertz pipeline on all groups
 make run-haldane           # Run Haldane analysis on pesticide strains
@@ -376,15 +380,27 @@ When you run the pipeline, you should see approximately:
 - Pesticide-only conditions (without LB) show no/poor growth (expected)
 - H2O controls show no growth (expected)
 
-### Validation Metrics (Synthetic Data, 480 curves)
+### Validation Metrics
+
+**Rule-based (480 synthetic curves):**
 
 | Metric | Value |
 |--------|-------|
-| Accuracy | 89.0% |
-| Precision | 89.5% |
-| Recall | 95.9% |
-| F1 Score | 92.6% |
-| Specificity | 71.1% |
+| Accuracy | 89.8% |
+| Precision | 91.3% |
+| Recall | 94.8% |
+| F1 Score | 93.0% |
+| Specificity | 77.0% |
+
+**ML Classifier (held-out 30% test, 170 curves — synthetic + real mixed):**
+
+| Metric | Value |
+|--------|-------|
+| Accuracy | 95.3% |
+| Precision | 95.8% |
+| Recall | 97.4% |
+| F1 Score | 96.6% |
+| Specificity | 90.6% |
 
 25/32 test scenarios achieve 100% accuracy. Manual audit of 92 real curves: 91.3% validated correct.
 
@@ -475,6 +491,40 @@ scikit-learn>=1.0.0   # Gaussian Process regression
 ### Configuration
 
 All advanced settings are in `config.yaml` under the `advanced:` section (GP kernel parameters, Bayesian sampling settings, prior hyperparameters, bootstrap resamples, convergence thresholds).
+
+---
+
+### 8. `09_train_classifier.py` - ML Classifier Training
+
+Trains a two-stage ML classifier for growth curve quality classification:
+
+1. **Pre-fit gate** (8 raw features + 2 metadata) — rejects obvious junk before expensive truncation/fitting
+2. **Post-fit classifier** (22 fit features + 2 metadata) — three-class output: GOOD / BORDERLINE / BAD
+
+Features include biological metadata (`is_control`, `concentration_numeric`) parsed from strain names, enabling the model to learn that water/LB controls with growth signals are suspicious.
+
+```bash
+# Train with 70/30 holdout validation
+python 09_train_classifier.py
+
+# Compare GBT vs Random Forest
+python 09_train_classifier.py --compare
+
+# Use the classifier in the pipeline
+python 01_growth_curve_analysis.py DATA_DIR -o OUTPUT_DIR --ml-classify
+```
+
+**Training data:** 480 synthetic + 85 real audited curves (7 "unsure" excluded).
+**Held-out test (30%):** 95.3% accuracy, 90.6% specificity, 97.4% recall.
+
+### `ml_classifier.py` - ML Classifier Runtime Module
+
+Runtime module loaded by `01_growth_curve_analysis.py` when `--ml-classify` is enabled. Contains:
+- `extract_prefit_features(time, od600, strain_name)` — 10 raw features from OD signal + metadata
+- `extract_postfit_features(fit_result, metrics, ...)` — 24 features from Gompertz fit
+- `extract_metadata_features(strain_name)` — parses is-control and concentration from strain names
+- `PreFitGate` — loads joblib model, `should_skip()` returns bool
+- `PostFitClassifier` — loads joblib model, `classify()` returns GOOD/BORDERLINE/BAD with P(good)
 
 ---
 

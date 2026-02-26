@@ -17,9 +17,10 @@
 9. [Stage 6 — Advanced Statistical Methods](#9-stage-6--advanced-statistical-methods)
 10. [Stage 7 — Truncation Method Comparison & Rescue](#10-stage-7--truncation-method-comparison--rescue)
 11. [Stage 8 — Synthetic Data Validation](#11-stage-8--synthetic-data-validation)
-12. [Configuration Reference](#12-configuration-reference)
-13. [Execution & Reproducibility](#13-execution--reproducibility)
-14. [Results Summary](#14-results-summary)
+12. [Stage 9 — ML Classifier](#12-stage-9--ml-classifier)
+13. [Configuration Reference](#13-configuration-reference)
+14. [Execution & Reproducibility](#14-execution--reproducibility)
+15. [Results Summary](#15-results-summary)
 
 ---
 
@@ -39,6 +40,7 @@ This pipeline analyzes bacterial growth curves from **TECAN plate reader** exper
 6. Applies advanced Bayesian hierarchical models, Gaussian processes, and bootstrap methods
 7. Compares 5 truncation methods via Gompertz fit quality, rescues misclassified bad strains
 8. Validates the entire pipeline against 480 synthetic ground-truth curves
+9. Applies a two-stage ML classifier (pre-fit gate + post-fit HistGBT) trained on 565 curves with metadata features
 
 **Scale:** 92 bacterial strains across 4 experimental groups, each tested in multiple media conditions (LB, pesticide+LB, pesticide-only, H2O control).
 
@@ -59,6 +61,8 @@ TECAN_growth_curves/
 │   ├── 06_advanced_fitting.py            # GP, Bayesian hierarchical, Bootstrap methods
 │   ├── 07_compare_truncation_methods.py  # Truncation method comparison study
 │   ├── 08_validate_truncation.py         # Interactive truncation validator
+│   ├── 09_train_classifier.py            # ML classifier training (70/30 stratified split)
+│   ├── ml_classifier.py                  # ML classifier runtime (PreFitGate, PostFitClassifier)
 │   ├── validate_results_interactive.py   # Interactive curve auditor
 │   ├── run_all_groups.sh                 # Batch processing shell script
 │   ├── config.yaml                       # Central configuration (all thresholds)
@@ -105,9 +109,16 @@ TECAN_growth_curves/
 │   ├── test_haldane.py
 │   ├── test_classification.py
 │   ├── test_integration.py
-│   └── test_advanced.py                  # Ensemble truncation, GP, Bootstrap tests
+│   ├── test_advanced.py                  # Ensemble truncation, GP, Bootstrap tests
+│   ├── test_truncation_improvements.py   # MCCV truncation, incomplete curve detection
+│   └── test_ml_classifier.py             # ML classifier feature extraction, metadata, gates
 │
-├── Makefile                              # Build automation (17 targets)
+├── models/                               # ──── TRAINED ML MODELS ────
+│   ├── prefit_gate.joblib                # Pre-fit gate model (gitignored)
+│   ├── postfit_classifier.joblib         # Post-fit classifier (gitignored)
+│   └── feature_config.json              # Feature names + training metrics (committed)
+│
+├── Makefile                              # Build automation (18 targets)
 └── .github/workflows/test.yml            # CI/CD pipeline
 ```
 
@@ -121,6 +132,8 @@ TECAN_growth_curves/
 | `06_advanced_fitting.py` | GP, Bayesian, Bootstrap, Ensemble methods | Results CSV + raw data | Advanced analysis outputs |
 | `07_compare_truncation_methods.py` | Truncation method comparison & bad strain rescue | Ensemble results + raw data | Method rankings, overlay plots, rescued strains |
 | `08_validate_truncation.py` | Interactive truncation method validator | `method_comparison.csv` + raw data | `truncation_validation_audit.csv` |
+| `09_train_classifier.py` | Train ML classifier (70/30 holdout) | Synthetic + real audited curves | `models/*.joblib` + `feature_config.json` |
+| `ml_classifier.py` | ML runtime (feature extraction, gates) | Raw OD data + fit results | Classification with probabilities |
 
 ---
 
@@ -1287,7 +1300,67 @@ For the 327 correctly classified GOOD curves, how well did the pipeline recover 
 
 ---
 
-## 12. Configuration Reference
+## 12. Stage 9 — ML Classifier
+
+### Architecture
+
+Two-stage classification system augmenting the rule-based pipeline:
+
+```
+Raw OD data
+  → Stage 1: PRE-FIT GATE (10 features: 8 raw signal + 2 metadata)
+      → P(good) <= 0.20 → REJECT (skip expensive truncation/fitting)
+      → P(good) > 0.20  → PASS to pipeline
+  → Truncation + Gompertz fit (expensive)
+  → Rule-based classification (R², parameter errors, quality gates)
+  → Stage 2: POST-FIT CLASSIFIER (24 features: 22 fit quality + 2 metadata)
+      → P(good) >= 0.7 → GOOD
+      → P(good) <= 0.3 → BAD
+      → otherwise      → BORDERLINE (flagged for manual review)
+```
+
+### Feature Sets
+
+**Pre-fit gate (10 features):** `raw_delta_od`, `raw_max_od`, `raw_snr`, `raw_monotone_fraction`, `raw_baseline_std`, `raw_baseline_mean`, `n_points`, `time_span`, `is_control`, `concentration_numeric`
+
+**Post-fit classifier (24 features):** 13 direct fit features + 4 secondary quality metrics + 5 derived ratios + 2 metadata features. Key additions over rule-based: `is_control` (parsed from strain name — H2O/LB prefixes detected as controls), `concentration_numeric` (trailing number from strain name).
+
+### Training
+
+- **Model:** `HistGradientBoostingClassifier` (max_depth=5, min_samples_leaf=5, class_weight='balanced')
+- **Data:** 480 synthetic + 85 real audited curves (7 "unsure" excluded) = 565 total
+- **Split:** 70/30 stratified holdout (395 train / 170 test)
+- **Pre-fit features:** Extracted from actual raw OD data files (not CSV proxies) to avoid train/inference mismatch
+- **Deployment:** After holdout evaluation, final model retrained on all 565 curves
+
+### Held-Out Test Results (170 curves, never seen during training)
+
+| Metric | Value |
+|--------|-------|
+| Accuracy | 95.3% |
+| Precision | 95.8% |
+| Recall | 97.4% |
+| F1 Score | 96.6% |
+| Specificity | 90.6% |
+
+**Confusion matrix:** 114 TP, 48 TN, 3 FP (conservative — GOOD called BAD), 5 FN (BAD called GOOD — all real curves with good fits but biological context issues).
+
+**Probability distribution:** Strongly bimodal — all predictions are p<0.05 or p>0.95. No borderline cases in current dataset.
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `scripts/ml_classifier.py` | Runtime module (feature extraction, PreFitGate, PostFitClassifier) |
+| `scripts/09_train_classifier.py` | Training script (70/30 split, real data mixing, metadata) |
+| `models/prefit_gate.joblib` | Trained pre-fit gate model (gitignored) |
+| `models/postfit_classifier.joblib` | Trained post-fit classifier (gitignored) |
+| `models/feature_config.json` | Feature names, training metrics, timestamp (committed) |
+| `tests/test_ml_classifier.py` | 22 unit tests |
+
+---
+
+## 13. Configuration Reference
 
 All tunable parameters are centralized in `scripts/config.yaml`:
 
@@ -1401,7 +1474,7 @@ advanced:
 
 ---
 
-## 13. Execution & Reproducibility
+## 14. Execution & Reproducibility
 
 ### 13.1 Dependencies
 
@@ -1522,19 +1595,21 @@ The `.github/workflows/test.yml` file configures automatic testing on GitHub:
 
 ---
 
-## 14. Results Summary
+## 15. Results Summary
 
-### 14.1 Real experimental data (92 strains)
+### 15.1 Real experimental data (92 strains)
 
 | Group | Pesticides | Total Strains | Good | Bad |
 |-------|-----------|:---:|:---:|:---:|
-| 1 | Bifenthrin, Flupyradifurone, Lambda-Cyhalothrin | 24 | 12 | 12 |
-| 2 | Malathion, Lambda-Cyhalothrin | 24 | 16 | 8 |
-| 3 | Imidacloprid, Lambda-Cyhalothrin | 24 | 17 | 7 |
-| 4 | Permethrin, Lambda-Cyhalothrin | 20 | 12 | 8 |
-| **Total** | | **92** | **57 (62%)** | **35 (38%)** |
+| 1 | Bifenthrin, Flupyradifurone, Lambda-Cyhalothrin | 24 | 11 | 13 |
+| 2 | Malathion, Lambda-Cyhalothrin | 24 | 11 | 13 |
+| 3 | Imidacloprid, Lambda-Cyhalothrin | 24 | 13 | 11 |
+| 4 | Permethrin, Lambda-Cyhalothrin | 20 | 9 | 11 |
+| **Total** | | **92** | **44 (48%)** | **48 (52%)** |
 
-### 14.2 Growth parameter distributions (57 GOOD curves)
+Manual visual audit: **91.3%** of classifications validated correct (84/92).
+
+### 15.2 Growth parameter distributions (44 GOOD curves)
 
 | Parameter | Min | Max | Mean | Std |
 |-----------|-----|-----|------|-----|
@@ -1543,13 +1618,13 @@ The `.github/workflows/test.yml` file configures automatic testing on GitHub:
 | λ (Lag time, h) | 0.035 | 76.7 | 8.2 | 12.5 |
 | R² | 0.95 | 0.9998 | 0.985 | 0.015 |
 
-### 14.3 Haldane analysis (23 pesticide+LB strains)
+### 15.3 Haldane analysis (23 pesticide+LB strains)
 
 - **Haldane preferred over Gompertz by AIC:** 15/23 (65%)
 - All 6 pesticides show measurable Ki (inhibition constant)
 - Confirms substrate inhibition kinetics are present in pesticide bioremediators
 
-### 14.4 Truncation method comparison (57 good strains)
+### 15.4 Truncation method comparison (57 good strains)
 
 | Rank | Method | Mean R² | % Good (R²≥0.95) |
 |:---:|--------|:-------:|:-----------------:|
@@ -1560,20 +1635,31 @@ The `.github/workflows/test.yml` file configures automatic testing on GitHub:
 | 5 | GP Derivative | 0.9787 | 94.7% |
 | 6 | Changepoint | 0.7099 | 87.5% |
 
-### 14.5 Bad strain rescue
+### 15.5 Bad strain rescue
 
 6 of 9 candidate bad strains were rescued by alternative truncation methods, potentially increasing the good strain count from 57 to 63.
 
-### 14.6 Pipeline validation
+### 15.6 Pipeline validation
 
-| Validation type | Accuracy |
-|----------------|----------|
-| Synthetic data (480 curves) | 89.8% overall, 94.8% sensitivity |
-| Manual audit (92 real curves) | 91.3% agreement |
+| Validation type | Metric | Value |
+|----------------|--------|-------|
+| **Rule-based** (480 synthetic curves) | Accuracy | 89.8% |
+| | Precision | 91.3% |
+| | Recall | 94.8% |
+| | F1 Score | 93.0% |
+| | Specificity | 77.0% |
+| **ML Classifier** (170 held-out curves) | Accuracy | 95.3% |
+| | Precision | 95.8% |
+| | Recall | 97.4% |
+| | F1 Score | 96.6% |
+| | Specificity | 90.6% |
+| **Manual audit** (92 real curves) | Agreement | 91.3% |
 
-### 14.7 Test suite
+The ML classifier uses a two-stage HistGradientBoosting architecture trained on 395 curves (70/30 stratified split from 565 total: 480 synthetic + 85 real audited). Probability distribution is bimodal — all predictions are p<0.05 or p>0.95 with no borderline cases. Pre-fit gate rejects 40/53 BAD curves (75%) with 0 false rejects, saving expensive Gompertz fitting.
 
-93 tests across 6 test files covering Gompertz fitting, Haldane ODE, classification logic, ensemble truncation, GP truncation, bootstrap, MCCV truncation, incomplete curve detection, and integration tests.
+### 15.7 Test suite
+
+114 tests across 7 test files covering Gompertz fitting, Haldane ODE, classification logic, ensemble truncation, GP truncation, bootstrap, MCCV truncation, incomplete curve detection, ML classifier feature extraction, metadata parsing, and integration tests.
 
 ---
 

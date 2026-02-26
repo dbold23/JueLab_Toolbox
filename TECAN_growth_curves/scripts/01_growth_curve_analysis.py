@@ -293,6 +293,9 @@ def classify_by_fit_quality(
         excellent_threshold = thresholds.get('excellent_r2_threshold', 0.98)
         fit_is_excellent = fit_result.r_squared >= excellent_threshold
 
+        # Always compute delta-OD CI (needed for ML features even when bypassed)
+        delta_od_ci_lower = delta_od - 2 * baseline_std
+
         if not fit_is_excellent:
             # SNR filter: signal must meaningfully exceed noise floor
             min_snr = thresholds.get('min_snr', 5.0)
@@ -300,7 +303,6 @@ def classify_by_fit_quality(
                 reasons.append(f"Low SNR: {snr:.1f} < {min_snr}")
 
             # Delta-OD confidence interval: growth must be statistically significant
-            delta_od_ci_lower = delta_od - 2 * baseline_std
             min_delta_od_ci = thresholds.get('min_delta_od_ci', 0.1)
             if delta_od_ci_lower < min_delta_od_ci:
                 reasons.append(f"Delta OD not significant: CI lower={delta_od_ci_lower:.3f} < {min_delta_od_ci}")
@@ -354,6 +356,7 @@ def classify_by_fit_quality(
         metrics['delta_od'] = delta_od
         metrics['baseline_std'] = baseline_std
         metrics['monotone_fraction'] = monotone_frac
+        metrics['delta_od_ci_lower'] = delta_od_ci_lower
 
     is_good = len(reasons) == 0
     reason = "GOOD: Fit quality passed" if is_good else "BAD: " + "; ".join(reasons)
@@ -2332,6 +2335,8 @@ def process_growth_curves(
     truncation_params: Optional[Dict] = None,
     fit_quality_thresholds: Optional[Dict] = None,
     use_fit_based_classification: bool = True,
+    use_ml_classifier: bool = False,
+    ml_classifier_config: Optional[Dict] = None,
     verbose: bool = True,
     no_plots: bool = False
 ) -> Dict[str, ProcessingResult]:
@@ -2368,6 +2373,38 @@ def process_growth_curves(
         truncation_params = TRUNCATION_PARAMS
     if fit_quality_thresholds is None:
         fit_quality_thresholds = FIT_QUALITY_THRESHOLDS
+
+    # Initialize ML classifiers if requested
+    prefit_gate = None
+    postfit_clf = None
+    if use_ml_classifier:
+        try:
+            from ml_classifier import PreFitGate, PostFitClassifier
+            cfg = ml_classifier_config or {}
+            prefit_cfg = cfg.get('prefit_gate', {})
+            postfit_cfg = cfg.get('postfit_classifier', {})
+
+            prefit_gate = PreFitGate(
+                model_path=prefit_cfg.get('model_path'),
+                reject_threshold=prefit_cfg.get('reject_threshold', 0.2),
+            )
+            postfit_clf = PostFitClassifier(
+                model_path=postfit_cfg.get('model_path'),
+                feature_config_path=cfg.get('feature_config_path'),
+                good_threshold=postfit_cfg.get('good_threshold', 0.7),
+                bad_threshold=postfit_cfg.get('bad_threshold', 0.3),
+            )
+            if verbose:
+                gate_status = "active" if prefit_gate.model else "disabled (no model)"
+                clf_status = "active" if postfit_clf.model else "disabled (no model)"
+                print(f"ML classifier: pre-fit gate {gate_status}, post-fit {clf_status}")
+        except Exception as e:
+            fallback = (ml_classifier_config or {}).get('fallback_to_rules', True)
+            if fallback:
+                if verbose:
+                    print(f"ML classifier unavailable ({e}), falling back to rule-based")
+            else:
+                raise
 
     # Create output directories
     os.makedirs(output_dir, exist_ok=True)
@@ -2470,6 +2507,45 @@ def process_growth_curves(
                     )
                     continue
 
+                # ML pre-fit gate: reject obvious junk before expensive fitting
+                if prefit_gate is not None and prefit_gate.should_skip(time_clean, od600_clean, strain_name=strain_name):
+                    classification = ClassificationResult(
+                        is_good=False,
+                        reason="BAD: Rejected by ML pre-fit gate",
+                        metrics={'delta_od': signal_range, 'max_od': float(np.max(od600_clean)),
+                                 'snr': pre_fit_snr, 'ml_classification': 'BAD',
+                                 'p_good': 0.0}
+                    )
+                    truncation = TruncationResult(
+                        truncation_index=len(od600_clean)-1,
+                        truncation_time=float(time_clean[-1]),
+                        max_od=float(np.max(od600_clean)),
+                        time_truncated=time_clean, od_truncated=od600_clean,
+                        time_original=time_clean, od_original=od600_clean,
+                        smoothed_od=od600_clean
+                    )
+                    fit = FitResult(
+                        success=False, a_opt=0, mu_opt=0, lambda_opt=0,
+                        a_err=0, mu_err=0, lambda_err=0,
+                        mae=0, mse=0, rmse=0, r_squared=0,
+                        predicted=np.array([]), residuals=np.array([]),
+                        error_message="Skipped: ML pre-fit gate rejected"
+                    )
+                    if verbose:
+                        print(f"  {strain_name}: BAD (ML pre-fit gate)")
+                    if not no_plots:
+                        plot_bad_curve_with_fit(
+                            time_clean, od600_clean, truncation, fit,
+                            classification, strain_name, plots_dir
+                        )
+                    results[strain_name] = ProcessingResult(
+                        strain_name=strain_name,
+                        classification=classification,
+                        truncation=truncation,
+                        fit=fit
+                    )
+                    continue
+
                 # Check if curve is incomplete (still rising at experiment end)
                 is_incomplete, _ = detect_incomplete_curve(time_clean, od600_clean)
 
@@ -2520,6 +2596,26 @@ def process_growth_curves(
                     classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
                 classification.metrics['max_od'] = np.max(od600_clean)
                 classification.metrics['best_model'] = best_model_name
+
+                # ML post-fit classifier: override rule-based with probability
+                if postfit_clf is not None:
+                    ml_result = postfit_clf.classify(
+                        fit_result=fit,
+                        classification_metrics=classification.metrics,
+                        truncation_time=truncation.truncation_time,
+                        points_used=len(truncation.od_truncated),
+                        strain_name=strain_name,
+                    )
+                    if ml_result is not None:
+                        classification.metrics['p_good'] = ml_result['p_good']
+                        classification.metrics['ml_classification'] = ml_result['ml_classification']
+                        classification.metrics['rule_based_result'] = classification.is_good
+                        classification.metrics['rule_based_reason'] = classification.reason
+                        classification = ClassificationResult(
+                            is_good=ml_result['is_good'],
+                            reason=ml_result['reason'],
+                            metrics=classification.metrics,
+                        )
 
                 if verbose:
                     status = "GOOD" if classification.is_good else "BAD"
@@ -2698,6 +2794,16 @@ def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str)
                 'fit_mae': None,
             })
 
+        # Secondary quality gate features (for ML classifier training)
+        row.update({
+            'baseline_std': metrics.get('baseline_std'),
+            'monotone_fraction': metrics.get('monotone_fraction'),
+            'residual_autocorr': metrics.get('residual_autocorr'),
+            'delta_od_ci_lower': metrics.get('delta_od_ci_lower'),
+            'p_good': metrics.get('p_good'),
+            'ml_classification': metrics.get('ml_classification'),
+        })
+
         rows.append(row)
 
     df = pd.DataFrame(rows)
@@ -2794,8 +2900,21 @@ def main():
         action='store_true',
         help='Skip generating per-curve plots (faster for batch/validation runs)'
     )
+    parser.add_argument(
+        '--ml-classify',
+        action='store_true',
+        help='Use pre-trained ML classifier (requires models/ directory with trained models)'
+    )
 
     args = parser.parse_args()
+
+    # Load config.yaml for ML classifier settings
+    config = {}
+    config_path = Path(__file__).parent / 'config.yaml'
+    if config_path.exists():
+        import yaml
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
 
     # Build threshold dict for OD-based classification
     thresholds = {
@@ -2834,6 +2953,12 @@ def main():
     else:
         print("Using FIRST PEAK truncation")
 
+    # Load ML classifier config if requested
+    ml_config = None
+    if args.ml_classify:
+        print("Using ML CLASSIFIER")
+        ml_config = config.get('ml_classifier', {}) if config else {}
+
     results = process_growth_curves(
         data_dir=args.data_dir,
         output_dir=args.output,
@@ -2841,6 +2966,8 @@ def main():
         truncation_params=truncation_params,
         fit_quality_thresholds=fit_thresholds,
         use_fit_based_classification=use_fit_based,
+        use_ml_classifier=args.ml_classify,
+        ml_classifier_config=ml_config,
         verbose=not args.quiet,
         no_plots=args.no_plots
     )
