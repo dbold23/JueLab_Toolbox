@@ -2570,17 +2570,24 @@ def process_growth_curves(
                     if verbose:
                         print(f"    Truncation invalid: {trunc_reason}")
                     classification = ClassificationResult(
-                        is_good=False, confidence=0.0,
+                        is_good=False,
                         reason=f"BAD: {trunc_reason}",
                         metrics={'delta_od': float(np.max(od600_clean) - np.mean(od600_clean[:5])),
                                  'max_od': float(np.max(od600_clean))}
                     )
-                    fit = FitResult(success=False, error_message=trunc_reason)
-                    results.append(dict(
-                        strain=strain_name, file=csv_file.name,
-                        classification=classification, truncation=truncation,
+                    fit = FitResult(
+                        success=False, a_opt=0, mu_opt=0, lambda_opt=0,
+                        a_err=0, mu_err=0, lambda_err=0,
+                        mae=0, mse=0, rmse=0, r_squared=0,
+                        predicted=np.array([]), residuals=np.array([]),
+                        error_message=trunc_reason
+                    )
+                    results[strain_name] = ProcessingResult(
+                        strain_name=strain_name,
+                        classification=classification,
+                        truncation=truncation,
                         fit=fit
-                    ))
+                    )
                     continue
 
                 # Step 2: Attempt Gompertz fit
