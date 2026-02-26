@@ -1,0 +1,72 @@
+{
+  "prefit_feature_names": [
+    "raw_delta_od",
+    "raw_max_od",
+    "raw_snr",
+    "raw_monotone_fraction",
+    "raw_baseline_std",
+    "raw_baseline_mean",
+    "n_points",
+    "time_span",
+    "is_control",
+    "concentration_numeric"
+  ],
+  "postfit_feature_names": [
+    "fit_r_squared",
+    "fit_rmse",
+    "fit_mae",
+    "a_err_pct",
+    "mu_err_pct",
+    "snr",
+    "delta_od",
+    "max_od",
+    "points_used",
+    "gompertz_a",
+    "gompertz_mu",
+    "gompertz_lambda",
+    "truncation_time",
+    "baseline_std",
+    "monotone_fraction",
+    "residual_autocorr",
+    "delta_od_ci_lower",
+    "mu_over_a",
+    "lambda_over_trunc_time",
+    "rmse_over_delta_od",
+    "err_product",
+    "points_per_hour",
+    "is_control",
+    "concentration_numeric"
+  ],
+  "prefit_metrics": {
+    "accuracy": 0.9417721518987341,
+    "precision": 0.996078431372549,
+    "recall": 0.9191245791245791,
+    "f1": 0.9560041655846749,
+    "specificity": 0.992,
+    "accuracy_std": 0.006201239855147265,
+    "precision_std": 0.007843137254901978,
+    "recall_std": 0.008909271600560925,
+    "f1_std": 0.0048322702836714705,
+    "specificity_std": 0.016000000000000014
+  },
+  "postfit_metrics": {
+    "accuracy": 0.9873417721518989,
+    "precision": 0.9963636363636363,
+    "recall": 0.9853198653198654,
+    "f1": 0.9907218279383765,
+    "specificity": 0.992,
+    "accuracy_std": 0.008005766228274386,
+    "precision_std": 0.007272727272727275,
+    "recall_std": 0.013822932873611008,
+    "f1_std": 0.005967917391522656,
+    "specificity_std": 0.016000000000000014
+  },
+  "postfit_feature_importance": {},
+  "training_date": "2026-02-26T14:04:47.929851",
+  "n_training_samples": 565,
+  "class_distribution": {
+    "GOOD": 389,
+    "BAD": 176
+  },
+  "model_type": "HistGradientBoostingClassifier"
+}

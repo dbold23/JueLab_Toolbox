@@ -160,3 +160,19 @@ advanced:
 
   # Output
   output_dir: results/tables/Advanced_Analysis
+
+# =============================================================================
+# ML Classifier (09_train_classifier.py, ml_classifier.py)
+# =============================================================================
+
+ml_classifier:
+  enabled: false                                   # Use ML classifier (requires trained models)
+  prefit_gate:
+    model_path: models/prefit_gate.joblib           # Pre-fit gate model
+    reject_threshold: 0.05                          # P(good) <= this → skip fitting (conservative)
+  postfit_classifier:
+    model_path: models/postfit_classifier.joblib    # Post-fit classifier model
+    good_threshold: 0.7                             # P(good) >= this → GOOD
+    bad_threshold: 0.3                              # P(good) <= this → BAD
+  feature_config_path: models/feature_config.json
+  fallback_to_rules: true                           # Fall back to rule-based if models missing
