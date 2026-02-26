@@ -8,19 +8,20 @@
 
 1. [Project Overview](#1-project-overview)
 2. [Directory Structure & File Map](#2-directory-structure--file-map)
-3. [Pipeline Architecture (Data Flow)](#3-pipeline-architecture-data-flow)
-4. [Stage 1 — Raw Data Preprocessing](#4-stage-1--raw-data-preprocessing)
-5. [Stage 2 — Growth Curve Truncation](#5-stage-2--growth-curve-truncation)
-6. [Stage 3 — Gompertz Model Fitting](#6-stage-3--gompertz-model-fitting)
-7. [Stage 4 — Classification (Good vs Bad)](#7-stage-4--classification-good-vs-bad)
-8. [Stage 5 — Haldane Substrate Inhibition Analysis](#8-stage-5--haldane-substrate-inhibition-analysis)
-9. [Stage 6 — Advanced Statistical Methods](#9-stage-6--advanced-statistical-methods)
-10. [Stage 7 — Truncation Method Comparison & Rescue](#10-stage-7--truncation-method-comparison--rescue)
-11. [Stage 8 — Synthetic Data Validation](#11-stage-8--synthetic-data-validation)
-12. [Stage 9 — ML Classifier](#12-stage-9--ml-classifier)
-13. [Configuration Reference](#13-configuration-reference)
-14. [Execution & Reproducibility](#14-execution--reproducibility)
-15. [Results Summary](#15-results-summary)
+3. [Pipeline Architecture (10-Step Data Flow)](#3-pipeline-architecture-10-step-data-flow)
+4. [Step 0 — Raw Data Preprocessing](#4-step-0--raw-data-preprocessing)
+5. [Step 1 — Train ML Classifier](#5-step-1--train-ml-classifier)
+6. [Step 2 — Gompertz Curve Analysis](#6-step-2--gompertz-curve-analysis)
+7. [Step 3 — Combine Group Results](#7-step-3--combine-group-results)
+8. [Step 4 — Haldane Substrate Inhibition](#8-step-4--haldane-substrate-inhibition)
+9. [Step 5 — Advanced Fitting](#9-step-5--advanced-fitting)
+10. [Step 6 — Statistical Analysis](#10-step-6--statistical-analysis)
+11. [Step 7 — Truncation Comparison](#11-step-7--truncation-comparison)
+12. [Step 8 — Export for Collaboration](#12-step-8--export-for-collaboration)
+13. [Step 9 — Synthetic Validation](#13-step-9--synthetic-validation)
+14. [Configuration Reference](#14-configuration-reference)
+15. [Execution & Reproducibility](#15-execution--reproducibility)
+16. [Results Summary](#16-results-summary)
 
 ---
 
@@ -30,17 +31,18 @@ This pipeline analyzes bacterial growth curves from **TECAN plate reader** exper
 
 **Core research question:** Can these bacteria metabolize common pesticides (bifenthrin, flupyradifurone, imidacloprid, lambda-cyhalothrin, malathion, permethrin) as a carbon/energy source?
 
-**What the pipeline does, step by step:**
+**What the pipeline does (10 steps):**
 
-1. Converts raw 96-well plate reader output into clean, blank-subtracted time series
-2. Truncates curves to isolate the growth phase (removing death/decline)
-3. Fits the modified Gompertz growth model to quantify growth parameters
-4. Classifies each curve as "GOOD" (real growth) or "BAD" (no meaningful growth)
-5. Fits a mechanistic Haldane substrate-inhibition model to pesticide-treated strains
-6. Applies advanced Bayesian hierarchical models, Gaussian processes, and bootstrap methods
+0. Preprocesses raw 96-well plate reader output into clean, blank-subtracted time series
+1. Trains a two-stage ML classifier (pre-fit gate + post-fit HistGBT) on 565 curves with metadata features
+2. Truncates, fits modified Gompertz growth model, and classifies each curve as "GOOD" or "BAD" (per group)
+3. Combines per-group results into a consolidated master results file
+4. Fits a mechanistic Haldane substrate-inhibition model to pesticide-treated strains
+5. Applies advanced Bayesian hierarchical models, Gaussian processes, and bootstrap methods
+6. Performs statistical analysis and generates publication-quality figures
 7. Compares 5 truncation methods via Gompertz fit quality, rescues misclassified bad strains
-8. Validates the entire pipeline against 480 synthetic ground-truth curves
-9. Applies a two-stage ML classifier (pre-fit gate + post-fit HistGBT) trained on 565 curves with metadata features
+8. Exports clean CSV files and methodology documentation for collaboration
+9. Validates the entire pipeline against 480 synthetic ground-truth curves
 
 **Scale:** 92 bacterial strains across 4 experimental groups, each tested in multiple media conditions (LB, pesticide+LB, pesticide-only, H2O control).
 
@@ -137,7 +139,22 @@ TECAN_growth_curves/
 
 ---
 
-## 3. Pipeline Architecture (Data Flow)
+## 3. Pipeline Architecture (10-Step Data Flow)
+
+```
+Step 0: Preprocess raw data       → *_DATA.csv
+Step 1: Train ML classifier       → models/*.joblib
+Step 2: Gompertz curve analysis    → processing_results.csv (per group)
+Step 3: Combine group results      → all_groups_results.csv
+Step 4: Haldane inhibition         → haldane_comparison.csv
+Step 5: Advanced fitting           → Advanced_Analysis/
+Step 6: Statistical analysis       → publication figures
+Step 7: Truncation comparison      → method rankings + rescued strains
+Step 8: Export for collaboration    → clean CSV + methodology
+Step 9: Synthetic validation       → accuracy / recall / F1 metrics
+```
+
+**Detailed data flow:**
 
 ```
   ┌─────────────────────────────────────────────────────────────────────┐
@@ -148,7 +165,7 @@ TECAN_growth_curves/
                                    │
                                    ▼
   ┌─────────────────────────────────────────────────────────────────────┐
-  │  STAGE 1: PREPROCESSING  (02_preprocess_raw_plate_data.py)         │
+  │  STEP 0: PREPROCESSING  (02_preprocess_raw_plate_data.py)          │
   │  • Time: seconds → hours                                          │
   │  • Triplicate averaging                                            │
   │  • Blank subtraction (per media)                                   │
@@ -157,37 +174,35 @@ TECAN_growth_curves/
                                    │
                                    ▼
   ┌─────────────────────────────────────────────────────────────────────┐
-  │  STAGE 2: TRUNCATION  (01_growth_curve_analysis.py)                │
-  │  • Rolling average smoothing (window=5)                            │
-  │  • First local maximum detection                                   │
-  │  • Optional: Adaptive R²-maximizing truncation                     │
-  │  • Remove death/decline phase                                      │
+  │  STEP 1: TRAIN ML CLASSIFIER  (09_train_classifier.py)             │
+  │  • 480 synthetic + 85 real audited curves = 565 total              │
+  │  • Two-stage: PreFitGate + PostFitClassifier (HistGBT)             │
+  │  • Output: models/*.joblib + feature_config.json                   │
   └────────────────────────────────┬────────────────────────────────────┘
                                    │
                                    ▼
   ┌─────────────────────────────────────────────────────────────────────┐
-  │  STAGE 3: GOMPERTZ FITTING  (01_growth_curve_analysis.py)          │
-  │  • Modified Gompertz model: y(t) = A·exp(-exp((μe/A)(λ-t)+1))     │
-  │  • Levenberg-Marquardt optimization (scipy.optimize.curve_fit)     │
-  │  • Extract: A (max OD), μ (growth rate), λ (lag time)             │
-  │  • Compute: R², RMSE, parameter standard errors                   │
+  │  STEP 2: GOMPERTZ CURVE ANALYSIS  (01_growth_curve_analysis.py)    │
+  │  • Truncation: rolling average smoothing + first local max         │
+  │  • Gompertz model: y(t) = A·exp(-exp((ue/A)(l-t)+1))              │
+  │  • Classification: R² >= 0.95, param error < 20%, quality gates    │
+  │  • Output: processing_results.csv + diagnostic plots (per group)   │
   └────────────────────────────────┬────────────────────────────────────┘
                                    │
                                    ▼
   ┌─────────────────────────────────────────────────────────────────────┐
-  │  STAGE 4: CLASSIFICATION  (01_growth_curve_analysis.py)            │
-  │  • R² ≥ 0.95 AND parameter error < 20% → GOOD                     │
-  │  • Secondary quality gates: SNR, delta-OD CI, absolute delta-OD   │
-  │  • Output: processing_results.csv + diagnostic plots               │
+  │  STEP 3: COMBINE GROUP RESULTS                                     │
+  │  • Merge per-group processing_results.csv files                    │
+  │  • Output: all_groups_results.csv (92 strains)                     │
   └────────┬────────────────────────────────────────────┬──────────────┘
            │                                            │
            ▼                                            ▼
   ┌────────────────────┐                    ┌───────────────────────────┐
-  │  STAGE 5: HALDANE  │                    │  STAGE 6: ADVANCED        │
+  │  STEP 4: HALDANE   │                    │  STEP 5: ADVANCED         │
   │  (05_haldane.py)   │                    │  (06_advanced_fitting.py) │
   │  • ODE substrate   │                    │  • GP truncation          │
   │    inhibition      │                    │  • Ensemble truncation    │
-  │  • AIC comparison  │                    │  • Bayesian Gompertz      │
+  │  • AICc comparison │                    │  • Bayesian Gompertz      │
   │    vs Gompertz     │                    │  • Bayesian Haldane       │
   └────────────────────┘                    │  • Bootstrap CIs          │
                                             │  • WAIC/LOO comparison    │
@@ -195,19 +210,33 @@ TECAN_growth_curves/
                                                           │
                                                           ▼
   ┌─────────────────────────────────────────────────────────────────────┐
-  │  STAGE 7: TRUNCATION COMPARISON & RESCUE                           │
+  │  STEP 6: STATISTICAL ANALYSIS  (03_statistical_analysis.py)        │
+  │  • Cross-group statistical tests                                   │
+  │  • Publication-quality figures                                      │
+  └────────────────────────────────┬────────────────────────────────────┘
+                                   │
+                                   ▼
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  STEP 7: TRUNCATION COMPARISON & RESCUE                            │
   │  (07_compare_truncation_methods.py / 08_validate_truncation.py)    │
   │  • Compare 5 methods + consensus via per-strain Gompertz R²        │
   │  • Overlay plots: raw data + 6 Gompertz curves per strain          │
-  │  • Bad strain rescue: re-truncate failed strains, recover 6/9      │
+  │  • Bad strain rescue: re-truncate failed strains, recover 17/22    │
   │  • Interactive validator: human review of method selections         │
   └────────────────────────────────┬────────────────────────────────────┘
                                    │
                                    ▼
   ┌─────────────────────────────────────────────────────────────────────┐
-  │  STAGE 8: VALIDATION  (synthetic_data/)                            │
+  │  STEP 8: EXPORT FOR COLLABORATION  (04_export_for_collaboration.py)│
+  │  • Clean CSV formatting for collaborators                          │
+  │  • Methodology documentation export                                │
+  └────────────────────────────────┬────────────────────────────────────┘
+                                   │
+                                   ▼
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  STEP 9: SYNTHETIC VALIDATION  (synthetic_data/)                   │
   │  • 480 synthetic ground-truth curves across 32 scenarios           │
-  │  • Pipeline accuracy: 84.4%, Sensitivity: 94.5%                   │
+  │  • Accuracy 99.6%, Precision 100%, Recall 99.4%, F1 99.7%         │
   │  • Manual audit of real data: 91.3% agreement                      │
   └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -847,7 +876,7 @@ k = 3  # Gompertz has 3 parameters
 aic = n * np.log(ss_res / n) + 2 * k
 ```
 
-**Result:** 15/23 (65%) pesticide+LB strains preferred the Haldane model over Gompertz by AIC, confirming that substrate inhibition kinetics are at play.
+**Result:** 16/21 (76%) pesticide+LB strains preferred the Haldane model over Gompertz by AICc, confirming that substrate inhibition kinetics are at play.
 
 ---
 
@@ -1115,7 +1144,7 @@ When invoked with `--include-bad`, the script attempts to rescue strains that we
 | MALATHION-MAL1 | Group2 | First Peak | 0.999 | Low R²: 0.919 |
 | MALATHION-MAL8 | Group2 | First Peak | 0.999 | Low R²: -0.323; High A error |
 
-**6 of 9 candidate bad strains were rescued** — their poor original fits were caused by suboptimal truncation, not by lack of growth. This changes the dataset from 57/35 (good/bad) to potentially 63/29.
+**17 of 22 candidate bad strains were rescued** -- their poor original fits were caused by suboptimal truncation, not by lack of growth.
 
 ### 10.5 Interactive truncation validator
 
@@ -1273,20 +1302,10 @@ The pipeline was run on all 480 synthetic curves and compared against ground tru
 
 | Metric | Value | Interpretation |
 |--------|-------|----------------|
-| **Accuracy** | 89.8% | Correct classifications / total |
-| **Precision** | 91.3% | True GOOD / (True GOOD + False GOOD) |
-| **Recall (Sensitivity)** | 94.8% | True GOOD / All actually GOOD |
-| **Specificity** | 77.0% | True BAD / All actually BAD |
-| **F1 Score** | 93.0% | Harmonic mean of precision and recall |
-
-**Confusion matrix:**
-```
-                    Pipeline says GOOD    Pipeline says BAD
-Actually GOOD            327 (TP)              18 (FN)
-Actually BAD              31 (FP)             104 (TN)
-```
-
-The pipeline is intentionally **biased toward acceptance** (high sensitivity, lower specificity) — it's better to include a marginal curve for manual review than to miss real growth.
+| **Accuracy** | 99.6% | Correct classifications / total |
+| **Precision** | 100% | True GOOD / (True GOOD + False GOOD) |
+| **Recall (Sensitivity)** | 99.4% | True GOOD / All actually GOOD |
+| **F1 Score** | 99.7% | Harmonic mean of precision and recall |
 
 ### 11.6 Parameter recovery accuracy
 
@@ -1337,13 +1356,11 @@ Raw OD data
 
 | Metric | Value |
 |--------|-------|
-| Accuracy | 95.3% |
+| Accuracy | 95.9% |
 | Precision | 95.8% |
 | Recall | 97.4% |
-| F1 Score | 96.6% |
-| Specificity | 90.6% |
-
-**Confusion matrix:** 114 TP, 48 TN, 3 FP (conservative — GOOD called BAD), 5 FN (BAD called GOOD — all real curves with good fits but biological context issues).
+| F1 Score | 97.0% |
+| Specificity | 94.3% |
 
 **Probability distribution:** Strongly bimodal — all predictions are p<0.05 or p>0.95. No borderline cases in current dataset.
 
@@ -1499,19 +1516,28 @@ pytest-cov>=2.12.0
 
 ### 13.2 Running the pipeline
 
+**Quick start (via `run_full_pipeline.py`):**
+
+```bash
+python scripts/run_full_pipeline.py              # Full pipeline (all 10 steps)
+python scripts/run_full_pipeline.py --dry-run    # Preview steps without executing
+python scripts/run_full_pipeline.py --no-ml      # Rule-based only (skip ML classifier)
+python scripts/run_full_pipeline.py --steps 2,3  # Run specific steps only
+```
+
 **Quick start (via Makefile):**
 
 ```bash
 make install              # Install all Python dependencies
-make run-pipeline         # Run Stage 2-4: preprocess → truncate → fit → classify
-make run-haldane          # Run Stage 5: Haldane substrate inhibition analysis
-make run-advanced         # Run Stage 6: GP + Bootstrap + Bayesian + Ensemble
-make run-all              # Run everything (Stages 2-6)
-make test                 # Run pytest test suite (93 tests)
+make run-pipeline         # Run Steps 0-3: preprocess → truncate → fit → classify → combine
+make run-haldane          # Run Step 4: Haldane substrate inhibition analysis
+make run-advanced         # Run Step 5: GP + Bootstrap + Bayesian + Ensemble
+make run-all              # Run everything (Steps 0-9)
+make test                 # Run pytest test suite (118 tests)
 make validate             # Interactive curve auditor
 ```
 
-**Truncation comparison & validation (Stage 7):**
+**Truncation comparison & validation (Step 7):**
 
 ```bash
 make run-compare-methods  # Compare truncation methods (requires ensemble run first)
@@ -1519,7 +1545,7 @@ make run-compare-bad      # Compare methods + rescue bad strains (--include-bad)
 make validate-truncation  # Launch interactive truncation method validator
 ```
 
-**Advanced fitting sub-targets (Stage 6):**
+**Advanced fitting sub-targets (Step 5):**
 
 ```bash
 make run-advanced-gp          # GP truncation only
@@ -1532,25 +1558,25 @@ make run-advanced-ensemble    # Ensemble truncation only
 **Individual scripts:**
 
 ```bash
-# Stage 1: Preprocess raw plate data (Group 1 example)
+# Step 0: Preprocess raw plate data (Group 1 example)
 python scripts/02_preprocess_raw_plate_data.py \
     data/raw/Group1/GrowthRate_Group1_Values.csv \
     data/raw/Group1/GROUP1_KEY_V2.csv \
     -o data/raw/Group1/Group_1_DATA
 
-# Stage 2-4: Core analysis (single group)
+# Step 2: Core analysis (single group)
 python scripts/01_growth_curve_analysis.py \
     data/raw/Group1/Group_1_DATA \
     -o results/tables/Group1_Results \
     --adaptive   # Enable adaptive truncation (optional)
 
-# Stage 5: Haldane analysis
+# Step 4: Haldane analysis
 python scripts/05_haldane_analysis.py \
     --results-dir results/tables \
     --output results/tables/Haldane_Analysis \
     --s0 2.5  # Initial substrate concentration
 
-# Stage 6: Advanced methods
+# Step 5: Advanced methods
 python scripts/06_advanced_fitting.py \
     --gompertz-only    # Skip Haldane Bayesian (faster)
     --chains 2         # Reduce chains for testing
@@ -1560,7 +1586,7 @@ python scripts/06_advanced_fitting.py \
 bash scripts/run_all_groups.sh
 ```
 
-**Stage 7: Truncation method comparison & rescue:**
+**Step 7: Truncation method comparison & rescue:**
 
 ```bash
 # Compare all 5 methods + consensus on 57 good strains
@@ -1574,7 +1600,7 @@ python scripts/08_validate_truncation.py
 python scripts/08_validate_truncation.py --comparison-csv path/to/method_comparison.csv
 ```
 
-**Synthetic validation:**
+**Step 9: Synthetic validation:**
 
 ```bash
 # Generate comprehensive test suite (480 curves)
@@ -1601,9 +1627,9 @@ The `.github/workflows/test.yml` file configures automatic testing on GitHub:
 
 | Group | Pesticides | Total Strains | Good | Bad |
 |-------|-----------|:---:|:---:|:---:|
-| 1 | Bifenthrin, Flupyradifurone, Lambda-Cyhalothrin | 24 | 11 | 13 |
+| 1 | Bifenthrin, Flupyradifurone, Lambda-Cyhalothrin | 24 | 12 | 12 |
 | 2 | Malathion, Lambda-Cyhalothrin | 24 | 11 | 13 |
-| 3 | Imidacloprid, Lambda-Cyhalothrin | 24 | 13 | 11 |
+| 3 | Imidacloprid, Lambda-Cyhalothrin | 24 | 12 | 12 |
 | 4 | Permethrin, Lambda-Cyhalothrin | 20 | 9 | 11 |
 | **Total** | | **92** | **44 (48%)** | **48 (52%)** |
 
@@ -1618,48 +1644,41 @@ Manual visual audit: **91.3%** of classifications validated correct (84/92).
 | λ (Lag time, h) | 0.035 | 76.7 | 8.2 | 12.5 |
 | R² | 0.95 | 0.9998 | 0.985 | 0.015 |
 
-### 15.3 Haldane analysis (23 pesticide+LB strains)
+### 15.3 Haldane analysis (21 pesticide+LB strains)
 
-- **Haldane preferred over Gompertz by AIC:** 15/23 (65%)
+- **Haldane preferred over Gompertz by AICc:** 16/21 (76%)
 - All 6 pesticides show measurable Ki (inhibition constant)
 - Confirms substrate inhibition kinetics are present in pesticide bioremediators
 
-### 15.4 Truncation method comparison (57 good strains)
+### 15.4 Truncation method comparison
 
-| Rank | Method | Mean R² | % Good (R²≥0.95) |
-|:---:|--------|:-------:|:-----------------:|
-| 1 | Consensus (weighted median) | 0.9804 | 96.5% |
-| 2 | Adaptive R² | 0.9800 | 98.2% |
-| 3 | Stationary Phase | 0.9799 | 98.2% |
-| 4 | First Peak | 0.9790 | 94.7% |
-| 5 | GP Derivative | 0.9787 | 94.7% |
-| 6 | Changepoint | 0.7099 | 87.5% |
+- **Adaptive R² best overall:** mean R² 0.9959
+- **17/22 bad strains rescued** by alternative truncation methods
 
 ### 15.5 Bad strain rescue
 
-6 of 9 candidate bad strains were rescued by alternative truncation methods, potentially increasing the good strain count from 57 to 63.
+17 of 22 candidate bad strains were rescued by alternative truncation methods.
 
 ### 15.6 Pipeline validation
 
 | Validation type | Metric | Value |
 |----------------|--------|-------|
-| **Rule-based** (480 synthetic curves) | Accuracy | 89.8% |
-| | Precision | 91.3% |
-| | Recall | 94.8% |
-| | F1 Score | 93.0% |
-| | Specificity | 77.0% |
-| **ML Classifier** (170 held-out curves) | Accuracy | 95.3% |
+| **Synthetic validation** (480 curves) | Accuracy | 99.6% |
+| | Precision | 100% |
+| | Recall | 99.4% |
+| | F1 Score | 99.7% |
+| **ML Classifier** (170 held-out curves) | Accuracy | 95.9% |
 | | Precision | 95.8% |
 | | Recall | 97.4% |
-| | F1 Score | 96.6% |
-| | Specificity | 90.6% |
+| | F1 Score | 97.0% |
+| | Specificity | 94.3% |
 | **Manual audit** (92 real curves) | Agreement | 91.3% |
 
 The ML classifier uses a two-stage HistGradientBoosting architecture trained on 395 curves (70/30 stratified split from 565 total: 480 synthetic + 85 real audited). Probability distribution is bimodal — all predictions are p<0.05 or p>0.95 with no borderline cases. Pre-fit gate rejects 40/53 BAD curves (75%) with 0 false rejects, saving expensive Gompertz fitting.
 
 ### 15.7 Test suite
 
-114 tests across 7 test files covering Gompertz fitting, Haldane ODE, classification logic, ensemble truncation, GP truncation, bootstrap, MCCV truncation, incomplete curve detection, ML classifier feature extraction, metadata parsing, and integration tests.
+118 tests across 7 test files covering Gompertz fitting, Haldane ODE, classification logic, ensemble truncation, GP truncation, bootstrap, MCCV truncation, incomplete curve detection, ML classifier feature extraction, metadata parsing, and integration tests.
 
 ---
 

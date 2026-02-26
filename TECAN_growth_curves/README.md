@@ -9,18 +9,28 @@ Automated pipeline for fitting growth models to TECAN plate reader data, classif
 ```bash
 pip install -r scripts/requirements.txt
 
-# Run full pipeline (Gompertz fits + Haldane analysis)
-make run-all
+# Recommended: run the full 10-step pipeline
+make full-pipeline    # Complete end-to-end (10 steps)
+make core-pipeline    # Core only (skip GP/Ensemble)
+make dry-run          # Preview without running
+make step-2           # Run individual step
+```
 
-# Or step by step
-make run-pipeline         # Gompertz fits for all 4 groups
-make run-haldane          # Haldane feedback inhibition analysis
-make run-advanced         # Advanced stats (GP, Bayesian, Bootstrap, Ensemble)
-make run-compare-methods  # Compare truncation methods on good strains
-make run-compare-bad      # Compare methods + rescue bad strains
-make validate-truncation  # Interactive truncation method validator
-make train-classifier     # Train ML classifier on synthetic + real data
-make test                 # Run test suite (114 tests)
+## Pipeline Flow
+
+The pipeline is orchestrated by `scripts/run_full_pipeline.py` and executes 10 steps in order:
+
+```
+Step 0: Preprocess raw data       (Group 1 only, if needed)
+Step 1: Train ML classifier       (auto-skips if models/ exist)
+Step 2: Gompertz curve analysis    (per group, --adaptive, with ML)
+Step 3: Combine group results      (-> all_groups_results.csv)
+Step 4: Haldane inhibition         (ODE + AICc comparison)
+Step 5: Advanced fitting           (GP, Bootstrap, Ensemble)
+Step 6: Statistical analysis       (ANOVA, pairwise, figures)
+Step 7: Truncation comparison      (5-method ranking + rescue)
+Step 8: Export for collaboration    (clean CSV + methodology)
+Step 9: Synthetic validation       (480 curves -> accuracy metrics)
 ```
 
 ## What This Does
@@ -51,9 +61,9 @@ make test                 # Run test suite (114 tests)
 
 | Group | Pesticides | Total | Good | Bad |
 |-------|-----------|-------|------|-----|
-| Group 1 | Bifenthrin, Flupyradifurone, Lambda-Cyhalothrin | 24 | 11 | 13 |
+| Group 1 | Bifenthrin, Flupyradifurone, Lambda-Cyhalothrin | 24 | 12 | 12 |
 | Group 2 | Malathion, Lambda-Cyhalothrin | 24 | 11 | 13 |
-| Group 3 | Imidacloprid, Lambda-Cyhalothrin | 24 | 13 | 11 |
+| Group 3 | Imidacloprid, Lambda-Cyhalothrin | 24 | 12 | 12 |
 | Group 4 | Permethrin, Lambda-Cyhalothrin | 20 | 9 | 11 |
 | **Total** | | **92** | **44** | **48** |
 
@@ -63,18 +73,16 @@ Manual visual audit: **91.3%** of classifications validated correct (84/92).
 
 | Rank | Method | Mean R² | % Good (R²≥0.95) |
 |:---:|--------|:-------:|:-----------------:|
-| 1 | Consensus | 0.9804 | 96.5% |
-| 2 | Adaptive R² | 0.9800 | 98.2% |
-| 3 | Stationary Phase | 0.9799 | 98.2% |
-| 4 | First Peak | 0.9790 | 94.7% |
-| 5 | GP Derivative | 0.9787 | 94.7% |
-| 6 | Changepoint | 0.7099 | 87.5% |
+| 1 | Adaptive R² | 0.9959 | 100% |
+| 2 | Consensus | 0.9942 | 100% |
+| 3 | Stationary Phase | 0.9911 | 100% |
+| 4 | First Peak | 0.8355 | 93% |
 
-**Bad strain rescue:** 6 of 9 candidate strains rescued by alternative truncation (potential 57→63 good strains).
+**Bad strain rescue:** 17 of 22 candidate strains rescued by alternative truncation.
 
-### Haldane Analysis (23 pesticide+LB strains) (uses S0=1.0 until real substrate [] known)
+### Haldane Analysis (21 pesticide+LB strains) (uses S0=1.0 until real substrate [] known)
 
-- Haldane model preferred over Gompertz for **15/23 strains (65%)** by AIC
+- Haldane model preferred over Gompertz for **16/21 strains (76%)** by AIC
 - All 6 pesticides show measurable inhibition constants (Ki)
 - Confirms substrate inhibition kinetics are present in pesticide treatment conditions
 
@@ -82,25 +90,24 @@ Manual visual audit: **91.3%** of classifications validated correct (84/92).
 
 | Metric | Value |
 |--------|-------|
-| Accuracy | 89.8% |
-| Precision | 91.3% |
-| Recall | 94.8% |
-| F1 Score | 93.0% |
-| Specificity | 77.0% |
+| Accuracy | 99.6% |
+| Precision | 100% |
+| Recall | 99.4% |
+| F1 Score | 99.7% |
 
-25/32 test scenarios achieve 100% accuracy.
+Only 2 failures out of 480 synthetic curves.
 
 ### ML Classifier (held-out 30% test set, 170 curves never seen during training)
 
 | Metric | Value |
 |--------|-------|
-| Accuracy | 95.3% |
-| Precision | 95.8% |
-| Recall | 97.4% |
-| F1 Score | 96.6% |
-| Specificity | 90.6% |
+| Accuracy | 95.9% |
+| Precision | 97.4% |
+| Recall | 96.6% |
+| F1 Score | 97.0% |
+| Specificity | 94.3% |
 
-Trained on 395 curves (345 synthetic + 50 real). Bimodal confidence: all predictions are p<0.05 or p>0.95 (no borderline cases). Pre-fit gate at threshold 0.20 rejects 40/53 BAD curves with 0 false rejects.
+Pre-fit gate at threshold 0.20 rejects 40/170 with 0 false rejects.
 
 ### Advanced Analysis
 
@@ -128,6 +135,7 @@ TECAN_growth_curves/
 │   ├── 07_compare_truncation_methods.py # Truncation method comparison & bad strain rescue
 │   ├── 08_validate_truncation.py        # Interactive truncation method validator
 │   ├── 09_train_classifier.py           # ML classifier training (70/30 split)
+│   ├── run_full_pipeline.py             # Master orchestrator (10-step pipeline)
 │   ├── ml_classifier.py                 # ML classifier runtime module
 │   ├── validate_results_interactive.py  # Interactive curve auditor
 │   ├── run_all_groups.sh                # Batch runner
@@ -149,13 +157,13 @@ TECAN_growth_curves/
 ├── models/                              # Trained ML classifiers (joblib, gitignored)
 │   └── feature_config.json              # Feature names + training metrics (committed)
 ├── synthetic_data/                      # 480-curve validation suite
-├── tests/                               # pytest suite (114 tests)
-├── Makefile                             # make install / test / run-all (18 targets)
+├── tests/                               # pytest suite (118 tests)
+├── Makefile                             # make install / test / full-pipeline (20+ targets)
 └── .github/workflows/test.yml           # CI (Python 3.10-3.12)
 ```
 
 ## Detailed Documentation
 
-See [PIPELINE_METHODOLOGY.md](PIPELINE_METHODOLOGY.md) for comprehensive methodology documentation covering all 8 pipeline stages, mathematical formulations, algorithm details, and results.
+See [PIPELINE_METHODOLOGY.md](PIPELINE_METHODOLOGY.md) for comprehensive methodology documentation covering all 10 pipeline stages, mathematical formulations, algorithm details, and results.
 
 See [scripts/README.md](scripts/README.md) for full usage, all CLI options, model equations, classification methods, truncation strategies, output column descriptions, and troubleshooting.

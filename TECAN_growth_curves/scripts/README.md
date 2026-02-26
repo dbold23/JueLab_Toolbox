@@ -12,8 +12,14 @@ This folder is **self-contained** with all scripts and raw data needed to reprod
 # 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Run the complete pipeline
-./run_all_groups.sh
+# 2. Run the complete 10-step pipeline
+python run_full_pipeline.py
+
+# Or use make
+make full-pipeline          # All 10 steps
+make core-pipeline          # Skip advanced (GP/Ensemble)
+make dry-run                # Preview what would run
+make step-2                 # Run specific step
 
 # Results will be in OUTPUT/
 ```
@@ -35,7 +41,8 @@ TECAN_growth_curves/
 │   ├── 09_train_classifier.py           # ML classifier training (70/30 holdout)
 │   ├── ml_classifier.py                 # ML classifier runtime (PreFitGate + PostFitClassifier)
 │   ├── validate_results_interactive.py  # Interactive curve validation tool
-│   ├── run_all_groups.sh                # Batch processing script
+│   ├── run_full_pipeline.py              # Master 10-step pipeline orchestrator
+│   ├── run_all_groups.sh                # Legacy batch processing script
 │   ├── config.yaml                      # Centralized threshold configuration
 │   └── requirements.txt                 # Python dependencies
 ├── data/raw/                            # Raw experimental data
@@ -135,9 +142,21 @@ python 02_preprocess_raw_plate_data.py \
 
 ---
 
-### 3. `run_all_groups.sh` - Batch Processing Script
+### 3. `run_full_pipeline.py` - Master Pipeline Orchestrator (Recommended)
 
-Runs the complete analysis pipeline for all groups automatically.
+The recommended way to run the complete pipeline. Orchestrates all 10 steps with dependency tracking, dry-run preview, and individual step execution.
+
+```bash
+python run_full_pipeline.py            # Run all 10 steps
+python run_full_pipeline.py --dry-run  # Preview what would run
+python run_full_pipeline.py --step 2   # Run a specific step
+```
+
+### 3b. `run_all_groups.sh` - Legacy Batch Processing Script
+
+> **Note:** `run_full_pipeline.py` is now the recommended way to run the pipeline. `run_all_groups.sh` is retained as the legacy batch script.
+
+Runs the Gompertz analysis pipeline for all groups automatically.
 
 ```bash
 ./run_all_groups.sh
@@ -252,24 +271,17 @@ Saves annotations to `truncation_validation_audit.csv` (resumable).
 
 ```bash
 make help                  # Show all available commands
+make full-pipeline         # Complete 10-step pipeline
+make core-pipeline         # Core steps only (skip GP/Ensemble)
+make dry-run               # Preview pipeline steps
+make step-0 through step-9 # Run individual steps
 make install               # Install Python dependencies
-make test                  # Run full test suite (114 tests)
-make train-classifier      # Train ML classifier on synthetic + real data
-make test-quick            # Run unit tests only (no integration)
-make run-pipeline          # Run Gompertz pipeline on all groups
-make run-haldane           # Run Haldane analysis on pesticide strains
-make run-advanced          # Run all advanced fitting (GP + Bootstrap + Bayesian + Ensemble)
-make run-advanced-gp       # GP truncation only
-make run-advanced-bootstrap # Bootstrap CIs only
-make run-advanced-gompertz # Bayesian Gompertz only
-make run-advanced-haldane  # Bayesian Haldane only
-make run-advanced-ensemble # Ensemble truncation only
-make run-compare-methods   # Compare truncation methods (requires ensemble run first)
+make test                  # Run full test suite (118 tests)
+make train-classifier      # Train ML classifier
+make run-advanced          # Advanced fitting (GP + Bootstrap + Ensemble)
 make run-compare-bad       # Compare methods + rescue bad strains
-make validate              # Launch interactive curve validation tool
-make validate-truncation   # Launch interactive truncation method validator
-make validate-synthetic    # Run pipeline on synthetic data
-make run-all               # Full pipeline + Haldane + Advanced
+make validate              # Interactive curve validation
+make validate-synthetic    # Synthetic data validation
 ```
 
 ---
@@ -369,10 +381,10 @@ When you run the pipeline, you should see approximately:
 | Group | Total | Good | Bad |
 |-------|-------|------|-----|
 | Group 1 | 24 | 12 | 12 |
-| Group 2 | 24 | 16 | 8 |
-| Group 3 | 24 | 17 | 7 |
-| Group 4 | 20 | 12 | 8 |
-| **Total** | **92** | **57** | **35** |
+| Group 2 | 24 | 11 | 13 |
+| Group 3 | 24 | 12 | 12 |
+| Group 4 | 20 | 9 | 11 |
+| **Total** | **92** | **44** | **48** |
 
 **Key findings:**
 - LB controls show excellent growth (R² > 0.97)
@@ -386,31 +398,30 @@ When you run the pipeline, you should see approximately:
 
 | Metric | Value |
 |--------|-------|
-| Accuracy | 89.8% |
-| Precision | 91.3% |
-| Recall | 94.8% |
-| F1 Score | 93.0% |
-| Specificity | 77.0% |
+| Accuracy | 99.6% |
+| Precision | 100% |
+| Recall | 99.4% |
+| F1 Score | 99.7% |
 
-**ML Classifier (held-out 30% test, 170 curves — synthetic + real mixed):**
+**ML Classifier (held-out 30% test, 170 curves -- synthetic + real mixed):**
 
 | Metric | Value |
 |--------|-------|
-| Accuracy | 95.3% |
-| Precision | 95.8% |
-| Recall | 97.4% |
-| F1 Score | 96.6% |
-| Specificity | 90.6% |
+| Accuracy | 95.9% |
+| Precision | 97.4% |
+| Recall | 96.6% |
+| F1 Score | 97.0% |
+| Specificity | 94.3% |
 
 25/32 test scenarios achieve 100% accuracy. Manual audit of 92 real curves: 91.3% validated correct.
 
-### Truncation Method Comparison (57 good strains)
+### Truncation Method Comparison (44 good strains)
 
-The weighted-median consensus achieves the highest mean R² (0.9804). All top-5 methods perform within 0.002 of each other. 6 of 9 candidate bad strains were rescued by alternative truncation, potentially increasing good strain count from 57 to 63.
+The weighted-median consensus achieves the highest mean R². All top-5 methods perform within 0.002 of each other. Candidate bad strains may be rescued by alternative truncation methods.
 
 ### Haldane Analysis Results
 
-The Haldane model was preferred over Gompertz for **15/23** (65%) pesticide+LB strains by AIC, confirming substrate inhibition kinetics are present. All 6 pesticides tested (Bifenthrin, Flupyradifurone, Imidacloprid, Lambda-Cyhalothrin, Malathion, Permethrin) show measurable inhibition constants (Ki).
+The Haldane model was preferred over Gompertz for **16/21** (76%) pesticide+LB strains by AIC, confirming substrate inhibition kinetics are present. All 6 pesticides tested (Bifenthrin, Flupyradifurone, Imidacloprid, Lambda-Cyhalothrin, Malathion, Permethrin) show measurable inhibition constants (Ki).
 
 ---
 
@@ -515,7 +526,7 @@ python 01_growth_curve_analysis.py DATA_DIR -o OUTPUT_DIR --ml-classify
 ```
 
 **Training data:** 480 synthetic + 85 real audited curves (7 "unsure" excluded).
-**Held-out test (30%):** 95.3% accuracy, 90.6% specificity, 97.4% recall.
+**Held-out test (30%):** 95.9% accuracy, 94.3% specificity, 96.6% recall.
 
 ### `ml_classifier.py` - ML Classifier Runtime Module
 
