@@ -423,3 +423,99 @@ class TestMultiModelFallback:
         )
         # Metrics should be present and valid
         assert 'r_squared' in result.metrics
+
+
+# ====================================================================
+# MCCV Truncation Optimization (v2)
+# ====================================================================
+
+class TestMCCVTruncation:
+    """Test Monte Carlo Cross-Validated truncation optimization."""
+
+    def test_full_range_finds_correct_truncation(self, good_gompertz_curve):
+        """MCCV should find truncation near the plateau for a clean curve."""
+        time, od = good_gompertz_curve
+        landscape = analysis.find_optimal_truncation_v2(time, od, min_points=15)
+        # Should find a truncation point (not just "use all data")
+        assert landscape.best_end_idx < len(od) - 1
+        assert landscape.best_end_idx > 15
+        assert landscape.best_cv_score > 0.5
+        assert landscape.best_model == 'gompertz'
+
+    def test_landscape_has_candidates(self, good_gompertz_curve):
+        """Landscape should contain evaluated candidates."""
+        time, od = good_gompertz_curve
+        landscape = analysis.find_optimal_truncation_v2(
+            time, od, min_points=15, n_coarse=20, n_cv_folds=10
+        )
+        assert len(landscape.candidates) > 10
+        # Candidates should be sorted by cv_score (descending)
+        scores = [c.cv_score for c in landscape.candidates]
+        assert scores[0] >= scores[-1]
+
+    def test_short_segment_not_preferred(self, standard_time):
+        """MCCV should not prefer trivially short segments."""
+        # Gompertz that plateaus around t=10, but has 100 data points
+        od = analysis.gompertz_model(standard_time, 1.2, 0.4, 3.0)
+        rng = np.random.default_rng(42)
+        od = od + rng.normal(0, 0.01, len(od))
+        od = np.maximum(0, od)
+
+        landscape = analysis.find_optimal_truncation_v2(
+            standard_time, od, min_points=15, n_coarse=30, n_cv_folds=10
+        )
+        # Should not truncate to the minimum 15 points
+        assert landscape.best_end_idx > 20
+
+    def test_cv_score_structure(self, standard_time):
+        """Each candidate should have valid CV score fields."""
+        od = analysis.gompertz_model(standard_time, 1.0, 0.2, 5.0)
+        rng = np.random.default_rng(42)
+        od = od + rng.normal(0, 0.01, len(od))
+        od = np.maximum(0, od)
+
+        landscape = analysis.find_optimal_truncation_v2(
+            standard_time, od, min_points=15, n_coarse=20, n_cv_folds=10
+        )
+        for c in landscape.candidates:
+            assert hasattr(c, 'cv_score')
+            assert hasattr(c, 'cv_std')
+            assert hasattr(c, 'raw_r2')
+            assert hasattr(c, 'model_name')
+            assert c.n_points >= 15
+
+    def test_confidence_high_for_clean_curve(self, good_gompertz_curve):
+        """Clean curve should have reasonable confidence."""
+        time, od = good_gompertz_curve
+        landscape = analysis.find_optimal_truncation_v2(
+            time, od, min_points=15, n_coarse=30, n_cv_folds=10
+        )
+        assert 0.0 <= landscape.confidence <= 1.0
+
+    def test_mccv_score_function_directly(self, good_gompertz_curve):
+        """mccv_score should return valid metrics."""
+        time, od = good_gompertz_curve
+        cv_mean, cv_std, raw_r2, params = analysis.mccv_score(
+            time, od, n_folds=10
+        )
+        assert cv_mean > 0.5  # clean curve should CV well
+        assert cv_std >= 0.0
+        assert raw_r2 > 0.9
+        assert params is not None
+
+    def test_noisy_flat_curve_low_cv(self, noisy_flat_curve):
+        """Flat noise should have low CV score."""
+        time, od = noisy_flat_curve
+        cv_mean, cv_std, raw_r2, _ = analysis.mccv_score(
+            time, od, n_folds=10
+        )
+        # Flat noise should not fit well out-of-sample
+        assert cv_mean < 0.5
+
+    def test_truncate_at_max_uses_v2(self, good_gompertz_curve):
+        """truncate_at_max with use_adaptive=True should use MCCV v2."""
+        time, od = good_gompertz_curve
+        result = analysis.truncate_at_max(time, od, use_adaptive=True)
+        # Should produce a valid TruncationResult
+        assert result.truncation_index > 0
+        assert len(result.od_truncated) > 10

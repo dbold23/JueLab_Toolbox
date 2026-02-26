@@ -560,19 +560,29 @@ def stationary_phase_truncate_wrapper(time, od, config=None):
 
 
 def adaptive_r2_truncate_wrapper(time, od, config=None):
-    """Wrapper around 01_gca.find_optimal_truncation()."""
+    """Wrapper around 01_gca.find_optimal_truncation_v2() (MCCV-based)."""
     if _gca is None:
         return None, 0.0, {}
     try:
-        result = _gca.find_optimal_truncation(time, od)
-        if isinstance(result, tuple) and len(result) >= 3:
-            start_idx, end_idx, best_r2 = result[0], result[1], result[2]
-            idx = int(end_idx)
-            confidence = float(best_r2)
+        if hasattr(_gca, 'find_optimal_truncation_v2'):
+            landscape = _gca.find_optimal_truncation_v2(time, od)
+            idx = int(landscape.best_end_idx)
+            confidence = float(landscape.confidence)
+            return idx, confidence, {
+                'best_cv_score': landscape.best_cv_score,
+                'best_model': landscape.best_model,
+                'n_candidates': len(landscape.candidates),
+            }
         else:
-            idx = int(result)
-            confidence = 0.5
-        return idx, confidence, {'best_r2': confidence}
+            # Fallback to v1
+            result = _gca.find_optimal_truncation(time, od)
+            if isinstance(result, tuple) and len(result) >= 3:
+                idx = int(result[1])
+                confidence = float(result[2])
+            else:
+                idx = int(result)
+                confidence = 0.5
+            return idx, confidence, {'best_r2': confidence}
     except Exception:
         return None, 0.0, {}
 

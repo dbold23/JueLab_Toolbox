@@ -1,0 +1,56 @@
+{
+  "summary": {
+    "n_ground_truth": 480,
+    "n_pipeline_results": 480,
+    "n_matched": 480,
+    "n_failures": 49
+  },
+  "classification": {
+    "accuracy": 0.8979166666666667,
+    "precision": 0.9134078212290503,
+    "recall": 0.9478260869565217,
+    "f1_score": 0.930298719772404,
+    "confusion_matrix": {
+      "true_positives": 327,
+      "true_negatives": 104,
+      "false_positives": 31,
+      "false_negatives": 18
+    }
+  },
+  "parameter_recovery": {
+    "A": {
+      "mean_error": 0.0232429911670157,
+      "rmse": 0.033728211693515954,
+      "r_squared": 0.9893323788337571,
+      "bias": 0.0232429911670157,
+      "n_samples": 327
+    },
+    "mu": {
+      "mean_error": -0.006788856258834347,
+      "rmse": 0.028898985971437682,
+      "r_squared": 0.9137361399916342,
+      "bias": -0.006788856258834347,
+      "n_samples": 327
+    },
+    "lambda": {
+      "mean_error": -0.32029148148293535,
+      "rmse": 0.9306603916656337,
+      "r_squared": 0.985968630112394,
+      "bias": -0.32029148148293535,
+      "n_samples": 327
+    }
+  },
+  "failure_analysis": {
+    "n_false_positives": 31,
+    "n_false_negatives": 18,
+    "failure_scenarios": {
+      "borderline_r2_bad": 14,
+      "borderline_noise": 12,
+      "logistic_generated": 12,
+      "high_noise": 5,
+      "low_A": 3,
+      "sparse_data": 2,
+      "short_lag": 1
+    }
+  }
+}

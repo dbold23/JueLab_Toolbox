@@ -102,6 +102,8 @@ class PipelineValidator:
         if use_adaptive:
             cmd.append('--adaptive')
 
+        cmd.append('--no-plots')  # Skip per-curve plots for faster validation
+
         if verbose:
             print(f"Running pipeline: {' '.join(cmd)}")
 
@@ -111,7 +113,7 @@ class PipelineValidator:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=600  # 10 minute timeout
+                timeout=1800  # 30 minute timeout (MCCV truncation is compute-intensive)
             )
 
             if verbose:

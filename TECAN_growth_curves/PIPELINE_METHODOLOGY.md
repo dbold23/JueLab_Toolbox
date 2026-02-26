@@ -1260,30 +1260,30 @@ The pipeline was run on all 480 synthetic curves and compared against ground tru
 
 | Metric | Value | Interpretation |
 |--------|-------|----------------|
-| **Accuracy** | 84.4% | Correct classifications / total |
-| **Precision** | 85.3% | True GOOD / (True GOOD + False GOOD) |
-| **Recall (Sensitivity)** | 94.5% | True GOOD / All actually GOOD |
-| **Specificity** | 58.5% | True BAD / All actually BAD |
-| **F1 Score** | 89.7% | Harmonic mean of precision and recall |
+| **Accuracy** | 89.8% | Correct classifications / total |
+| **Precision** | 91.3% | True GOOD / (True GOOD + False GOOD) |
+| **Recall (Sensitivity)** | 94.8% | True GOOD / All actually GOOD |
+| **Specificity** | 77.0% | True BAD / All actually BAD |
+| **F1 Score** | 93.0% | Harmonic mean of precision and recall |
 
 **Confusion matrix:**
 ```
                     Pipeline says GOOD    Pipeline says BAD
-Actually GOOD            326 (TP)              19 (FN)
-Actually BAD              56 (FP)              79 (TN)
+Actually GOOD            327 (TP)              18 (FN)
+Actually BAD              31 (FP)             104 (TN)
 ```
 
 The pipeline is intentionally **biased toward acceptance** (high sensitivity, lower specificity) — it's better to include a marginal curve for manual review than to miss real growth.
 
 ### 11.6 Parameter recovery accuracy
 
-For the 326 correctly classified GOOD curves, how well did the pipeline recover the true parameters?
+For the 327 correctly classified GOOD curves, how well did the pipeline recover the true parameters?
 
 | Parameter | R² | RMSE | Mean Bias | Interpretation |
 |-----------|-----|------|-----------|----------------|
-| A (max OD) | 0.985 | 0.042 | +0.020 | Excellent — slight overestimate |
-| μ (growth rate) | 0.906 | 0.030 | -0.007 | Good — slight underestimate |
-| λ (lag time) | 0.983 | 1.013h | -0.366h | Excellent — slight early estimate |
+| A (max OD) | 0.989 | 0.034 | +0.023 | Excellent — slight overestimate |
+| μ (growth rate) | 0.914 | 0.029 | -0.007 | Good — slight underestimate |
+| λ (lag time) | 0.986 | 0.931h | -0.320h | Excellent — slight early estimate |
 
 ---
 
@@ -1434,7 +1434,7 @@ make run-pipeline         # Run Stage 2-4: preprocess → truncate → fit → c
 make run-haldane          # Run Stage 5: Haldane substrate inhibition analysis
 make run-advanced         # Run Stage 6: GP + Bootstrap + Bayesian + Ensemble
 make run-all              # Run everything (Stages 2-6)
-make test                 # Run pytest test suite (64 tests)
+make test                 # Run pytest test suite (93 tests)
 make validate             # Interactive curve auditor
 ```
 
@@ -1568,14 +1568,14 @@ The `.github/workflows/test.yml` file configures automatic testing on GitHub:
 
 | Validation type | Accuracy |
 |----------------|----------|
-| Synthetic data (480 curves) | 84.4% overall, 94.5% sensitivity |
+| Synthetic data (480 curves) | 89.8% overall, 94.8% sensitivity |
 | Manual audit (92 real curves) | 91.3% agreement |
 
 ### 14.7 Test suite
 
-64 tests across 5 test files covering Gompertz fitting, Haldane ODE, classification logic, ensemble truncation, GP truncation, bootstrap, and integration tests.
+93 tests across 6 test files covering Gompertz fitting, Haldane ODE, classification logic, ensemble truncation, GP truncation, bootstrap, MCCV truncation, incomplete curve detection, and integration tests.
 
 ---
 
 *Generated for BIO380SP25 — Pesticide Bioremediating Bacteria Research Project*
-*Pipeline version: February 2025*
+*Pipeline version: February 2026*

@@ -30,6 +30,15 @@ truncation:
   # Incomplete curve detection (prevents FNs when experiment ended early)
   incomplete_curve_tail_fraction: 0.15  # Fraction of tail to check for rising
   incomplete_curve_slope_threshold: 0.005  # dOD/dt threshold for "still rising"
+  # Monte Carlo Cross-Validated truncation (used when use_adaptive: true)
+  mccv:
+    n_coarse_candidates: 50          # Coarse scan points across full range
+    n_cv_folds: 20                   # Random 80/20 splits per candidate
+    cv_holdout_fraction: 0.2         # Fraction held out per fold
+    n_fine_tune_top: 3               # Top candidates to fine-tune
+    fine_tune_window: 10             # Points ± around top candidates
+    try_multi_model: false           # Also try logistic/baranyi/richards
+    min_points: 30                   # Minimum data points for MCCV fitting
 
 # OD-threshold classification (legacy, use --od-based flag)
 od_thresholds:

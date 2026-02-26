@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from scipy.optimize import curve_fit
 
 
@@ -98,6 +99,32 @@ class ProcessingResult:
     classification: ClassificationResult
     truncation: Optional[TruncationResult]
     fit: Optional[FitResult]
+
+
+@dataclass
+class TruncationCandidate:
+    """A single evaluated truncation endpoint."""
+    end_idx: int
+    end_time: float
+    n_points: int
+    cv_score: float        # mean CV R² (higher = better)
+    cv_std: float          # std of CV R² across folds
+    raw_r2: float          # full-data R² for reference
+    model_name: str
+    params: Dict[str, float]
+
+
+@dataclass
+class TruncationLandscape:
+    """Rich result from find_optimal_truncation_v2()."""
+    best_start_idx: int
+    best_end_idx: int
+    best_end_time: float
+    best_cv_score: float
+    best_model: str
+    candidates: List[TruncationCandidate]
+    confidence: float      # derived from landscape shape
+    bio_estimate_idx: int  # biological estimate for reference
 
 
 # =============================================================================
@@ -681,6 +708,487 @@ def find_stationary_phase_start(
     return truncation_idx, metadata
 
 
+# =============================================================================
+# Monte Carlo Cross-Validated Truncation Optimization
+# =============================================================================
+
+def mccv_score(
+    time: np.ndarray,
+    od600: np.ndarray,
+    model_func=None,
+    p0_func=None,
+    n_folds: int = 20,
+    holdout_fraction: float = 0.2,
+    seed: int = 42
+) -> Tuple[float, float, float, Optional[np.ndarray]]:
+    """
+    Compute Monte Carlo Cross-Validation score for a data segment.
+
+    Randomly holds out a fraction of data points, fits the model on the rest,
+    and evaluates prediction error on the holdout. Repeats n_folds times.
+
+    Parameters
+    ----------
+    time, od600 : np.ndarray
+        Data segment to evaluate
+    model_func : callable
+        Growth model function (default: gompertz_model)
+    p0_func : callable
+        Function that returns (p0, bounds) given (time, od) for the model
+    n_folds : int
+        Number of random splits (default: 20)
+    holdout_fraction : float
+        Fraction of data to hold out per fold (default: 0.2)
+    seed : int
+        Random seed for reproducibility
+
+    Returns
+    -------
+    Tuple[float, float, float, Optional[np.ndarray]]
+        (mean_cv_r2, std_cv_r2, raw_r2, best_params)
+    """
+    if model_func is None:
+        model_func = gompertz_model
+    if p0_func is None:
+        p0_func = _gompertz_p0
+
+    n = len(time)
+    n_holdout = max(2, int(n * holdout_fraction))
+    n_train = n - n_holdout
+
+    if n_train < 10:
+        return -1.0, 1.0, 0.0, None
+
+    rng = np.random.default_rng(seed)
+    cv_r2s = []
+    best_full_params = None
+
+    # Compute raw R² on full data (for reference)
+    try:
+        p0, bounds = p0_func(time, od600)
+        popt_full, _ = curve_fit(model_func, time, od600, p0=p0,
+                                 bounds=bounds, maxfev=1000)
+        pred_full = model_func(time, *popt_full)
+        ss_res_full = np.sum((od600 - pred_full) ** 2)
+        ss_tot_full = np.sum((od600 - np.mean(od600)) ** 2)
+        raw_r2 = 1 - ss_res_full / ss_tot_full if ss_tot_full > 0 else 0.0
+        best_full_params = popt_full
+    except Exception:
+        raw_r2 = 0.0
+
+    for _ in range(n_folds):
+        # Random 80/20 split (preserving time ordering in both sets)
+        indices = np.arange(n)
+        holdout_idx = np.sort(rng.choice(indices, size=n_holdout, replace=False))
+        train_mask = np.ones(n, dtype=bool)
+        train_mask[holdout_idx] = False
+
+        t_train = time[train_mask]
+        od_train = od600[train_mask]
+        t_test = time[holdout_idx]
+        od_test = od600[holdout_idx]
+
+        try:
+            p0, bounds = p0_func(t_train, od_train)
+            popt, _ = curve_fit(model_func, t_train, od_train, p0=p0,
+                                bounds=bounds, maxfev=1000)
+
+            # Predict on holdout
+            pred_test = model_func(t_test, *popt)
+            if np.any(np.isnan(pred_test)) or np.any(np.isinf(pred_test)):
+                continue
+
+            # Compute test R² (relative to test set mean)
+            ss_res = np.sum((od_test - pred_test) ** 2)
+            ss_tot = np.sum((od_test - np.mean(od_test)) ** 2)
+            test_r2 = 1 - ss_res / ss_tot if ss_tot > 1e-12 else 0.0
+
+            cv_r2s.append(test_r2)
+        except Exception:
+            continue
+
+    if len(cv_r2s) < 3:
+        return -1.0, 1.0, raw_r2, best_full_params
+
+    return float(np.mean(cv_r2s)), float(np.std(cv_r2s)), raw_r2, best_full_params
+
+
+def _gompertz_p0(time, od600):
+    """Return initial guesses and bounds for Gompertz curve_fit."""
+    a_init = max(float(np.max(od600)), 0.05)
+    diff = np.diff(od600)
+    dt = np.diff(time)
+    rates = diff / np.maximum(dt, 1e-6)
+    mu_init = max(float(np.max(rates)), 0.01)
+    max_rate_idx = int(np.argmax(rates))
+    lam_init = float(time[max_rate_idx]) if max_rate_idx > 0 else float(time[0])
+    p0 = [a_init, mu_init, lam_init]
+    bounds = ([0.01, 0.001, 0], [3 * a_init, 10 * mu_init + 1, float(time[-1])])
+    return p0, bounds
+
+
+def _logistic_p0(time, od600):
+    """Return initial guesses and bounds for logistic curve_fit."""
+    a_init = max(float(np.max(od600)), 0.05)
+    diff = np.diff(od600)
+    dt = np.diff(time)
+    rates = diff / np.maximum(dt, 1e-6)
+    mu_init = max(float(np.max(rates)), 0.01)
+    max_rate_idx = int(np.argmax(rates))
+    lam_init = float(time[max_rate_idx]) if max_rate_idx > 0 else float(time[0])
+    k_init = 4 * mu_init / (np.e * max(a_init, 0.01))
+    t_mid_init = lam_init + a_init / (mu_init * np.e + 1e-6)
+    p0 = [a_init, k_init, t_mid_init]
+    bounds = ([0.01, 0.001, 0], [3 * a_init, 20, float(time[-1]) * 1.5])
+    return p0, bounds
+
+
+def _baranyi_p0(time, od600):
+    """Return initial guesses and bounds for Baranyi curve_fit."""
+    a_init = max(float(np.max(od600)), 0.05)
+    y0_init = max(float(np.mean(od600[:min(5, len(od600))])), 0.001)
+    diff = np.diff(od600)
+    dt = np.diff(time)
+    rates = diff / np.maximum(dt, 1e-6)
+    mu_init = max(float(np.max(rates)), 0.01)
+    max_rate_idx = int(np.argmax(rates))
+    lam_init = float(time[max_rate_idx]) if max_rate_idx > 0 else float(time[0])
+    h0_init = mu_init * max(lam_init, 0.1)
+    p0 = [y0_init, a_init, mu_init, h0_init]
+    bounds = ([1e-6, 0.01, 0.001, 0.001],
+              [a_init + 0.01, 3 * a_init, 10 * mu_init + 1, 200])
+    return p0, bounds
+
+
+def _richards_p0(time, od600):
+    """Return initial guesses and bounds for Richards curve_fit."""
+    a_init = max(float(np.max(od600)), 0.05)
+    diff = np.diff(od600)
+    dt = np.diff(time)
+    rates = diff / np.maximum(dt, 1e-6)
+    mu_init = max(float(np.max(rates)), 0.01)
+    max_rate_idx = int(np.argmax(rates))
+    lam_init = float(time[max_rate_idx]) if max_rate_idx > 0 else float(time[0])
+    k_init = mu_init * np.e / max(a_init, 0.01) * 1.5
+    t_mid_init = lam_init + a_init / (mu_init * np.e + 1e-6)
+    p0 = [a_init, k_init, t_mid_init, 0.5]
+    bounds = ([0.01, 0.001, 0, 0.01],
+              [3 * a_init, 20, float(time[-1]) * 1.5, 5.0])
+    return p0, bounds
+
+
+# Model registry for MCCV multi-model evaluation
+_MCCV_MODELS = None  # Lazy-initialized after model functions are defined
+
+
+def _get_mccv_models():
+    """Get model registry (lazy init to avoid forward-reference issues)."""
+    global _MCCV_MODELS
+    if _MCCV_MODELS is None:
+        _MCCV_MODELS = {
+            'gompertz': (gompertz_model, _gompertz_p0),
+            'logistic': (logistic_model, _logistic_p0),
+            'baranyi': (baranyi_model, _baranyi_p0),
+            'richards': (richards_model, _richards_p0),
+        }
+    return _MCCV_MODELS
+
+
+def find_optimal_truncation_v2(
+    time: np.ndarray,
+    od600: np.ndarray,
+    min_points: int = 30,
+    trim_noisy_start: bool = True,
+    n_coarse: int = 50,
+    n_cv_folds: int = 20,
+    cv_holdout: float = 0.2,
+    n_fine_top: int = 3,
+    fine_window: int = 10,
+    try_multi_model: bool = False
+) -> TruncationLandscape:
+    """
+    Find optimal truncation point via Monte Carlo Cross-Validation.
+
+    Scans the FULL range of possible endpoints, scoring each by how well
+    a Gompertz fit generalizes to held-out data points. This naturally
+    prevents overfitting on short segments and penalizes including noisy
+    post-growth data.
+
+    Parameters
+    ----------
+    time, od600 : np.ndarray
+        Full time and OD600 arrays
+    min_points : int
+        Minimum data points for fitting (default: 30)
+    trim_noisy_start : bool
+        Find and trim noisy baseline (default: True)
+    n_coarse : int
+        Number of coarse-scan candidates (default: 50)
+    n_cv_folds : int
+        CV folds per candidate (default: 20)
+    cv_holdout : float
+        Fraction held out per fold (default: 0.2)
+    n_fine_top : int
+        Number of top candidates to fine-tune (default: 3)
+    fine_window : int
+        Points ±around each top candidate for fine-tuning (default: 10)
+    try_multi_model : bool
+        Also try logistic/baranyi/richards at top points (default: False)
+
+    Returns
+    -------
+    TruncationLandscape
+        Rich result with best truncation, candidates, confidence, etc.
+    """
+    n_points = len(time)
+
+    # Find growth start
+    if trim_noisy_start:
+        start_idx, _ = find_growth_start(time, od600)
+    else:
+        start_idx = 0
+
+    # Early exit for flat / no-growth curves (skip expensive MCCV)
+    signal_range = float(np.max(od600) - np.min(od600))
+    if signal_range < 0.05:
+        return TruncationLandscape(
+            best_start_idx=start_idx, best_end_idx=n_points - 1,
+            best_end_time=float(time[-1]), best_cv_score=0.0,
+            best_model='gompertz', candidates=[], confidence=0.0,
+            bio_estimate_idx=n_points - 1
+        )
+
+    # Biological estimate (for reference and as a candidate)
+    bio_idx, bio_meta = find_stationary_phase_start(time, od600)
+    max_od_idx = bio_meta['max_od_idx']
+
+    # Find inflection point (peak growth rate) — truncation is always after this
+    smoothed = np.convolve(od600, np.ones(5) / 5, mode='same')
+    growth_rates = np.diff(smoothed) / np.maximum(np.diff(time), 1e-6)
+    inflection_idx = int(np.argmax(growth_rates)) + start_idx
+
+    # ---- Phase 1: Coarse scan from inflection through end ----
+    # Truncation point is always after peak growth rate, so start scanning there
+    # but ensure we keep at least min_points from start_idx
+    scan_start = max(start_idx + min_points, inflection_idx)
+    scan_end = n_points - 1
+
+    if scan_end <= scan_start:
+        # Not enough data — return full range
+        return TruncationLandscape(
+            best_start_idx=start_idx, best_end_idx=n_points - 1,
+            best_end_time=float(time[-1]), best_cv_score=0.0,
+            best_model='gompertz', candidates=[], confidence=0.0,
+            bio_estimate_idx=bio_idx
+        )
+
+    # Generate uniformly spaced candidates
+    n_actual = min(n_coarse, scan_end - scan_start)
+    step = max(1, (scan_end - scan_start) // n_actual)
+    candidate_indices = list(range(scan_start, scan_end + 1, step))
+
+    # Always include biological estimate and max OD
+    for special_idx in [bio_idx, max_od_idx]:
+        if scan_start <= special_idx <= scan_end and special_idx not in candidate_indices:
+            candidate_indices.append(special_idx)
+    candidate_indices = sorted(set(candidate_indices))
+
+    # Pre-filter: single fast fit to skip obviously bad candidates
+    viable_candidates = []
+    for end_idx in candidate_indices:
+        if end_idx + 1 - start_idx < min_points:
+            continue
+        t_seg = time[start_idx:end_idx + 1]
+        od_seg = od600[start_idx:end_idx + 1]
+        try:
+            p0, bounds = _gompertz_p0(t_seg, od_seg)
+            popt, _ = curve_fit(gompertz_model, t_seg, od_seg, p0=p0,
+                                bounds=bounds, maxfev=500)
+            pred = gompertz_model(t_seg, *popt)
+            ss_res = np.sum((od_seg - pred) ** 2)
+            ss_tot = np.sum((od_seg - np.mean(od_seg)) ** 2)
+            quick_r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+        except Exception:
+            quick_r2 = 0.0
+        if quick_r2 > 0.3 or end_idx in (bio_idx, max_od_idx):
+            viable_candidates.append(end_idx)
+
+    # Score viable candidates in parallel (curve_fit releases GIL for BLAS)
+    n_workers = min(os.cpu_count() or 4, 8)
+    evaluated = {}  # idx -> TruncationCandidate
+
+    def _make_gompertz_candidate(end_idx, cv_mean, cv_std, raw_r2, params):
+        p_dict = {}
+        if params is not None:
+            p_dict = {'a': float(params[0]), 'mu': float(params[1]),
+                      'lambda': float(params[2])}
+        return TruncationCandidate(
+            end_idx=end_idx, end_time=float(time[end_idx]),
+            n_points=end_idx + 1 - start_idx, cv_score=cv_mean,
+            cv_std=cv_std, raw_r2=raw_r2, model_name='gompertz',
+            params=p_dict
+        )
+
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        # ---- Phase 1: Coarse scan (parallel) ----
+        phase1_futures = {}
+        for end_idx in viable_candidates:
+            t_seg = time[start_idx:end_idx + 1]
+            od_seg = od600[start_idx:end_idx + 1]
+            f = pool.submit(mccv_score, t_seg, od_seg,
+                            n_folds=n_cv_folds,
+                            holdout_fraction=cv_holdout,
+                            seed=42 + end_idx)
+            phase1_futures[f] = end_idx
+
+        for f in as_completed(phase1_futures):
+            end_idx = phase1_futures[f]
+            cv_mean, cv_std, raw_r2, params = f.result()
+            evaluated[end_idx] = _make_gompertz_candidate(
+                end_idx, cv_mean, cv_std, raw_r2, params)
+
+        if not evaluated:
+            return TruncationLandscape(
+                best_start_idx=start_idx, best_end_idx=n_points - 1,
+                best_end_time=float(time[-1]), best_cv_score=0.0,
+                best_model='gompertz', candidates=[], confidence=0.0,
+                bio_estimate_idx=bio_idx
+            )
+
+        # ---- Phase 2: Fine-tune around top candidates (parallel) ----
+        sorted_candidates = sorted(evaluated.values(),
+                                   key=lambda c: c.cv_score, reverse=True)
+        top_indices = [c.end_idx for c in sorted_candidates[:n_fine_top]]
+
+        phase2_futures = {}
+        for center_idx in top_indices:
+            fine_start = max(scan_start, center_idx - fine_window)
+            fine_end = min(scan_end, center_idx + fine_window)
+            for end_idx in range(fine_start, fine_end + 1):
+                if end_idx in evaluated or end_idx in phase2_futures.values():
+                    continue
+                if end_idx + 1 - start_idx < min_points:
+                    continue
+                t_seg = time[start_idx:end_idx + 1]
+                od_seg = od600[start_idx:end_idx + 1]
+                f = pool.submit(mccv_score, t_seg, od_seg,
+                                n_folds=n_cv_folds,
+                                holdout_fraction=cv_holdout,
+                                seed=42 + end_idx)
+                phase2_futures[f] = end_idx
+
+        for f in as_completed(phase2_futures):
+            end_idx = phase2_futures[f]
+            cv_mean, cv_std, raw_r2, params = f.result()
+            evaluated[end_idx] = _make_gompertz_candidate(
+                end_idx, cv_mean, cv_std, raw_r2, params)
+
+        # ---- Phase 3: Multi-model at top candidates (parallel, optional) ----
+        if try_multi_model:
+            models = _get_mccv_models()
+            sorted_candidates = sorted(evaluated.values(),
+                                       key=lambda c: c.cv_score, reverse=True)
+            top_for_mm = [c.end_idx for c in sorted_candidates[:3]]
+
+            phase3_futures = {}
+            for end_idx in top_for_mm:
+                t_seg = time[start_idx:end_idx + 1]
+                od_seg = od600[start_idx:end_idx + 1]
+                for model_name, (model_func, p0_func) in models.items():
+                    if model_name == 'gompertz':
+                        continue
+                    f = pool.submit(mccv_score, t_seg, od_seg,
+                                    model_func=model_func, p0_func=p0_func,
+                                    n_folds=n_cv_folds,
+                                    holdout_fraction=cv_holdout,
+                                    seed=42 + end_idx)
+                    phase3_futures[f] = (end_idx, model_name)
+
+            for f in as_completed(phase3_futures):
+                end_idx, model_name = phase3_futures[f]
+                cv_mean, cv_std, raw_r2, params = f.result()
+                if cv_mean > evaluated[end_idx].cv_score:
+                    p_dict = {}
+                    if params is not None:
+                        if model_name in ('logistic', 'richards'):
+                            p_dict = {'a': float(params[0]), 'mu': float(params[1]),
+                                      'lambda': float(params[2])}
+                        elif model_name == 'baranyi':
+                            p_dict = {'a': float(params[1]), 'mu': float(params[2]),
+                                      'lambda': float(params[3] / max(params[2], 1e-6))}
+                    evaluated[end_idx] = TruncationCandidate(
+                        end_idx=end_idx, end_time=float(time[end_idx]),
+                        n_points=end_idx + 1 - start_idx, cv_score=cv_mean,
+                        cv_std=cv_std, raw_r2=raw_r2, model_name=model_name,
+                        params=p_dict
+                    )
+
+    # ---- Find best and compute confidence ----
+    all_candidates = sorted(evaluated.values(), key=lambda c: c.cv_score,
+                            reverse=True)
+    best = all_candidates[0]
+
+    # Confidence: how peaked is the landscape?
+    scores = np.array([c.cv_score for c in all_candidates if c.cv_score > -0.5])
+    if len(scores) >= 3:
+        best_score = scores[0]
+        score_range = best_score - np.min(scores)
+        if score_range > 1e-6:
+            near_best = np.sum(scores >= 0.95 * best_score) / len(scores)
+            confidence = float(np.clip(1.0 - near_best / 0.5, 0.0, 1.0))
+        else:
+            confidence = 0.0
+    else:
+        confidence = 0.5
+
+    # ---- Optimize start point (parallel) ----
+    if trim_noisy_start:
+        start_candidates = sorted(set([
+            0,
+            max(0, start_idx - 5),
+            start_idx,
+            min(start_idx + 5, best.end_idx - min_points),
+            min(start_idx + 10, best.end_idx - min_points),
+        ]))
+        start_candidates = [s for s in start_candidates
+                            if 0 <= s and best.end_idx - s >= min_points]
+        best_start = start_idx
+        best_start_cv = best.cv_score
+
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            start_futures = {}
+            for s in start_candidates:
+                if s == start_idx:
+                    continue
+                t_seg = time[s:best.end_idx + 1]
+                od_seg = od600[s:best.end_idx + 1]
+                f = pool.submit(mccv_score, t_seg, od_seg,
+                                n_folds=n_cv_folds,
+                                holdout_fraction=cv_holdout,
+                                seed=42 + s)
+                start_futures[f] = s
+
+            for f in as_completed(start_futures):
+                s = start_futures[f]
+                cv_mean, _, _, _ = f.result()
+                if cv_mean > best_start_cv:
+                    best_start = s
+                best_start_cv = cv_mean
+    else:
+        best_start = 0
+
+    return TruncationLandscape(
+        best_start_idx=best_start,
+        best_end_idx=best.end_idx,
+        best_end_time=best.end_time,
+        best_cv_score=best.cv_score,
+        best_model=best.model_name,
+        candidates=all_candidates,
+        confidence=confidence,
+        bio_estimate_idx=bio_idx
+    )
+
+
 def find_optimal_truncation(
     time: np.ndarray,
     od600: np.ndarray,
@@ -921,9 +1429,11 @@ def truncate_at_max(
         truncation_idx = len(od600) - 1
         actual_max_idx = np.argmax(od600)
     elif use_adaptive:
-        # Find optimal truncation point that maximizes R² (also trims noisy start)
-        start_idx, end_idx, best_r2, _ = find_optimal_truncation(time, od600)
-        truncation_idx = end_idx
+        # Monte Carlo Cross-Validated truncation: scan full range, score by
+        # out-of-sample prediction quality (prevents overfitting on short segments)
+        landscape = find_optimal_truncation_v2(time, od600)
+        start_idx = landscape.best_start_idx
+        truncation_idx = landscape.best_end_idx
         actual_max_idx = np.argmax(od600[start_idx:truncation_idx]) + start_idx if truncation_idx > start_idx else start_idx
     elif use_first_peak:
         # Find FIRST local maximum (scientifically appropriate for Gompertz)
@@ -1310,19 +1820,40 @@ def try_alternative_models(
                 perr = np.sqrt(np.diag(pcov))
 
                 # Map params to Gompertz-equivalent fields for FitResult
+                # Each model parameterizes growth rate differently;
+                # convert to Gompertz mu = max absolute growth rate
+                # (dy/dt at inflection) so parameters are comparable.
                 if model_name == 'logistic':
-                    a_opt, mu_opt, lambda_opt = popt[0], popt[1], popt[2]
-                    a_err, mu_err, lambda_err = perr[0], perr[1], perr[2]
+                    # Logistic: y = A/(1+exp(-k*(t-t_mid)))
+                    # Max slope = A*k/4 at t=t_mid
+                    # Gompertz mu = A*mu_e/A*(e) => mu = max_slope
+                    A_raw, k_raw, tmid_raw = popt[0], popt[1], popt[2]
+                    a_opt = A_raw
+                    mu_opt = A_raw * k_raw / 4.0  # max absolute growth rate
+                    lambda_opt = tmid_raw - 2.0 / max(k_raw, 1e-6)  # approx lag
+                    a_err = perr[0]
+                    mu_err = perr[1] * A_raw / 4.0  # scale error
+                    lambda_err = perr[2]
                 elif model_name == 'baranyi':
-                    a_opt = popt[1]           # y_max
-                    mu_opt = popt[2]          # mu_max
-                    lambda_opt = popt[3] / max(popt[2], 1e-6)  # h0/mu_max ≈ lag
+                    # Baranyi: mu_max = max specific growth rate (1/t units)
+                    # Gompertz mu = A * mu_max / e (max absolute rate)
+                    y0_raw, ymax_raw, mumax_raw, h0_raw = popt
+                    a_opt = ymax_raw
+                    mu_opt = ymax_raw * mumax_raw / np.e  # convert to Gompertz mu
+                    lambda_opt = h0_raw / max(mumax_raw, 1e-6)  # h0/mu_max ≈ lag
                     a_err = perr[1]
-                    mu_err = perr[2]
+                    mu_err = perr[2] * ymax_raw / np.e  # scale error
                     lambda_err = perr[3]
                 elif model_name == 'richards':
-                    a_opt, mu_opt, lambda_opt = popt[0], popt[1], popt[2]
-                    a_err, mu_err, lambda_err = perr[0], perr[1], perr[2]
+                    # Richards: y = A*(1+nu*exp(-k*(t-t_mid)))^(-1/nu)
+                    # Max slope = A*k*nu^(1/(1+nu))/(1+nu)
+                    A_raw, k_raw, tmid_raw, nu_raw = popt
+                    a_opt = A_raw
+                    mu_opt = A_raw * k_raw * nu_raw**(1.0/(1.0+nu_raw)) / (1.0+nu_raw)
+                    lambda_opt = tmid_raw - np.log(1.0 + nu_raw) / max(k_raw, 1e-6)
+                    a_err = perr[0]
+                    mu_err = perr[1] * A_raw * nu_raw**(1.0/(1.0+nu_raw)) / (1.0+nu_raw)
+                    lambda_err = perr[2]
                 else:
                     continue
 
@@ -1801,7 +2332,8 @@ def process_growth_curves(
     truncation_params: Optional[Dict] = None,
     fit_quality_thresholds: Optional[Dict] = None,
     use_fit_based_classification: bool = True,
-    verbose: bool = True
+    verbose: bool = True,
+    no_plots: bool = False
 ) -> Dict[str, ProcessingResult]:
     """
     Main pipeline function to process all growth curves in a directory.
@@ -1922,12 +2454,13 @@ def process_growth_curves(
                     if verbose:
                         print(f"  {strain_name}: BAD (pre-fit SNR={pre_fit_snr:.1f})")
 
-                    plot_bad_curve_with_fit(
-                        time_clean, od600_clean,
-                        truncation, fit,
-                        classification, strain_name,
-                        plots_dir
-                    )
+                    if not no_plots:
+                        plot_bad_curve_with_fit(
+                            time_clean, od600_clean,
+                            truncation, fit,
+                            classification, strain_name,
+                            plots_dir
+                        )
 
                     results[strain_name] = ProcessingResult(
                         strain_name=strain_name,
@@ -1955,38 +2488,13 @@ def process_growth_curves(
                     truncation.od_truncated
                 )
 
-                # Step 2b: Try alternative truncation strategy and keep the best
+                # Step 2b: Multi-model fallback (disabled by default — net negative
+                # on validation: rescues 6 good curves but creates 14 false positives
+                # because Baranyi is flexible enough to fit contamination artifacts)
                 best_model_name = 'gompertz'
-                if truncation_params.get('use_adaptive', False):
-                    # Started with adaptive — also try first_peak
-                    alt_trunc = truncate_at_max(
-                        time_clean, od600_clean,
-                        smoothing_window=truncation_params['smoothing_window'],
-                        buffer_points=truncation_params['buffer_points'],
-                        use_first_peak=True,
-                        use_adaptive=False
-                    )
-                else:
-                    # Started with first_peak — also try adaptive
-                    alt_trunc = truncate_at_max(
-                        time_clean, od600_clean,
-                        smoothing_window=truncation_params['smoothing_window'],
-                        buffer_points=truncation_params['buffer_points'],
-                        use_first_peak=False,
-                        use_adaptive=True
-                    )
-                alt_fit = fit_gompertz(
-                    alt_trunc.time_truncated,
-                    alt_trunc.od_truncated
-                )
-                if alt_fit.r_squared > fit.r_squared:
-                    truncation = alt_trunc
-                    fit = alt_fit
+                use_multi_model = truncation_params.get('try_multi_model', False)
 
-                # Step 2c: Multi-model fallback — try alternative growth models
-                # when Gompertz R² is below the classification threshold
-                min_r2 = fit_quality_thresholds.get('min_r_squared', 0.95)
-                if fit.r_squared < min_r2:
+                if use_multi_model and fit.r_squared < fit_quality_thresholds.get('min_r_squared', 0.95):
                     gompertz_r2_val = fit.r_squared
                     alt_fit, alt_model = try_alternative_models(
                         truncation.time_truncated,
@@ -2022,19 +2530,19 @@ def process_growth_curves(
                         print(f"    Reason: {classification.reason}")
 
                 # Step 4: Generate visualization
-                if classification.is_good:
-                    plot_truncation_comparison(
-                        truncation, fit, strain_name,
-                        plots_dir
-                    )
-                else:
-                    # Plot bad curve with fit attempt shown
-                    plot_bad_curve_with_fit(
-                        time_clean, od600_clean,
-                        truncation, fit,
-                        classification, strain_name,
-                        plots_dir
-                    )
+                if not no_plots:
+                    if classification.is_good:
+                        plot_truncation_comparison(
+                            truncation, fit, strain_name,
+                            plots_dir
+                        )
+                    else:
+                        plot_bad_curve_with_fit(
+                            time_clean, od600_clean,
+                            truncation, fit,
+                            classification, strain_name,
+                            plots_dir
+                        )
 
             # =================================================================
             # OD-THRESHOLD APPROACH (Original)
@@ -2083,16 +2591,17 @@ def process_growth_curves(
                                 print(f"    Fit failed: {fit.error_message}")
 
                         # Step 4: Generate visualization
-                        plot_truncation_comparison(
-                            truncation, fit, strain_name,
-                            plots_dir
-                        )
+                        if not no_plots:
+                            plot_truncation_comparison(
+                                truncation, fit, strain_name,
+                                plots_dir
+                            )
                     else:
                         if verbose:
                             print(f"    Truncation invalid: {reason}")
 
                 # Generate visualization for BAD curves too (for validation)
-                if not classification.is_good:
+                if not no_plots and not classification.is_good:
                     plot_bad_curve(
                         time_clean, od600_clean,
                         classification, strain_name,
@@ -2107,7 +2616,7 @@ def process_growth_curves(
             )
 
     # Generate summary visualization
-    if results:
+    if results and not no_plots:
         classifications = {k: v.classification for k, v in results.items()}
         plot_classification_summary(classifications, output_dir)
 
@@ -2280,6 +2789,11 @@ def main():
         default=20.0,
         help='Maximum parameter error %% for good fit (default: 20.0)'
     )
+    parser.add_argument(
+        '--no-plots',
+        action='store_true',
+        help='Skip generating per-curve plots (faster for batch/validation runs)'
+    )
 
     args = parser.parse_args()
 
@@ -2327,7 +2841,8 @@ def main():
         truncation_params=truncation_params,
         fit_quality_thresholds=fit_thresholds,
         use_fit_based_classification=use_fit_based,
-        verbose=not args.quiet
+        verbose=not args.quiet,
+        no_plots=args.no_plots
     )
 
     # Print summary
