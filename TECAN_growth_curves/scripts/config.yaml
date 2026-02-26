@@ -14,9 +14,9 @@ quality_gates:
   min_snr: 5.0                 # Minimum signal-to-noise ratio
   min_delta_od_ci: 0.1         # Minimum delta-OD confidence interval lower bound
   min_absolute_delta_od: 0.15  # Absolute minimum delta-OD for growth detection
-  pre_fit_snr_threshold: 5.0   # Pre-fit SNR threshold (raised from 3.0 to catch noisy FPs)
+  pre_fit_snr_threshold: 3.0   # Pre-fit SNR threshold (skip fitting below this)
   pre_fit_delta_od_override: 0.5  # If delta-OD > this, bypass low pre-fit SNR
-  excellent_r2_threshold: 0.995  # R-squared bypass for noise gates (raised from 0.98)
+  excellent_r2_threshold: 0.98 # R-squared above which noise-based gates are bypassed
   min_monotone_fraction: 0.55  # Minimum fraction of increasing consecutive points
   max_residual_autocorr: 0.7   # Maximum lag-1 residual autocorrelation
 
