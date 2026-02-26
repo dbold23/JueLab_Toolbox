@@ -1,6 +1,17 @@
 # =============================================================================
 # TECAN Growth Curve Pipeline Makefile
 # BIO380SP25 - Pesticide Bioremediating Bacteria Research Project
+#
+# PIPELINE ORDER (run 'make full-pipeline' for everything):
+#   Step 0: Preprocess raw data      (Group 1 only, if needed)
+#   Step 1: Gompertz curve analysis   (per group, --adaptive)
+#   Step 2: Combine group results     (→ all_groups_results.csv)
+#   Step 3: Haldane inhibition        (feedback inhibition modeling)
+#   Step 4: Advanced fitting          (GP, Bootstrap, Ensemble)
+#   Step 5: Statistical analysis      (figures, tests, R export)
+#   Step 6: Truncation comparison     (method ranking + bad strain rescue)
+#   Step 7: Export for collaboration   (clean CSV + methodology)
+#
 # =============================================================================
 
 PYTHON = python3
@@ -9,11 +20,85 @@ DATA = data/raw
 RESULTS = results/tables
 SYNTH = synthetic_data
 
-.PHONY: help install test run-pipeline run-haldane run-advanced run-advanced-gp run-advanced-bootstrap run-advanced-gompertz run-advanced-haldane run-advanced-ensemble run-compare-methods run-compare-bad validate validate-synthetic validate-truncation clean
+.PHONY: help install test test-quick \
+        full-pipeline core-pipeline \
+        step-1 step-2 step-3 step-4 step-5 step-6 step-7 \
+        run-advanced run-advanced-gp run-advanced-bootstrap \
+        run-advanced-ensemble run-compare-methods run-compare-bad \
+        train-classifier validate validate-synthetic validate-truncation \
+        dry-run clean
+
+# ─── Help ────────────────────────────────────────────────────────────────────
 
 help: ## Show this help message
+	@echo ""
+	@echo "  TECAN Growth Curve Pipeline"
+	@echo "  ==========================="
+	@echo ""
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-25s\033[0m %s\n", $$1, $$2}'
+		awk 'BEGIN {FS = ":.*?## "}; {printf "    \033[36m%-25s\033[0m %s\n", $$1, $$2}'
+	@echo ""
+
+# ─── Full Pipeline ───────────────────────────────────────────────────────────
+
+full-pipeline: ## Run complete end-to-end pipeline (all 8 steps)
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py
+
+core-pipeline: ## Run core steps only (0-3, 5, 7 — skip advanced)
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --skip-advanced
+
+dry-run: ## Preview pipeline steps without executing
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --dry-run
+
+# ─── Individual Steps ────────────────────────────────────────────────────────
+
+step-1: ## Step 1: Gompertz curve analysis (all groups)
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 0,1
+
+step-2: ## Step 2: Combine group results
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 2
+
+step-3: ## Step 3: Haldane inhibition analysis
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 3
+
+step-4: ## Step 4: Advanced fitting (GP + Bootstrap + Ensemble)
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 4
+
+step-5: ## Step 5: Statistical analysis + figures
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 5
+
+step-6: ## Step 6: Truncation comparison + bad strain rescue
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 6
+
+step-7: ## Step 7: Export for collaboration
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 7
+
+# ─── Advanced (granular) ─────────────────────────────────────────────────────
+
+run-advanced: ## Run all advanced fitting (GP + Bootstrap + Ensemble)
+	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py
+
+run-advanced-gp: ## Run GP truncation only
+	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --gp-only
+
+run-advanced-bootstrap: ## Run bootstrap CIs only
+	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --bootstrap-only
+
+run-advanced-ensemble: ## Run ensemble truncation only
+	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --ensemble-only
+
+run-compare-methods: ## Compare truncation methods
+	$(PYTHON) $(SCRIPTS)/07_compare_truncation_methods.py
+
+run-compare-bad: ## Compare methods + rescue bad strains
+	$(PYTHON) $(SCRIPTS)/07_compare_truncation_methods.py --include-bad
+
+# ─── ML Classifier ───────────────────────────────────────────────────────────
+
+train-classifier: ## Train ML classifier on synthetic + audit data
+	$(PYTHON) $(SCRIPTS)/09_train_classifier.py --compare
+
+# ─── Validation & Testing ────────────────────────────────────────────────────
 
 install: ## Install Python dependencies
 	$(PYTHON) -m pip install -r $(SCRIPTS)/requirements.txt
@@ -24,53 +109,20 @@ test: ## Run test suite
 test-quick: ## Run fast tests only (no integration)
 	$(PYTHON) -m pytest tests/ -v --tb=short -k "not integration"
 
-run-pipeline: ## Run full Gompertz pipeline on all groups
-	bash $(SCRIPTS)/run_all_groups.sh
-
-run-haldane: ## Run Haldane feedback inhibition analysis
-	$(PYTHON) $(SCRIPTS)/05_haldane_analysis.py
-
 validate: ## Launch interactive curve validation tool
 	$(PYTHON) $(SCRIPTS)/validate_results_interactive.py
 
-validate-synthetic: ## Run pipeline on synthetic data and compute metrics
+validate-synthetic: ## Run pipeline on synthetic data + compute metrics
 	$(PYTHON) $(SCRIPTS)/01_growth_curve_analysis.py \
 		$(SYNTH)/output/comprehensive_test/test_data/DATA \
 		-o $(SYNTH)/output/comprehensive_test/validation_latest -q
 
-run-advanced: ## Run all advanced fitting (GP + Bootstrap + Bayesian)
-	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py
-
-run-advanced-gp: ## Run GP truncation only
-	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --gp-only
-
-run-advanced-bootstrap: ## Run bootstrap CIs only
-	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --bootstrap-only
-
-run-advanced-gompertz: ## Run Bayesian Gompertz only
-	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --gompertz-only
-
-run-advanced-haldane: ## Run Bayesian Haldane only
-	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --haldane-only
-
-run-advanced-ensemble: ## Run ensemble truncation only
-	$(PYTHON) $(SCRIPTS)/06_advanced_fitting.py --ensemble-only
-
-run-compare-methods: ## Compare truncation methods (requires ensemble run first)
-	$(PYTHON) $(SCRIPTS)/07_compare_truncation_methods.py
-
-run-compare-bad: ## Compare methods + rescue bad strains
-	$(PYTHON) $(SCRIPTS)/07_compare_truncation_methods.py --include-bad
-
 validate-truncation: ## Launch interactive truncation method validator
 	$(PYTHON) $(SCRIPTS)/08_validate_truncation.py
 
-train-classifier: ## Train ML classifier on synthetic data
-	$(PYTHON) $(SCRIPTS)/09_train_classifier.py --compare
+# ─── Cleanup ─────────────────────────────────────────────────────────────────
 
-run-all: run-pipeline run-haldane run-advanced ## Run full pipeline + Haldane + Advanced
-
-clean: ## Remove generated output (keeps raw data and results)
+clean: ## Remove generated output (keeps raw data and committed results)
 	rm -rf $(SYNTH)/output/comprehensive_test/validation_v*/
 	rm -rf $(SCRIPTS)/OUTPUT/
 	@echo "Cleaned generated output. Raw data and committed results preserved."
