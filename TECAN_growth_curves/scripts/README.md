@@ -250,7 +250,7 @@ Saves annotations to `truncation_validation_audit.csv` (resumable).
 ```bash
 make help                  # Show all available commands
 make install               # Install Python dependencies
-make test                  # Run full test suite (64 tests)
+make test                  # Run full test suite (93 tests)
 make test-quick            # Run unit tests only (no integration)
 make run-pipeline          # Run Gompertz pipeline on all groups
 make run-haldane           # Run Haldane analysis on pesticide strains

@@ -19,7 +19,7 @@ make run-advanced         # Advanced stats (GP, Bayesian, Bootstrap, Ensemble)
 make run-compare-methods  # Compare truncation methods on good strains
 make run-compare-bad      # Compare methods + rescue bad strains
 make validate-truncation  # Interactive truncation method validator
-make test                 # Run test suite (64 tests)
+make test                 # Run test suite (93 tests)
 ```
 
 ## What This Does
@@ -79,10 +79,11 @@ Manual visual audit: **91.3%** of classifications validated correct (84/92).
 
 | Metric | Value |
 |--------|-------|
-| Accuracy | 89.0% |
-| Precision | 89.5% |
-| Recall | 95.9% |
-| F1 Score | 92.6% |
+| Accuracy | 89.8% |
+| Precision | 91.3% |
+| Recall | 94.8% |
+| F1 Score | 93.0% |
+| Specificity | 77.0% |
 
 25/32 test scenarios achieve 100% accuracy.
 
@@ -128,7 +129,7 @@ TECAN_growth_curves/
 │           ├── rescued_strains.csv      # Bad strains rescued by better truncation
 │           └── overlay_plots/           # Per-strain method overlay plots
 ├── synthetic_data/                      # 480-curve validation suite
-├── tests/                               # pytest suite (64 tests)
+├── tests/                               # pytest suite (93 tests)
 ├── Makefile                             # make install / test / run-all (17 targets)
 └── .github/workflows/test.yml           # CI (Python 3.10-3.12)
 ```
