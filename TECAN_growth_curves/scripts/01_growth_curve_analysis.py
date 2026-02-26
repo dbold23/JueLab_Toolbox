@@ -244,8 +244,10 @@ def classify_by_fit_quality(
 
     # =====================================================================
     # Secondary quality gates (require raw data)
-    # Only apply noise-based gates when R² is mediocre. If the Gompertz
-    # fit is excellent (R² >= 0.98), the fit itself proves signal > noise.
+    # Tightened: the R² >= 0.98 bypass was too permissive — noisy non-
+    # growth curves could get a decent R² by chance. Now raised to 0.995.
+    # SNR gate raised to 5.0 and always enforced with min delta-OD.
+    # Added: residual autocorrelation check and monotonicity gate.
     # =====================================================================
     if od600 is not None and len(od600) > 10:
         n_baseline = min(10, len(od600) // 5)
@@ -257,8 +259,9 @@ def classify_by_fit_quality(
 
         snr = (max_od - baseline_mean) / baseline_std
 
-        # Only enforce noise-based gates when fit quality is not already excellent
-        fit_is_excellent = fit_result.r_squared >= 0.98
+        # Only bypass noise gates when fit is truly excellent (raised from 0.98)
+        excellent_threshold = thresholds.get('excellent_r2_threshold', 0.995)
+        fit_is_excellent = fit_result.r_squared >= excellent_threshold
 
         if not fit_is_excellent:
             # SNR filter: signal must meaningfully exceed noise floor
@@ -272,7 +275,7 @@ def classify_by_fit_quality(
             if delta_od_ci_lower < min_delta_od_ci:
                 reasons.append(f"Delta OD not significant: CI lower={delta_od_ci_lower:.3f} < {min_delta_od_ci}")
 
-        # Absolute minimum delta-OD (always enforced)
+        # Absolute minimum delta-OD (always enforced, even for excellent fits)
         min_delta_od = thresholds.get('min_absolute_delta_od', 0.15)
         if delta_od < min_delta_od:
             reasons.append(f"Insufficient growth: delta_od={delta_od:.3f} < {min_delta_od}")
@@ -281,9 +284,46 @@ def classify_by_fit_quality(
         if fit_result.a_opt < 3 * baseline_std:
             reasons.append(f"Growth amplitude below noise: A={fit_result.a_opt:.3f} < 3*noise={3*baseline_std:.3f}")
 
+        # Monotonicity check: real growth curves have sustained upward trends.
+        # Compute fraction of consecutive smoothed points that increase over
+        # the first 60% of data (lag + exponential phase). Pure noise is ~50%.
+        smoothed_check = pd.Series(od600).rolling(
+            window=5, center=True, min_periods=1
+        ).mean().values
+        check_end = max(10, int(len(smoothed_check) * 0.6))
+        diffs = np.diff(smoothed_check[:check_end])
+        monotone_frac = float(np.sum(diffs > 0) / max(len(diffs), 1))
+        min_monotone = thresholds.get('min_monotone_fraction', 0.55)
+        if monotone_frac < min_monotone and not fit_is_excellent:
+            reasons.append(
+                f"Non-monotonic signal: {monotone_frac:.2f} < {min_monotone}"
+            )
+
+        # Residual autocorrelation check: structured residuals indicate the
+        # Gompertz model is fitting noise rather than real sigmoid growth.
+        if fit_result.success and len(fit_result.residuals) > 10:
+            resid = fit_result.residuals
+            n_res = len(resid)
+            resid_mean = np.mean(resid)
+            c0 = np.sum((resid - resid_mean) ** 2) / n_res
+            if c0 > 1e-12:
+                c1 = np.sum(
+                    (resid[:-1] - resid_mean) * (resid[1:] - resid_mean)
+                ) / n_res
+                lag1_autocorr = c1 / c0
+            else:
+                lag1_autocorr = 0.0
+            max_autocorr = thresholds.get('max_residual_autocorr', 0.7)
+            if lag1_autocorr > max_autocorr and not fit_is_excellent:
+                reasons.append(
+                    f"High residual autocorrelation: {lag1_autocorr:.2f} > {max_autocorr}"
+                )
+            metrics['residual_autocorr'] = lag1_autocorr
+
         metrics['snr'] = snr
         metrics['delta_od'] = delta_od
         metrics['baseline_std'] = baseline_std
+        metrics['monotone_fraction'] = monotone_frac
 
     is_good = len(reasons) == 0
     reason = "GOOD: Fit quality passed" if is_good else "BAD: " + "; ".join(reasons)
@@ -294,6 +334,80 @@ def classify_by_fit_quality(
 # =============================================================================
 # Truncation Functions
 # =============================================================================
+
+def detect_incomplete_curve(
+    time: np.ndarray,
+    od600: np.ndarray,
+    smoothing_window: int = 7,
+    tail_fraction: float = 0.15,
+    slope_threshold: float = 0.005
+) -> Tuple[bool, Dict]:
+    """
+    Detect if a growth curve is still rising at the end of the experiment
+    (i.e., stationary phase was never reached).
+
+    These curves should NOT be truncated early, since the peak hasn't occurred
+    yet. Forcing truncation causes Gompertz fits to fail (truncation_challenge
+    scenario).
+
+    Parameters
+    ----------
+    time : np.ndarray
+        Time values in hours
+    od600 : np.ndarray
+        OD600 absorbance values
+    smoothing_window : int
+        Window for smoothing (default: 7)
+    tail_fraction : float
+        Fraction of data points at the end to check (default: 0.15 = last 15%)
+    slope_threshold : float
+        Minimum dOD/dt to consider "still rising" (default: 0.005 OD/h)
+
+    Returns
+    -------
+    Tuple[bool, Dict]
+        (is_incomplete, metadata)
+        is_incomplete is True if the curve is still rising at experiment end
+    """
+    smoothed = pd.Series(od600).rolling(
+        window=smoothing_window, center=True, min_periods=1
+    ).mean().values
+
+    n = len(smoothed)
+    tail_start = max(1, int(n * (1 - tail_fraction)))
+
+    # Compute derivative in the tail region
+    dt = np.diff(time[tail_start:])
+    dod = np.diff(smoothed[tail_start:])
+    # Avoid division by zero
+    valid = dt > 0
+    if not np.any(valid):
+        return False, {'tail_slope': 0.0, 'tail_start_idx': tail_start}
+
+    tail_rates = dod[valid] / dt[valid]
+    mean_tail_slope = float(np.mean(tail_rates))
+
+    # Check: is the tail still rising meaningfully?
+    # Also check that the final OD is near the global max (within 5%)
+    max_od = np.max(smoothed)
+    final_od = smoothed[-1]
+    near_max = final_od >= 0.95 * max_od
+
+    # Curve is incomplete if:
+    # 1. Mean tail slope is positive and above threshold, AND
+    # 2. The final OD is near the global maximum (not a decline after peak)
+    is_incomplete = mean_tail_slope > slope_threshold and near_max
+
+    metadata = {
+        'tail_slope': mean_tail_slope,
+        'tail_start_idx': tail_start,
+        'final_od': float(final_od),
+        'max_od': float(max_od),
+        'near_max': near_max,
+    }
+
+    return is_incomplete, metadata
+
 
 def find_first_local_maximum(
     od600: np.ndarray,
@@ -795,7 +909,15 @@ def truncate_at_max(
     # Default start index is 0 (no trimming)
     start_idx = 0
 
-    if use_adaptive:
+    # Check if curve is incomplete (still rising at experiment end)
+    is_incomplete, incomplete_meta = detect_incomplete_curve(time, od600)
+
+    if is_incomplete and not use_adaptive:
+        # Curve never reached stationary phase — use all data (no truncation)
+        # This prevents false negatives on truncation_challenge-type curves
+        truncation_idx = len(od600) - 1
+        actual_max_idx = np.argmax(od600)
+    elif use_adaptive:
         # Find optimal truncation point that maximizes R² (also trims noisy start)
         start_idx, end_idx, best_r2, _ = find_optimal_truncation(time, od600)
         truncation_idx = end_idx
@@ -1547,9 +1669,10 @@ def process_growth_curves(
                 signal_range = float(np.max(od600_clean) - np.mean(od600_clean[:min(5, len(od600_clean))]))
                 pre_fit_snr = signal_range / max(noise_std, 1e-8)
 
-                if pre_fit_snr < 3.0 and signal_range < 0.5:
+                if pre_fit_snr < 5.0 and signal_range < 0.5:
                     # Signal is buried in noise AND growth is small -- skip fitting, classify BAD
                     # (If signal_range >= 0.5 we let the fitter decide; large growth overrides low SNR)
+                    # Raised from 3.0 to 5.0 to catch high_noise and borderline_noise FPs
                     classification = ClassificationResult(
                         is_good=False,
                         reason=f"BAD: Pre-fit SNR too low ({pre_fit_snr:.1f} < 3.0)",

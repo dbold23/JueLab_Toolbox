@@ -253,13 +253,24 @@ def gp_find_phases(t_dense, mu_dense, config=None):
       - death_start: start of death phase (if present)
     """
     cfg = (config or {}).get('advanced', {}).get('gp', {})
-    deriv_thresh = cfg.get('derivative_threshold', 0.01)
+    deriv_thresh_cfg = cfg.get('derivative_threshold', 0.01)
 
     # Compute derivative via finite differences on GP mean
     dt = np.diff(t_dense)
     dmu = np.diff(mu_dense)
     deriv = dmu / dt
     t_deriv = (t_dense[:-1] + t_dense[1:]) / 2
+
+    # Normalize derivative threshold relative to the max derivative.
+    # The config value (default 0.01) is treated as a fraction of max dOD/dt
+    # when normalize_derivative is True, making it scale-independent across
+    # strains with different OD ranges.
+    normalize = cfg.get('normalize_derivative', True)
+    max_deriv_val = float(np.max(deriv)) if len(deriv) > 0 else 1.0
+    if normalize and max_deriv_val > 1e-8:
+        deriv_thresh = deriv_thresh_cfg * max_deriv_val
+    else:
+        deriv_thresh = deriv_thresh_cfg
 
     phases = {
         'lag_end': None,
@@ -280,7 +291,9 @@ def gp_find_phases(t_dense, mu_dense, config=None):
     phases['exp_peak'] = t_deriv[peak_idx]
 
     # Find where derivative drops back to ~0 after peak (stationary onset)
-    # = first zero-crossing of derivative after the peak
+    # Primary: first zero-crossing of derivative after the peak
+    # Improved: also check for derivative dropping below 5% of max (more
+    # robust than exact zero-crossing which may never occur for noisy data)
     post_peak = deriv[peak_idx:]
     zero_crossings = np.where(
         (post_peak[:-1] > deriv_thresh) & (post_peak[1:] <= deriv_thresh)
@@ -289,18 +302,20 @@ def gp_find_phases(t_dense, mu_dense, config=None):
         stat_idx = peak_idx + zero_crossings[0]
         phases['stat_start'] = t_deriv[stat_idx]
     else:
-        # Fallback: use point where derivative drops to 10% of max
-        max_deriv = deriv[peak_idx]
-        if max_deriv > 0:
-            below_10pct = np.where(
-                deriv[peak_idx:] < 0.1 * max_deriv
+        # Fallback: use point where derivative drops to 5% of max
+        # (lowered from 10% for better sensitivity on incomplete curves)
+        fallback_frac = cfg.get('stationary_fallback_fraction', 0.05)
+        if max_deriv_val > 1e-8:
+            below_threshold = np.where(
+                deriv[peak_idx:] < fallback_frac * max_deriv_val
             )[0]
-            if len(below_10pct) > 0:
-                stat_idx = peak_idx + below_10pct[0]
+            if len(below_threshold) > 0:
+                stat_idx = peak_idx + below_threshold[0]
                 phases['stat_start'] = t_deriv[stat_idx]
 
     # Find death phase (derivative goes negative after stationary)
-    neg_crossings = np.where(deriv < -deriv_thresh)[0]
+    neg_thresh = -deriv_thresh  # symmetric with positive threshold
+    neg_crossings = np.where(deriv < neg_thresh)[0]
     if len(neg_crossings) > 0:
         # Only count if after the peak
         post_peak_neg = neg_crossings[neg_crossings > peak_idx]
@@ -336,10 +351,13 @@ def gp_truncate(time, od, config=None):
     truncation_idx = max(truncation_idx, 20)
     truncation_idx = min(truncation_idx, len(time) - 1)
 
-    # Confidence from GP variance at truncation point
+    # Confidence from GP variance at truncation point, normalized by max OD
+    # so it's comparable across strains with different OD ranges
     t_trunc_arr = np.array([[trunc_time]])
-    _, conf = gp.predict(t_trunc_arr, return_std=True)
-    confidence = float(conf[0])
+    _, std_at_trunc = gp.predict(t_trunc_arr, return_std=True)
+    max_od = float(np.max(od)) if len(od) > 0 else 1.0
+    # Confidence = 1 - relative_uncertainty (clamped to [0, 1])
+    confidence = max(0.0, min(1.0, 1.0 - float(std_at_trunc[0]) / max(max_od, 1e-6)))
 
     return truncation_idx, confidence, phases, (t_dense, mu, sigma)
 
@@ -634,8 +652,29 @@ def ensemble_truncate(time, od, config=None):
 
     times = np.array([r['time'] for r in results.values()])
     confs = np.array([r['confidence'] for r in results.values()])
+    method_names = list(results.keys())
     # Ensure minimum confidence weight
     confs = np.maximum(confs, 0.01)
+
+    # MAD-based outlier detection: downweight methods that disagree with the
+    # majority. This prevents a single bad method (e.g. changepoint) from
+    # pulling the consensus. A method is an outlier if its time is > 3 MADs
+    # from the median of all method times.
+    mad_threshold = cfg.get('mad_outlier_threshold', 3.0)
+    if n_succeeded >= 3:
+        med_time = float(np.median(times))
+        abs_devs = np.abs(times - med_time)
+        mad = float(np.median(abs_devs)) if len(abs_devs) > 0 else 0.0
+        # MAD = 0 means perfect agreement (all at median); skip outlier check
+        if mad > 1e-6:
+            for i, (name, t_val) in enumerate(zip(method_names, times)):
+                deviation = abs_devs[i] / mad
+                if deviation > mad_threshold:
+                    # Outlier: reduce confidence to 10% of original
+                    original_conf = confs[i]
+                    confs[i] = original_conf * 0.1
+                    results[name]['outlier'] = True
+                    results[name]['mad_deviation'] = float(deviation)
 
     # Compute consensus
     if consensus_method == 'weighted_median' and n_succeeded >= 2:
