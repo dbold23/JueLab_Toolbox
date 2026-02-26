@@ -22,56 +22,63 @@ PIPELINE FLOWCHART:
                            │
                     ┌──────▼──────────────────┐
                     │  STEP 1                  │
-                    │  Gompertz Curve Analysis  │  01_growth_curve_analysis.py
-                    │  (per group)              │  --adaptive [--ml-classify]
-                    │  • Truncation             │
-                    │  • Gompertz fitting       │
-                    │  • Classification (GOOD/  │
-                    │    BAD)                   │
-                    │  • QC plots               │
-                    └──────┬──────────────────-┘
+                    │  Train ML Classifier     │  09_train_classifier.py
+                    │  (if models don't exist) │  → models/*.joblib
+                    └──────┬──────────────────┘
+                           │
+                    ┌──────▼──────────────────────────┐
+                    │  STEP 2                          │
+                    │  Gompertz Growth Curve Analysis   │  01_growth_curve_analysis.py
+                    │  (per group, --adaptive)          │
+                    │  • Pre-fit ML gate (reject junk)  │
+                    │  • Truncation (adaptive R²)       │
+                    │  • Gompertz fitting                │
+                    │  • Post-fit ML classification      │
+                    │  • Rule-based fallback gates       │
+                    │  • QC plots per strain             │
+                    └──────┬──────────────────────────-┘
                            │
                     ┌──────▼──────────────────┐
-                    │  STEP 2                  │
+                    │  STEP 3                  │
                     │  Combine Group Results    │  → all_groups_results.csv
+                    │  (92 strains, 4 groups)   │
                     └──────┬──────────────────-┘
                            │
               ┌────────────┼────────────┐
               │            │            │
        ┌──────▼──────┐ ┌──▼───────┐ ┌──▼──────────────────┐
-       │  STEP 3     │ │ STEP 4   │ │  STEP 5              │
+       │  STEP 4     │ │ STEP 5   │ │  STEP 6              │
        │  Haldane    │ │ Advanced │ │  Statistical Analysis │
-       │  Inhibition │ │ Fitting  │ │  03_statistical_      │
-       │  Analysis   │ │ GP/Boot/ │ │  analysis.py          │
-       │  05_haldane │ │ Ensemble │ │                       │
-       └─────────────┘ │ 06_adv.  │ └───────────────────────┘
-                       └──┬───────┘
-                          │
-                   ┌──────▼──────────────────┐
-                   │  STEP 6                  │
-                   │  Truncation Comparison   │  07_compare_truncation_methods.py
-                   │  + Bad Strain Rescue     │  --include-bad
-                   └──────────────────────────┘
+       │  Inhibition │ │ Fitting  │ │  ANOVA, pairwise     │
+       │  ODE model  │ │ GP/Boot/ │ │  publication figures  │
+       │  AICc comp. │ │ Ensemble │ │  R-format export      │
+       │  Ki ranking │ │          │ │                       │
+       └─────────────┘ └──┬───────┘ └───────────────────────┘
                           │
                    ┌──────▼──────────────────┐
                    │  STEP 7                  │
-                   │  Export for Collaboration │  04_export_for_collaboration.py
+                   │  Truncation Comparison   │  5-method ranking
+                   │  + Bad Strain Rescue     │  --include-bad
+                   └──────┬──────────────────┘
+                          │
+                   ┌──────▼──────────────────┐
+                   │  STEP 8                  │
+                   │  Export for Collaboration │  clean CSV + methodology
+                   └──────┬──────────────────┘
+                          │
+                   ┌──────▼──────────────────┐
+                   │  STEP 9                  │
+                   │  Synthetic Validation     │  480 synthetic curves
+                   │  Accuracy / Recall / F1   │  parameter recovery
                    └──────────────────────────┘
-
-    OPTIONAL (run separately):
-    ┌─────────────────────────────────────────────┐
-    │  ML Classifier Training (09_train_classifier)│
-    │  Interactive Validation (08_validate_trunc.) │
-    │  Synthetic Data Validation                   │
-    └─────────────────────────────────────────────┘
 
 Usage:
     python run_full_pipeline.py                    # Run all steps
-    python run_full_pipeline.py --steps 1,2,3      # Run specific steps
-    python run_full_pipeline.py --from-step 3      # Resume from step 3
+    python run_full_pipeline.py --steps 2,3,4      # Run specific steps
+    python run_full_pipeline.py --from-step 4      # Resume from step 4
     python run_full_pipeline.py --dry-run           # Show what would run
-    python run_full_pipeline.py --ml-classify       # Enable ML classifier
-    python run_full_pipeline.py --skip-advanced     # Skip steps 4,6
+    python run_full_pipeline.py --no-ml             # Skip ML (rule-based only)
+    python run_full_pipeline.py --skip-advanced     # Skip steps 5,7
     python run_full_pipeline.py --config my.yaml    # Custom config file
 """
 
@@ -104,6 +111,19 @@ def load_config(config_path=None):
         return yaml.safe_load(f) or {}
 
 
+def ml_models_exist():
+    """Check if trained ML classifier models are available."""
+    prefit = PROJECT_DIR / 'models' / 'prefit_gate.joblib'
+    postfit = PROJECT_DIR / 'models' / 'postfit_classifier.joblib'
+    return prefit.exists() and postfit.exists()
+
+
+def synthetic_data_exists():
+    """Check if synthetic test data is available for validation."""
+    synth_dir = PROJECT_DIR / 'synthetic_data' / 'output' / 'comprehensive_test' / 'test_data'
+    return (synth_dir / 'DATA').exists() and (synth_dir / 'ground_truth.csv').exists()
+
+
 def run_step(cmd, description, dry_run=False):
     """Run a pipeline step with logging."""
     print(f"\n{'='*60}")
@@ -127,13 +147,14 @@ def run_step(cmd, description, dry_run=False):
         return True
 
 
-def step0_preprocess(config, dry_run=False):
+# ─── Step Implementations ────────────────────────────────────────────────────
+
+def step0_preprocess(config, dry_run=False, **kwargs):
     """Step 0: Preprocess raw 96-well plate reader data (Group 1 only)."""
     groups = config.get('groups', {})
     g1 = groups.get('Group1', {})
     g1_data_dir = PROJECT_DIR / g1.get('data_dir', 'data/raw/Group1/Group_1_DATA')
 
-    # Only preprocess if Group 1 needs it
     raw_csv = PROJECT_DIR / 'data' / 'raw' / 'Group1' / 'GrowthRate_ Group1_Values.csv'
     key_csv = PROJECT_DIR / 'data' / 'raw' / 'Group1' / 'GROUP1_KEY_V2.csv'
 
@@ -152,9 +173,37 @@ def step0_preprocess(config, dry_run=False):
         return True
 
 
-def step1_gompertz(config, ml_classify=False, dry_run=False):
-    """Step 1: Run Gompertz growth curve analysis on all groups."""
+def step1_train_classifier(config, dry_run=False, **kwargs):
+    """Step 1: Train ML classifier (if models don't exist yet)."""
+    no_ml = kwargs.get('no_ml', False)
+
+    if no_ml:
+        print("\n  Step 1: ML disabled (--no-ml), skipping classifier training")
+        return True
+
+    if ml_models_exist():
+        print("\n  Step 1: ML models already exist, skipping training")
+        print(f"    Pre-fit gate:  {PROJECT_DIR / 'models' / 'prefit_gate.joblib'}")
+        print(f"    Post-fit clf:  {PROJECT_DIR / 'models' / 'postfit_classifier.joblib'}")
+        return True
+
+    if not synthetic_data_exists():
+        print("\n  Step 1: No synthetic training data found, skipping ML training")
+        print("    (Pipeline will use rule-based classification as fallback)")
+        return True
+
+    return run_step(
+        [sys.executable, str(SCRIPT_DIR / '09_train_classifier.py'), '--compare'],
+        "STEP 1: Train ML Classifier (pre-fit gate + post-fit classifier)",
+        dry_run=dry_run
+    )
+
+
+def step2_gompertz(config, dry_run=False, **kwargs):
+    """Step 2: Run Gompertz growth curve analysis on all groups."""
     groups = config.get('groups', {})
+    no_ml = kwargs.get('no_ml', False)
+    use_ml = not no_ml and ml_models_exist()
     all_ok = True
 
     for group_name, group_cfg in sorted(groups.items()):
@@ -171,25 +220,29 @@ def step1_gompertz(config, ml_classify=False, dry_run=False):
             '-o', str(output_dir),
             '--adaptive',
         ]
-        if ml_classify:
+        if use_ml:
             cmd.append('--ml-classify')
 
-        ok = run_step(cmd, f"STEP 1: Gompertz Analysis — {group_name}", dry_run=dry_run)
+        label = f"STEP 2: Gompertz Analysis — {group_name}"
+        if use_ml:
+            label += " (with ML classifier)"
+
+        ok = run_step(cmd, label, dry_run=dry_run)
         if not ok:
             all_ok = False
 
     return all_ok
 
 
-def step2_combine(config, dry_run=False):
-    """Step 2: Combine all group results into all_groups_results.csv."""
+def step3_combine(config, dry_run=False, **kwargs):
+    """Step 3: Combine all group results into all_groups_results.csv."""
     import pandas as pd
 
     results_base = PROJECT_DIR / config.get('paths', {}).get('results', 'results/tables')
     groups = config.get('groups', {})
 
     print(f"\n{'='*60}")
-    print(f"  STEP 2: Combine Group Results → all_groups_results.csv")
+    print(f"  STEP 3: Combine Group Results → all_groups_results.csv")
     print(f"{'='*60}")
 
     if dry_run:
@@ -224,80 +277,131 @@ def step2_combine(config, dry_run=False):
     return True
 
 
-def step3_haldane(config, dry_run=False):
-    """Step 3: Run Haldane feedback inhibition analysis."""
+def step4_haldane(config, dry_run=False, **kwargs):
+    """Step 4: Run Haldane feedback inhibition analysis."""
     return run_step(
         [sys.executable, str(SCRIPT_DIR / '05_haldane_analysis.py')],
-        "STEP 3: Haldane Feedback Inhibition Analysis",
+        "STEP 4: Haldane Feedback Inhibition Analysis (ODE + AICc)",
         dry_run=dry_run
     )
 
 
-def step4_advanced(config, dry_run=False):
-    """Step 4: Run advanced fitting (GP, Bootstrap, Ensemble)."""
+def step5_advanced(config, dry_run=False, **kwargs):
+    """Step 5: Run advanced fitting (GP, Bootstrap, Ensemble)."""
     return run_step(
         [sys.executable, str(SCRIPT_DIR / '06_advanced_fitting.py')],
-        "STEP 4: Advanced Fitting (GP + Bootstrap + Ensemble)",
+        "STEP 5: Advanced Fitting (GP Truncation + Bootstrap CIs + Ensemble)",
         dry_run=dry_run
     )
 
 
-def step5_statistics(config, dry_run=False):
-    """Step 5: Run statistical analysis and generate figures."""
+def step6_statistics(config, dry_run=False, **kwargs):
+    """Step 6: Run statistical analysis and generate figures."""
     results_base = PROJECT_DIR / config.get('paths', {}).get('results', 'results/tables')
     all_results = results_base / 'all_groups_results.csv'
 
     if not all_results.exists() and not dry_run:
-        print("\n  Step 5: all_groups_results.csv not found, skipping statistics")
+        print("\n  Step 6: all_groups_results.csv not found, skipping statistics")
         return True
 
     return run_step(
         [sys.executable, str(SCRIPT_DIR / '03_statistical_analysis.py'),
          '--input', str(all_results),
          '--output-dir', str(results_base)],
-        "STEP 5: Statistical Analysis + Publication Figures",
+        "STEP 6: Statistical Analysis (ANOVA + pairwise + publication figures)",
         dry_run=dry_run
     )
 
 
-def step6_compare_methods(config, dry_run=False):
-    """Step 6: Compare truncation methods + rescue bad strains."""
+def step7_compare_methods(config, dry_run=False, **kwargs):
+    """Step 7: Compare truncation methods + rescue bad strains."""
     return run_step(
         [sys.executable, str(SCRIPT_DIR / '07_compare_truncation_methods.py'),
          '--include-bad'],
-        "STEP 6: Truncation Method Comparison + Bad Strain Rescue",
+        "STEP 7: Truncation Method Comparison + Bad Strain Rescue",
         dry_run=dry_run
     )
 
 
-def step7_export(config, dry_run=False):
-    """Step 7: Export clean results for collaboration."""
+def step8_export(config, dry_run=False, **kwargs):
+    """Step 8: Export clean results for collaboration."""
     results_base = PROJECT_DIR / config.get('paths', {}).get('results', 'results/tables')
     all_results = results_base / 'all_groups_results.csv'
 
     if not all_results.exists() and not dry_run:
-        print("\n  Step 7: all_groups_results.csv not found, skipping export")
+        print("\n  Step 8: all_groups_results.csv not found, skipping export")
         return True
 
     return run_step(
         [sys.executable, str(SCRIPT_DIR / '04_export_for_collaboration.py'),
          '--input', str(all_results),
          '--output-dir', str(results_base)],
-        "STEP 7: Export for Collaboration",
+        "STEP 8: Export for Collaboration (clean CSV + methodology)",
         dry_run=dry_run
     )
 
 
-# Step registry: (step_number, function, short_name, requires_advanced)
+def step9_validate(config, dry_run=False, **kwargs):
+    """Step 9: Validate pipeline on synthetic data."""
+    no_ml = kwargs.get('no_ml', False)
+
+    if not synthetic_data_exists():
+        print("\n  Step 9: No synthetic test data found, skipping validation")
+        return True
+
+    synth_data = PROJECT_DIR / 'synthetic_data' / 'output' / 'comprehensive_test' / 'test_data' / 'DATA'
+    synth_gt = PROJECT_DIR / 'synthetic_data' / 'output' / 'comprehensive_test' / 'test_data' / 'ground_truth.csv'
+    out_dir = PROJECT_DIR / 'synthetic_data' / 'output' / 'comprehensive_test' / 'validation_latest'
+
+    # Run pipeline on synthetic data
+    cmd = [
+        sys.executable, str(SCRIPT_DIR / '01_growth_curve_analysis.py'),
+        str(synth_data),
+        '-o', str(out_dir),
+        '-q',
+    ]
+    if not no_ml and ml_models_exist():
+        cmd.append('--ml-classify')
+
+    ok = run_step(cmd, "STEP 9a: Run pipeline on 480 synthetic curves", dry_run=dry_run)
+    if not ok:
+        return False
+
+    # Run validator to compute accuracy metrics
+    results_csv = out_dir / 'processing_results.csv'
+    validator_script = PROJECT_DIR / 'synthetic_data' / 'validation' / 'pipeline_validator.py'
+
+    if validator_script.exists() and (results_csv.exists() or dry_run):
+        ok = run_step(
+            [sys.executable, str(validator_script),
+             '--pipeline', str(SCRIPT_DIR / '01_growth_curve_analysis.py'),
+             '--data-dir', str(synth_data),
+             '--ground-truth', str(synth_gt),
+             '--output-dir', str(out_dir),
+             '--skip-run',
+             '--results-csv', str(results_csv)],
+            "STEP 9b: Compute validation metrics (accuracy, recall, F1, parameter recovery)",
+            dry_run=dry_run
+        )
+        return ok
+
+    return True
+
+
+# ─── Step Registry ───────────────────────────────────────────────────────────
+#  (step_num, function, short_name, is_advanced, is_critical)
+
 STEPS = [
-    (0, step0_preprocess,       "Preprocess raw data",              False),
-    (1, step1_gompertz,         "Gompertz curve analysis",          False),
-    (2, step2_combine,          "Combine group results",            False),
-    (3, step3_haldane,          "Haldane inhibition analysis",      False),
-    (4, step4_advanced,         "Advanced fitting (GP/Bootstrap)",  True),
-    (5, step5_statistics,       "Statistical analysis + figures",   False),
-    (6, step6_compare_methods,  "Truncation comparison + rescue",   True),
-    (7, step7_export,           "Export for collaboration",         False),
+    (0, step0_preprocess,       "Preprocess raw data",                False, False),
+    (1, step1_train_classifier, "Train ML classifier",                False, False),
+    (2, step2_gompertz,         "Gompertz curve analysis (per group)", False, True),
+    (3, step3_combine,          "Combine group results",              False, True),
+    (4, step4_haldane,          "Haldane inhibition analysis (AICc)", False, False),
+    (5, step5_advanced,         "Advanced fitting (GP/Bootstrap)",    True,  False),
+    (6, step6_statistics,       "Statistical analysis + figures",     False, False),
+    (7, step7_compare_methods,  "Truncation comparison + rescue",     True,  False),
+    (8, step8_export,           "Export for collaboration",           False, False),
+    (9, step9_validate,         "Synthetic validation (480 curves)",  False, False),
 ]
 
 
@@ -308,33 +412,35 @@ def main():
         epilog="""
 Pipeline Steps:
   0  Preprocess raw plate data (Group 1 only, if needed)
-  1  Gompertz growth curve analysis (all groups, --adaptive)
-  2  Combine group results → all_groups_results.csv
-  3  Haldane feedback inhibition analysis
-  4  Advanced fitting (GP truncation, Bootstrap CIs, Ensemble)
-  5  Statistical analysis + publication figures
-  6  Truncation method comparison + bad strain rescue
-  7  Export clean results for collaboration
+  1  Train ML classifier (skipped if models/ already exists)
+  2  Gompertz growth curve analysis (all groups, --adaptive, with ML)
+  3  Combine group results → all_groups_results.csv
+  4  Haldane feedback inhibition analysis (ODE + AICc comparison)
+  5  Advanced fitting (GP truncation, Bootstrap CIs, Ensemble)
+  6  Statistical analysis + publication figures (ANOVA, pairwise)
+  7  Truncation method comparison + bad strain rescue
+  8  Export clean results for collaboration
+  9  Synthetic validation (accuracy, recall, F1, parameter recovery)
 
 Examples:
   python run_full_pipeline.py                     # Run everything
-  python run_full_pipeline.py --steps 1,2,3       # Core pipeline only
-  python run_full_pipeline.py --from-step 3       # Resume from Haldane
-  python run_full_pipeline.py --skip-advanced      # Skip GP/Ensemble steps
-  python run_full_pipeline.py --ml-classify        # Use ML classifier in step 1
+  python run_full_pipeline.py --steps 2,3,4       # Core + Haldane only
+  python run_full_pipeline.py --from-step 4       # Resume from Haldane
+  python run_full_pipeline.py --skip-advanced      # Skip GP/Ensemble (steps 5,7)
+  python run_full_pipeline.py --no-ml              # Rule-based only (no ML)
   python run_full_pipeline.py --dry-run            # Preview without running
         """
     )
     parser.add_argument('--config', type=str, default=None,
                         help='Path to config.yaml (default: scripts/config.yaml)')
     parser.add_argument('--steps', type=str, default=None,
-                        help='Comma-separated step numbers to run (e.g., "1,2,3")')
+                        help='Comma-separated step numbers to run (e.g., "2,3,4")')
     parser.add_argument('--from-step', type=int, default=None,
                         help='Start from this step number (inclusive)')
     parser.add_argument('--skip-advanced', action='store_true',
-                        help='Skip advanced fitting steps (4, 6)')
-    parser.add_argument('--ml-classify', action='store_true',
-                        help='Use ML classifier during Gompertz analysis')
+                        help='Skip advanced fitting steps (5, 7)')
+    parser.add_argument('--no-ml', action='store_true',
+                        help='Disable ML classifier (use rule-based classification only)')
     parser.add_argument('--dry-run', action='store_true',
                         help='Show what would run without executing')
 
@@ -342,17 +448,22 @@ Examples:
     config = load_config(args.config)
 
     # Determine which steps to run
+    max_step = max(s[0] for s in STEPS)
     if args.steps:
         run_steps = set(int(s.strip()) for s in args.steps.split(','))
     elif args.from_step is not None:
-        run_steps = set(range(args.from_step, 8))
+        run_steps = set(range(args.from_step, max_step + 1))
     else:
-        run_steps = set(range(0, 8))
+        run_steps = set(range(0, max_step + 1))
 
     if args.skip_advanced:
-        run_steps -= {4, 6}
+        run_steps -= {5, 7}
 
     # Header
+    ml_status = "disabled (--no-ml)" if args.no_ml else (
+        "enabled (models exist)" if ml_models_exist() else "will train in step 1"
+    )
+
     print("\n" + "=" * 60)
     print("  TECAN GROWTH CURVE FULL ANALYSIS PIPELINE")
     print("  BIO380SP25 - Pesticide Bioremediating Bacteria")
@@ -360,7 +471,7 @@ Examples:
     print(f"  Project dir:  {PROJECT_DIR}")
     print(f"  Config:       {args.config or 'scripts/config.yaml'}")
     print(f"  Steps:        {sorted(run_steps)}")
-    print(f"  ML classify:  {'yes' if args.ml_classify else 'no'}")
+    print(f"  ML classify:  {ml_status}")
     if args.dry_run:
         print(f"  Mode:         DRY RUN (no execution)")
     print()
@@ -369,23 +480,17 @@ Examples:
     results = {}
     pipeline_start = time.time()
 
-    for step_num, step_fn, step_name, is_advanced in STEPS:
+    for step_num, step_fn, step_name, is_advanced, is_critical in STEPS:
         if step_num not in run_steps:
             continue
 
-        # Pass ml_classify flag to step 1
-        if step_num == 1:
-            ok = step_fn(config, ml_classify=args.ml_classify, dry_run=args.dry_run)
-        else:
-            ok = step_fn(config, dry_run=args.dry_run)
-
+        ok = step_fn(config, dry_run=args.dry_run, no_ml=args.no_ml)
         results[step_num] = ok
 
         if not ok:
             print(f"\n  WARNING: Step {step_num} ({step_name}) failed")
-            # Steps 0-2 are critical; others can fail gracefully
-            if step_num <= 2:
-                print("  ABORTING: Core pipeline step failed")
+            if is_critical:
+                print("  ABORTING: Critical pipeline step failed")
                 break
 
     # Summary
@@ -393,18 +498,20 @@ Examples:
     print(f"\n{'='*60}")
     print(f"  PIPELINE SUMMARY")
     print(f"{'='*60}")
-    for step_num, _, step_name, _ in STEPS:
+    for step_num, _, step_name, _, _ in STEPS:
         if step_num in results:
             status = "OK" if results[step_num] else "FAILED"
-            print(f"  Step {step_num}: {step_name:42s} [{status}]")
+            print(f"  Step {step_num}: {step_name:45s} [{status}]")
         elif step_num in run_steps:
-            print(f"  Step {step_num}: {step_name:42s} [SKIPPED]")
+            print(f"  Step {step_num}: {step_name:45s} [SKIPPED]")
+
     print(f"\n  Total time: {total_time:.1f}s ({total_time/60:.1f} min)")
     print(f"  Results:    {PROJECT_DIR / config.get('paths', {}).get('results', 'results/tables')}")
     print()
 
     # Exit with failure if any critical step failed
-    if any(not v for k, v in results.items() if k <= 2):
+    if any(not v for k, v in results.items()
+           if any(s[0] == k and s[4] for s in STEPS)):
         sys.exit(1)
 
 
