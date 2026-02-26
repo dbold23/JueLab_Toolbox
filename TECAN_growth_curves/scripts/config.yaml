@@ -14,9 +14,11 @@ quality_gates:
   min_snr: 5.0                 # Minimum signal-to-noise ratio
   min_delta_od_ci: 0.1         # Minimum delta-OD confidence interval lower bound
   min_absolute_delta_od: 0.15  # Absolute minimum delta-OD for growth detection
-  pre_fit_snr_threshold: 3.0   # Pre-fit SNR threshold (skip fitting below this)
+  pre_fit_snr_threshold: 5.0   # Pre-fit SNR threshold (raised from 3.0 to catch noisy FPs)
   pre_fit_delta_od_override: 0.5  # If delta-OD > this, bypass low pre-fit SNR
-  excellent_r2_threshold: 0.98 # R-squared above which noise-based gates are bypassed
+  excellent_r2_threshold: 0.995  # R-squared bypass for noise gates (raised from 0.98)
+  min_monotone_fraction: 0.55  # Minimum fraction of increasing consecutive points
+  max_residual_autocorr: 0.7   # Maximum lag-1 residual autocorrelation
 
 # Truncation parameters
 truncation:
@@ -25,6 +27,9 @@ truncation:
   min_points_for_fit: 20       # Minimum points after truncation
   use_first_peak: true         # Truncate at first local max (vs global max)
   use_adaptive: false          # Adaptive R-squared-optimizing truncation
+  # Incomplete curve detection (prevents FNs when experiment ended early)
+  incomplete_curve_tail_fraction: 0.15  # Fraction of tail to check for rising
+  incomplete_curve_slope_threshold: 0.005  # dOD/dt threshold for "still rising"
 
 # OD-threshold classification (legacy, use --od-based flag)
 od_thresholds:
@@ -79,7 +84,9 @@ advanced:
   gp:
     kernel_length_scale: 2.0       # RBF initial length scale (hours)
     kernel_noise: 0.01             # WhiteKernel noise level
-    derivative_threshold: 0.01     # dmu/dt threshold for phase boundary
+    derivative_threshold: 0.01     # dmu/dt threshold (fraction of max if normalized)
+    normalize_derivative: true     # Normalize threshold relative to max derivative
+    stationary_fallback_fraction: 0.05  # Fallback: stationary onset at 5% of max deriv
     n_restarts: 5                  # kernel optimization restarts
     min_length_scale: 0.5          # prevent overfitting on sparse data
 
@@ -130,6 +137,7 @@ advanced:
     consensus_method: weighted_median    # weighted_median | median | weighted_mean
     max_disagreement_hours: 4.0          # Flag if methods disagree > this
     min_methods_required: 3              # Flag if fewer methods succeed
+    mad_outlier_threshold: 3.0           # MAD multiplier for outlier detection
     methods:
       first_peak: true
       stationary_phase: true
