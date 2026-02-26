@@ -225,7 +225,7 @@ class PipelineValidator:
             true_negatives=int(tn),
             false_positives=int(fp),
             false_negatives=int(fn),
-            confusion_matrix=[[int(tp), int(fp)], [int(fn), int(tn)]]
+            confusion_matrix=[[int(tp), int(fn)], [int(fp), int(tn)]]  # standard: [[TP,FN],[FP,TN]]
         )
 
     def compute_parameter_recovery(self) -> Dict[str, ParameterRecovery]:
@@ -258,20 +258,13 @@ class PipelineValidator:
             if gt_col not in correct_good.columns or pred_col not in correct_good.columns:
                 continue
 
-            gt_vals = correct_good[gt_col].dropna().values
-            pred_vals = correct_good[pred_col].dropna().values
-
-            # Align arrays
-            valid_mask = ~np.isnan(gt_vals) & ~np.isnan(pred_vals)
-            gt_vals = gt_vals[valid_mask[:len(gt_vals)]]
-            pred_vals = pred_vals[valid_mask[:len(pred_vals)]]
-
-            n = min(len(gt_vals), len(pred_vals))
-            if n == 0:
+            # Joint dropna to preserve row alignment
+            valid = correct_good[[gt_col, pred_col]].dropna()
+            if len(valid) == 0:
                 continue
 
-            gt_vals = gt_vals[:n]
-            pred_vals = pred_vals[:n]
+            gt_vals = valid[gt_col].values
+            pred_vals = valid[pred_col].values
 
             # Compute metrics
             errors = pred_vals - gt_vals

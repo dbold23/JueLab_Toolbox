@@ -352,9 +352,14 @@ def train_model(
     # Train final model on all data
     model.fit(X, y)
 
-    # Feature importance
+    # Feature importance (works for HGB, RF; Pipeline needs .named_steps access)
+    fi = None
     if hasattr(model, 'feature_importances_'):
-        importances = dict(zip(X.columns, model.feature_importances_))
+        fi = model.feature_importances_
+    elif hasattr(model, 'named_steps') and hasattr(model.named_steps.get('clf', None), 'feature_importances_'):
+        fi = model.named_steps['clf'].feature_importances_
+    if fi is not None:
+        importances = dict(zip(X.columns, fi))
         metrics['feature_importance'] = dict(
             sorted(importances.items(), key=lambda x: -x[1])
         )
@@ -432,8 +437,14 @@ def validate_on_real_data(model, feature_names, audit_csv, results_dir,
         print("Warning: No matching strains between audit and results")
         return None
 
+    # Filter out "unsure" audit rows (consistent with load_real_audit_data)
+    unsure_mask = merged['audit_result'] == 'unsure'
+    if unsure_mask.any():
+        print(f"  Dropping {unsure_mask.sum()} 'unsure' audit rows")
+        merged = merged[~unsure_mask].reset_index(drop=True)
+
     # Derive ground truth labels from audit
-    is_good_col = 'is_good' if 'is_good' in merged.columns else 'is_good_pr'
+    is_good_col = 'is_good' if 'is_good' in merged.columns and not merged['is_good'].isna().all() else 'is_good_pr'
     pipeline_good = merged[is_good_col].astype(bool)
     audit_correct = merged['audit_result'] == 'correct'
     y_true = ((pipeline_good & audit_correct) | (~pipeline_good & ~audit_correct)).astype(int)
@@ -733,6 +744,19 @@ def main():
                   f"(p={probs_test[idx]:.3f}, {source})")
 
     # -----------------------------------------------------------------------
+    # Validate on real data BEFORE retrain (uses train-split-only models)
+    # -----------------------------------------------------------------------
+    if args.validate_real:
+        print("\n" + "=" * 60)
+        print("REAL DATA VALIDATION (using 70%-trained model, no data leakage)")
+        print("=" * 60)
+        validate_on_real_data(
+            postfit_model, feature_names=ALL_POSTFIT_FEATURES,
+            audit_csv=args.audit_csv, results_dir=args.results_dir,
+            prefit_model=prefit_model,
+        )
+
+    # -----------------------------------------------------------------------
     # Now retrain final model on ALL data for deployment
     # -----------------------------------------------------------------------
     print("\n" + "=" * 60)
@@ -760,24 +784,11 @@ def main():
         print("MODEL COMPARISON (GBT vs RF)")
         print("=" * 60)
 
-        rf_model, rf_metrics = train_model(X_post, y_post, 'rf', args.n_folds)
+        rf_model, rf_metrics = train_model(X_post_all, y_post_all, 'rf', args.n_folds)
         print(f"\n{'Metric':<15s} {'GBT':>10s} {'RF':>10s}")
         print("-" * 37)
         for k in ['accuracy', 'precision', 'recall', 'f1', 'specificity']:
             print(f"  {k:<13s} {postfit_metrics[k]:>9.3f}  {rf_metrics[k]:>9.3f}")
-
-    # -----------------------------------------------------------------------
-    # Validate on real data (optional)
-    # -----------------------------------------------------------------------
-    if args.validate_real:
-        print("\n" + "=" * 60)
-        print("REAL DATA VALIDATION")
-        print("=" * 60)
-        validate_on_real_data(
-            postfit_model, feature_names=ALL_POSTFIT_FEATURES,
-            audit_csv=args.audit_csv, results_dir=args.results_dir,
-            prefit_model=prefit_model,
-        )
 
     # -----------------------------------------------------------------------
     # Save feature config

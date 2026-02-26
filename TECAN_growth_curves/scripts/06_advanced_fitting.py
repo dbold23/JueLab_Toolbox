@@ -60,6 +60,17 @@ if _gca_path.exists():
     except Exception:
         _gca = None
 
+# Import shared Haldane functions from 05 to avoid code duplication
+_h05_path = Path(__file__).parent / '05_haldane_analysis.py'
+_h05 = None
+if _h05_path.exists():
+    try:
+        _h05_spec = _ilu.spec_from_file_location("haldane_analysis", str(_h05_path))
+        _h05 = _ilu.module_from_spec(_h05_spec)
+        _h05_spec.loader.exec_module(_h05)
+    except Exception:
+        _h05 = None
+
 
 @dataclass
 class EnsembleTruncationResult:
@@ -88,52 +99,57 @@ def load_config(config_path=None):
     return {}
 
 
+# Re-use shared functions from 05_haldane_analysis.py (single source of truth)
+if _h05 is not None:
+    haldane_ode = _h05.haldane_ode
+    solve_haldane = _h05.solve_haldane
+    identify_pesticide_strains = _h05.identify_pesticide_strains
+    extract_pesticide_name = _h05.extract_pesticide_name
+else:
+    # Fallback definitions if 05 import failed
+    def haldane_ode(t, y, mu_max, Ks, Ki, X_max, q):
+        """Haldane/Andrews ODE system."""
+        X, S = y
+        S = max(S, 0)
+        X = max(X, 0)
+        if S < 1e-10:
+            mu_S = 0.0
+        else:
+            mu_S = mu_max * S / (Ks + S + S**2 / Ki)
+        dXdt = mu_S * X * (1 - X / X_max)
+        dSdt = -q * mu_S * X
+        return [dXdt, dSdt]
+
+    def solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0):
+        """Solve Haldane ODE. Returns (X(t), S(t))."""
+        try:
+            sol = solve_ivp(
+                haldane_ode, [time[0], time[-1]], [X0, S0],
+                args=(mu_max, Ks, Ki, X_max, q),
+                t_eval=time, method='RK45', max_step=0.5,
+                rtol=1e-8, atol=1e-10
+            )
+            if sol.success:
+                return sol.y[0], sol.y[1]
+        except Exception:
+            pass
+        return np.full_like(time, X0, dtype=float), np.full_like(time, S0, dtype=float)
+
+    def identify_pesticide_strains(df):
+        """Filter to pesticide+LB strains (contain 'ANDLB')."""
+        mask = df['strain'].str.contains('ANDLB', case=False, na=False)
+        return df[mask].copy()
+
+    def extract_pesticide_name(strain):
+        """Extract pesticide from strain like 'BifenthrinANDLB-BIF2'."""
+        if 'ANDLB' in strain.upper():
+            return strain.upper().split('ANDLB')[0]
+        return 'UNKNOWN'
+
+
 def gompertz_model(t, A, mu, lam):
     """Modified Gompertz growth model."""
     return A * np.exp(-np.exp((mu * np.e / A) * (lam - t) + 1))
-
-
-def haldane_ode(t, y, mu_max, Ks, Ki, X_max, q):
-    """Haldane/Andrews ODE system."""
-    X, S = y
-    S = max(S, 0)
-    X = max(X, 0)
-    if S < 1e-10:
-        mu_S = 0.0
-    else:
-        mu_S = mu_max * S / (Ks + S + S**2 / Ki)
-    dXdt = mu_S * X * (1 - X / X_max)
-    dSdt = -q * mu_S * X
-    return [dXdt, dSdt]
-
-
-def solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0):
-    """Solve Haldane ODE. Returns (X(t), S(t))."""
-    try:
-        sol = solve_ivp(
-            haldane_ode, [time[0], time[-1]], [X0, S0],
-            args=(mu_max, Ks, Ki, X_max, q),
-            t_eval=time, method='RK45', max_step=0.5,
-            rtol=1e-8, atol=1e-10
-        )
-        if sol.success:
-            return sol.y[0], sol.y[1]
-    except Exception:
-        pass
-    return np.full_like(time, X0, dtype=float), np.full_like(time, S0, dtype=float)
-
-
-def identify_pesticide_strains(df):
-    """Filter to pesticide+LB strains (contain 'ANDLB')."""
-    mask = df['strain'].str.contains('ANDLB', case=False, na=False)
-    return df[mask].copy()
-
-
-def extract_pesticide_name(strain):
-    """Extract pesticide from strain like 'BifenthrinANDLB-BIF2'."""
-    if 'ANDLB' in strain.upper():
-        return strain.upper().split('ANDLB')[0]
-    return 'UNKNOWN'
 
 
 def load_raw_data(data_dir, strain_name, group):
@@ -591,9 +607,8 @@ def gp_truncate_wrapper(time, od, config=None):
     """Wrapper around the existing gp_truncate() function."""
     try:
         trunc_idx, gp_conf, phases, gp_data = gp_truncate(time, od, config)
-        # Normalize GP confidence: gp_conf is std (lower = better)
-        max_od = np.max(od) if len(od) > 0 else 1.0
-        confidence = max(0.0, min(1.0, 1.0 - gp_conf / max(max_od, 1e-6)))
+        # gp_conf is already 1.0 - relative_uncertainty (higher = better)
+        confidence = max(0.0, min(1.0, gp_conf))
         return trunc_idx, confidence, {'phases': phases}
     except Exception:
         return None, 0.0, {}
@@ -1095,13 +1110,14 @@ def bootstrap_gompertz(time, od, n_resamples=1000, ci_level=0.95):
     residuals = od - fitted
 
     # Bootstrap
+    rng = np.random.default_rng(42)
     boot_params = []
     boot_r2 = []
     boot_good = 0
 
     for _ in range(n_resamples):
         # Resample residuals
-        boot_resid = np.random.choice(residuals, size=len(residuals), replace=True)
+        boot_resid = rng.choice(residuals, size=len(residuals), replace=True)
         boot_y = fitted + boot_resid
 
         try:
@@ -1209,6 +1225,10 @@ def compare_models(traces_dict):
     """
     Compare models using WAIC and LOO-CV via ArviZ.
 
+    NOTE: Models must be fitted to the SAME observed data for valid comparison.
+    Gompertz (all strains) vs Haldane (pesticide subset) is NOT a valid comparison
+    because they have different likelihood dimensions.
+
     Args:
         traces_dict: {'Gompertz': trace1, 'Haldane': trace2}
 
@@ -1219,12 +1239,14 @@ def compare_models(traces_dict):
 
     try:
         loo_comp = az.compare(traces_dict, ic='loo', scale='log')
-    except Exception:
+    except Exception as e:
+        print(f"  LOO comparison failed (models may have different observed data): {e}")
         loo_comp = None
 
     try:
         waic_comp = az.compare(traces_dict, ic='waic', scale='log')
-    except Exception:
+    except Exception as e:
+        print(f"  WAIC comparison failed (models may have different observed data): {e}")
         waic_comp = None
 
     return loo_comp, waic_comp
@@ -1285,8 +1307,9 @@ def plot_posterior_predictive(trace, strain_idx, time, od, strain_name,
         mu_s = trace.posterior['mu_strain'].values[:, :, strain_idx].ravel()
         lam_s = trace.posterior['lam_strain'].values[:, :, strain_idx].ravel()
 
+        rng = np.random.default_rng(42)
         n_draws = min(100, len(A_s))
-        idx = np.random.choice(len(A_s), n_draws, replace=False)
+        idx = rng.choice(len(A_s), n_draws, replace=False)
 
         all_preds = []
         for j in idx:
@@ -1968,16 +1991,29 @@ Methods applied:
             group_df = pd.DataFrame(group_rows)
             group_df.to_csv(gomp_dir / 'gompertz_group_summary.csv', index=False)
 
-            # Convergence
+            # Convergence diagnostics with threshold checks
             rhat = az.rhat(gompertz_trace)
             ess = az.ess(gompertz_trace)
+            conv_cfg = config.get('advanced', {}).get('convergence', {})
+            max_rhat = conv_cfg.get('max_rhat', 1.05)
+            min_ess = conv_cfg.get('min_ess_bulk', 400)
             conv_data = {}
+            convergence_warnings = []
             for var in ['mu_A', 'sigma_A', 'mu_mu', 'sigma_mu', 'sigma_obs']:
                 try:
-                    conv_data[f'{var}_rhat'] = float(rhat[var].values)
-                    conv_data[f'{var}_ess'] = float(ess[var].values)
+                    rhat_val = float(rhat[var].values)
+                    ess_val = float(ess[var].values)
+                    conv_data[f'{var}_rhat'] = rhat_val
+                    conv_data[f'{var}_ess'] = ess_val
+                    if rhat_val > max_rhat:
+                        convergence_warnings.append(f"{var}: R-hat={rhat_val:.3f} > {max_rhat}")
+                    if ess_val < min_ess:
+                        convergence_warnings.append(f"{var}: ESS={ess_val:.0f} < {min_ess}")
                 except Exception:
                     pass
+            if convergence_warnings:
+                import warnings
+                warnings.warn("Bayesian Gompertz convergence issues:\n  " + "\n  ".join(convergence_warnings))
             pd.DataFrame([conv_data]).to_csv(gomp_dir / 'gompertz_convergence.csv',
                                               index=False)
 

@@ -83,8 +83,9 @@ def solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0):
         )
         if sol.success:
             return sol.y[0], sol.y[1]
-    except Exception:
-        pass
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Haldane ODE solver failed: {e}")
     return np.full_like(time, X0, dtype=float), np.full_like(time, S0, dtype=float)
 
 
@@ -150,6 +151,9 @@ def fit_haldane(time, od, S0=1.0, gompertz_params=None):
             n = len(od)
             k = 7  # number of parameters
             aic = n * np.log(ss_res / n) + 2 * k
+            # Small-sample correction (AICc) — important for k=7 with moderate n
+            if n - k - 1 > 0:
+                aic += 2 * k * (k + 1) / (n - k - 1)
             bic = n * np.log(ss_res / n) + k * np.log(n)
 
             return {
@@ -162,10 +166,11 @@ def fit_haldane(time, od, S0=1.0, gompertz_params=None):
                 'predicted_od': X_pred,
                 'predicted_substrate': S_pred,
             }
-    except Exception:
-        pass
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Haldane fitting failed: {e}")
 
-    return {'success': False, 'r_squared': 0, 'aic': np.inf, 'bic': np.inf}
+    return {'success': False, 'r_squared': float('nan'), 'aic': np.inf, 'bic': np.inf}
 
 
 # =============================================================================
@@ -185,6 +190,9 @@ def gompertz_aic(time, od, A, mu, lambda_):
     n = len(od)
     k = 3  # Gompertz has 3 parameters
     aic = n * np.log(ss_res / n) + 2 * k
+    # Small-sample correction (AICc) — consistent with Haldane
+    if n - k - 1 > 0:
+        aic += 2 * k * (k + 1) / (n - k - 1)
     bic = n * np.log(ss_res / n) + k * np.log(n)
     r_squared = 1 - ss_res / np.sum((od - np.mean(od))**2) if np.sum((od - np.mean(od))**2) > 0 else 0
     return aic, bic, r_squared, np.sqrt(np.mean(residuals**2))

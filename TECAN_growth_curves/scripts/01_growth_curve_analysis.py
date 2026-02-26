@@ -968,7 +968,7 @@ def find_optimal_truncation_v2(
     # Find inflection point (peak growth rate) — truncation is always after this
     smoothed = np.convolve(od600, np.ones(5) / 5, mode='same')
     growth_rates = np.diff(smoothed) / np.maximum(np.diff(time), 1e-6)
-    inflection_idx = int(np.argmax(growth_rates)) + start_idx
+    inflection_idx = int(np.argmax(growth_rates))  # already full-array index
 
     # ---- Phase 1: Coarse scan from inflection through end ----
     # Truncation point is always after peak growth rate, so start scanning there
@@ -1192,7 +1192,7 @@ def find_optimal_truncation_v2(
     )
 
 
-def find_optimal_truncation(
+def _UNUSED_find_optimal_truncation_v1(
     time: np.ndarray,
     od600: np.ndarray,
     min_points: int = 20,
@@ -1641,7 +1641,7 @@ def fit_gompertz(
 
         # Estimate mu from maximum growth region
         diff = np.diff(od600)
-        dt = np.diff(time)
+        dt = np.maximum(np.diff(time), 1e-6)
         growth_rates = diff / dt
         mu_init = np.max(growth_rates) if len(growth_rates) > 0 else 0.1
         mu_init = max(mu_init, 0.01)  # Ensure positive
@@ -2463,12 +2463,14 @@ def process_growth_curves(
                 signal_range = float(np.max(od600_clean) - np.mean(od600_clean[:min(5, len(od600_clean))]))
                 pre_fit_snr = signal_range / max(noise_std, 1e-8)
 
-                if pre_fit_snr < 3.0 and signal_range < 0.5:
+                snr_thresh = fit_quality_thresholds.get('pre_fit_snr_threshold', 3.0)
+                od_override = fit_quality_thresholds.get('pre_fit_delta_od_override', 0.5)
+                if pre_fit_snr < snr_thresh and signal_range < od_override:
                     # Signal is buried in noise AND growth is small -- skip fitting, classify BAD
-                    # (If signal_range >= 0.5 we let the fitter decide; large growth overrides low SNR)
+                    # (If signal_range >= override we let the fitter decide; large growth overrides low SNR)
                     classification = ClassificationResult(
                         is_good=False,
-                        reason=f"BAD: Pre-fit SNR too low ({pre_fit_snr:.1f} < 3.0)",
+                        reason="BAD: Pre-fit SNR too low ({:.1f} < {:.1f})".format(pre_fit_snr, snr_thresh),
                         metrics={'snr': pre_fit_snr, 'delta_od': signal_range,
                                  'max_od': float(np.max(od600_clean))}
                     )
@@ -2557,6 +2559,29 @@ def process_growth_curves(
                     use_first_peak=truncation_params.get('use_first_peak', True),
                     use_adaptive=truncation_params.get('use_adaptive', False)
                 )
+
+                # Validate truncation before fitting
+                trunc_valid, trunc_reason = validate_truncation(
+                    truncation,
+                    min_points=truncation_params['min_points_for_fit']
+                )
+
+                if not trunc_valid:
+                    if verbose:
+                        print(f"    Truncation invalid: {trunc_reason}")
+                    classification = ClassificationResult(
+                        is_good=False, confidence=0.0,
+                        reason=f"BAD: {trunc_reason}",
+                        metrics={'delta_od': float(np.max(od600_clean) - np.mean(od600_clean[:5])),
+                                 'max_od': float(np.max(od600_clean))}
+                    )
+                    fit = FitResult(success=False, error_message=trunc_reason)
+                    results.append(dict(
+                        strain=strain_name, file=csv_file.name,
+                        classification=classification, truncation=truncation,
+                        fit=fit
+                    ))
+                    continue
 
                 # Step 2: Attempt Gompertz fit
                 fit = fit_gompertz(
@@ -2916,25 +2941,41 @@ def main():
         with open(config_path) as f:
             config = yaml.safe_load(f) or {}
 
+    # Merge config.yaml values with CLI args (CLI overrides config)
+    cfg_class = config.get('classification', {})
+    cfg_gates = config.get('quality_gates', {})
+    cfg_trunc = config.get('truncation', {})
+    cfg_od = config.get('od_thresholds', {})
+
     # Build threshold dict for OD-based classification
     thresholds = {
         'min_delta_od': args.min_delta_od,
         'min_max_od': args.min_max_od,
         'min_snr': args.min_snr,
-        'max_initial_od': 0.15,
+        'max_initial_od': cfg_od.get('max_initial_od', 0.15),
     }
 
     # Build threshold dict for fit-based classification
+    # Includes secondary quality gates from config.yaml
     fit_thresholds = {
         'min_r_squared': args.min_r2,
         'max_param_error_pct': args.max_param_error,
-        'min_points_for_fit': 15,
+        'min_points_for_fit': cfg_class.get('min_points_for_fit', 15),
+        # Secondary quality gates (from config.yaml quality_gates section)
+        'min_snr': cfg_gates.get('min_snr', 5.0),
+        'min_delta_od_ci': cfg_gates.get('min_delta_od_ci', 0.1),
+        'min_absolute_delta_od': cfg_gates.get('min_absolute_delta_od', 0.15),
+        'pre_fit_snr_threshold': cfg_gates.get('pre_fit_snr_threshold', 3.0),
+        'pre_fit_delta_od_override': cfg_gates.get('pre_fit_delta_od_override', 0.5),
+        'excellent_r2_threshold': cfg_gates.get('excellent_r2_threshold', 0.98),
+        'min_monotone_fraction': cfg_gates.get('min_monotone_fraction', 0.55),
+        'max_residual_autocorr': cfg_gates.get('max_residual_autocorr', 0.7),
     }
 
     truncation_params = {
         'smoothing_window': args.smoothing_window,
         'buffer_points': args.buffer_points,
-        'min_points_for_fit': 20,
+        'min_points_for_fit': cfg_trunc.get('min_points_for_fit', 20),
         'use_first_peak': not args.global_max,  # Default: use first peak
         'use_adaptive': args.adaptive,  # Adaptive overrides other truncation methods
     }

@@ -470,8 +470,8 @@ def plot_strain_heatmap(comp_df, strain_best_df, output_path):
         plt.close()
         return
 
-    vmin = max(0.8, np.nanmin(data))
-    vmax = min(1.0, np.nanmax(data))
+    vmin = min(max(0.8, np.nanmin(data)), 0.949)
+    vmax = max(min(1.0, np.nanmax(data)), 0.951)
     norm = TwoSlopeNorm(vmin=vmin, vcenter=0.95, vmax=vmax)
 
     im = ax.imshow(data, aspect='auto', cmap='RdYlGn', norm=norm)

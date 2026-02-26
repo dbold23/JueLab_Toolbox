@@ -10,6 +10,7 @@ Falls back to rule-based classification if model files are missing.
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -68,7 +69,6 @@ def extract_metadata_features(strain_name: Optional[str]) -> Dict[str, float]:
     if not strain_name:
         return {'is_control': float('nan'), 'concentration_numeric': float('nan')}
 
-    import re
     name = str(strain_name).strip().upper()
 
     # Detect controls: H2O or LB prefix (before the dash)
@@ -201,10 +201,15 @@ class PreFitGate:
         self.reject_threshold = reject_threshold
         self.model = None
 
+        self._good_class_idx = 1  # Default: class 1 = GOOD
+
         path = Path(model_path) if model_path else self._default_path()
         if path.exists():
             import joblib
             self.model = joblib.load(path)
+            # Verify class ordering — find the index for class 1 (GOOD)
+            if hasattr(self.model, 'classes_'):
+                self._good_class_idx = list(self.model.classes_).index(1)
             logger.info(f"Loaded pre-fit gate from {path}")
         else:
             logger.warning(f"Pre-fit gate model not found at {path}, gate disabled")
@@ -226,7 +231,7 @@ class PreFitGate:
         features = extract_prefit_features(time, od600, strain_name=strain_name)
         X = np.array([[features.get(f, float('nan')) for f in PREFIT_FEATURES]])
 
-        p_good = self.model.predict_proba(X)[0, 1]
+        p_good = self.model.predict_proba(X)[0, self._good_class_idx]
         return p_good <= self.reject_threshold
 
 
@@ -255,11 +260,15 @@ class PostFitClassifier:
         self.bad_threshold = bad_threshold
         self.model = None
         self.feature_names = ALL_POSTFIT_FEATURES
+        self._good_class_idx = 1  # Default: class 1 = GOOD
 
         path = Path(model_path) if model_path else self._default_model_path()
         if path.exists():
             import joblib
             self.model = joblib.load(path)
+            # Verify class ordering — find the index for class 1 (GOOD)
+            if hasattr(self.model, 'classes_'):
+                self._good_class_idx = list(self.model.classes_).index(1)
             logger.info(f"Loaded post-fit classifier from {path}")
 
         # Load feature config if available
@@ -301,7 +310,7 @@ class PostFitClassifier:
 
         X = np.array([[features.get(f, float('nan')) for f in self.feature_names]])
 
-        p_good = float(self.model.predict_proba(X)[0, 1])
+        p_good = float(self.model.predict_proba(X)[0, self._good_class_idx])
 
         if p_good >= self.good_threshold:
             ml_class = 'GOOD'

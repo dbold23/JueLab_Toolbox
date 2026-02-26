@@ -439,7 +439,7 @@ EDGE_CASE_SCENARIOS = {
         name='borderline_delta_od',
         description='Delta OD just above minimum threshold',
         expected_class='GOOD',
-        A=(0.32, 0.38),  # Just above 0.3 threshold
+        A=(0.17, 0.23),  # Just above 0.15 threshold (fit-based min_absolute_delta_od)
         mu=(0.08, 0.12),
         lambda_=(3.0, 8.0),
         noise_level='low',
@@ -480,6 +480,32 @@ EDGE_CASE_SCENARIOS = {
         model='haldane',
         noise_level='low',
         tags=['haldane', 'inhibition', 'total', 'no_growth']
+    ),
+
+    'evaporation_drift': ScenarioConfig(
+        name='evaporation_drift',
+        description='Flat curve with upward drift mimicking edge-well evaporation (false positive risk)',
+        expected_class='BAD',
+        A=(0.03, 0.08),
+        mu=(0.001, 0.005),
+        lambda_=(0.0, 1.0),
+        model='gompertz',
+        noise_level='low',
+        instrument_noise=True,
+        tags=['artifact', 'evaporation', 'drift', 'edge_well']
+    ),
+
+    'bubble_spike': ScenarioConfig(
+        name='bubble_spike',
+        description='Growth curve with a single large bubble artifact (outlier spike)',
+        expected_class='GOOD',
+        A=(0.8, 1.5),
+        mu=(0.15, 0.30),
+        lambda_=(2.0, 5.0),
+        model='gompertz',
+        noise_level='medium',
+        instrument_noise=True,
+        tags=['artifact', 'bubble', 'outlier', 'spike']
     ),
 }
 
