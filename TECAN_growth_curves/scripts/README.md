@@ -29,7 +29,9 @@ TECAN_growth_curves/
 │   ├── 02_preprocess_raw_plate_data.py  # Raw 96-well data preprocessor
 │   ├── 03_mle_model_fitting.py          # MLE multi-model fitting (Gompertz, Baranyi, Logistic, Richards, Haldane)
 │   ├── 05_haldane_analysis.py           # Haldane feedback inhibition analysis
-│   ├── 06_advanced_fitting.py           # Advanced stats (GP, Bayesian, Bootstrap)
+│   ├── 06_advanced_fitting.py           # Advanced stats (GP, Bayesian, Bootstrap, Ensemble)
+│   ├── 07_compare_truncation_methods.py # Truncation method comparison & bad strain rescue
+│   ├── 08_validate_truncation.py        # Interactive truncation method validator
 │   ├── validate_results_interactive.py  # Interactive curve validation tool
 │   ├── run_all_groups.sh                # Batch processing script
 │   ├── config.yaml                      # Centralized threshold configuration
@@ -44,7 +46,7 @@ TECAN_growth_curves/
 │   ├── validation_audit.csv             # Manual validation annotations
 │   ├── Group{1-4}_Results/              # Per-group results + diagnostic plots
 │   ├── Haldane_Analysis/                # Haldane feedback inhibition results
-│   └── Advanced_Analysis/               # GP, Bayesian, Bootstrap results
+│   └── Advanced_Analysis/               # GP, Bayesian, Bootstrap, Comparison results
 ├── synthetic_data/                      # Validation test suite (480 synthetic curves)
 ├── tests/                               # pytest test suite
 ├── Makefile                             # Build/run automation
@@ -199,23 +201,71 @@ Saves annotations to `validation_audit.csv` (resumable).
 
 ---
 
+### 6. `07_compare_truncation_methods.py` - Truncation Method Comparison
+
+Compares all 5 ensemble truncation methods + consensus by fitting Gompertz at each method's truncation point. Generates per-strain overlay plots and aggregate method rankings.
+
+```bash
+# Compare methods on good strains only
+python 07_compare_truncation_methods.py
+
+# Also attempt to rescue bad strains with better truncation
+python 07_compare_truncation_methods.py --include-bad
+
+# Custom input path
+python 07_compare_truncation_methods.py --ensemble-csv path/to/ensemble_results.csv
+```
+
+**Output:**
+```
+truncation_comparison/
+├── method_comparison.csv        # Per-strain × per-method fit results
+├── method_summary.csv           # Aggregate method rankings
+├── strain_best_method.csv       # Best method per strain
+├── rescued_strains.csv          # Bad strains rescued (with --include-bad)
+├── overlay_plots/               # Per-strain method overlay plots
+├── bad_strain_overlay_plots/    # Bad strain overlay plots (with --include-bad)
+└── *.png                        # Aggregate comparison figures
+```
+
+---
+
+### 7. `08_validate_truncation.py` - Interactive Truncation Validator
+
+Interactive matplotlib tool for human review of truncation method selections. Shows each strain's raw data overlaid with all 6 Gompertz fits and lets you pick which method looks best.
+
+```bash
+python 08_validate_truncation.py
+python 08_validate_truncation.py --comparison-csv path/to/method_comparison.csv
+```
+
+Keyboard shortcuts: `1-5` = select method, `c` = consensus, `n` = none good, `b` = back, `q` = quit & save
+
+Saves annotations to `truncation_validation_audit.csv` (resumable).
+
+---
+
 ## Makefile Commands
 
 ```bash
-make help               # Show all available commands
-make install             # Install Python dependencies
-make test                # Run full test suite (31 tests)
-make test-quick          # Run unit tests only (no integration)
-make run-pipeline        # Run Gompertz pipeline on all groups
-make run-haldane         # Run Haldane analysis on pesticide strains
-make validate            # Launch interactive validation tool
-make validate-synthetic  # Run pipeline on synthetic data
-make run-advanced         # Run all advanced fitting (GP + Bootstrap + Bayesian)
-make run-advanced-gp      # GP truncation only
+make help                  # Show all available commands
+make install               # Install Python dependencies
+make test                  # Run full test suite (64 tests)
+make test-quick            # Run unit tests only (no integration)
+make run-pipeline          # Run Gompertz pipeline on all groups
+make run-haldane           # Run Haldane analysis on pesticide strains
+make run-advanced          # Run all advanced fitting (GP + Bootstrap + Bayesian + Ensemble)
+make run-advanced-gp       # GP truncation only
 make run-advanced-bootstrap # Bootstrap CIs only
-make run-advanced-gompertz  # Bayesian Gompertz only
-make run-advanced-haldane   # Bayesian Haldane only
-make run-all             # Full pipeline + Haldane + Advanced
+make run-advanced-gompertz # Bayesian Gompertz only
+make run-advanced-haldane  # Bayesian Haldane only
+make run-advanced-ensemble # Ensemble truncation only
+make run-compare-methods   # Compare truncation methods (requires ensemble run first)
+make run-compare-bad       # Compare methods + rescue bad strains
+make validate              # Launch interactive curve validation tool
+make validate-truncation   # Launch interactive truncation method validator
+make validate-synthetic    # Run pipeline on synthetic data
+make run-all               # Full pipeline + Haldane + Advanced
 ```
 
 ---
@@ -338,6 +388,10 @@ When you run the pipeline, you should see approximately:
 
 25/32 test scenarios achieve 100% accuracy. Manual audit of 92 real curves: 91.3% validated correct.
 
+### Truncation Method Comparison (57 good strains)
+
+The weighted-median consensus achieves the highest mean R² (0.9804). All top-5 methods perform within 0.002 of each other. 6 of 9 candidate bad strains were rescued by alternative truncation, potentially increasing good strain count from 57 to 63.
+
 ### Haldane Analysis Results
 
 The Haldane model was preferred over Gompertz for **15/23** (65%) pesticide+LB strains by AIC, confirming substrate inhibition kinetics are present. All 6 pesticides tested (Bifenthrin, Flupyradifurone, Imidacloprid, Lambda-Cyhalothrin, Malathion, Permethrin) show measurable inhibition constants (Ki).
@@ -350,7 +404,7 @@ Upgrades every pipeline stage with modern statistical methods, addressing PI rec
 
 | Pipeline Stage | Before | After | Method |
 |---------------|--------|-------|--------|
-| **Truncation** | Heuristic peak-finding | GP growth phase detection | Gaussian Process |
+| **Truncation** | Heuristic peak-finding | GP + 5-method ensemble consensus | Gaussian Process + Ensemble |
 | **Gompertz fitting** | scipy curve_fit (point estimates) | Full posteriors, partial pooling | Bayesian HMC (NUTS) |
 | **Haldane fitting** | scipy minimize (point estimates) | Hierarchical posteriors, Ki by pesticide | Bayesian DEMetropolisZ |
 | **Classification** | Hard R²/SNR thresholds | P(good) from posterior | Bayesian posterior |
@@ -368,6 +422,7 @@ python 06_advanced_fitting.py --gp-only          # GP truncation only
 python 06_advanced_fitting.py --bootstrap-only    # Bootstrap CIs only
 python 06_advanced_fitting.py --gompertz-only     # Bayesian Gompertz only
 python 06_advanced_fitting.py --haldane-only      # Bayesian Haldane only
+python 06_advanced_fitting.py --ensemble-only     # Ensemble truncation only
 python 06_advanced_fitting.py --no-haldane        # Everything except slow Haldane ODE
 
 # Performance tuning
@@ -396,11 +451,17 @@ Residual resampling on NLS Gompertz fits (1000 resamples). Produces 95% CIs on a
 ```
 results/tables/Advanced_Analysis/
 ├── gp_truncation/                    # GP phase detection results + plots
+├── ensemble_truncation/              # 5-method ensemble truncation results
 ├── bayesian_gompertz/                # Posterior summaries, traces, convergence
 ├── bayesian_haldane/                 # Ki posteriors by pesticide
 ├── bootstrap/                       # Bootstrap CIs and P(good)
 ├── classification/                  # Bayesian classification (P(good) per strain)
-└── model_comparison.csv             # WAIC/LOO Gompertz vs Haldane
+├── model_comparison.csv             # WAIC/LOO Gompertz vs Haldane
+└── truncation_comparison/           # Method comparison study (07_compare)
+    ├── method_comparison.csv        # Per-strain × per-method fits
+    ├── method_summary.csv           # Aggregate rankings
+    ├── rescued_strains.csv          # Rescued bad strains
+    └── overlay_plots/               # Visual method overlays
 ```
 
 ### Additional Dependencies

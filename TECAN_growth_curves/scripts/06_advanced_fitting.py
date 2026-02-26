@@ -41,6 +41,38 @@ import yaml
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 
+# Optional: ruptures for changepoint detection
+try:
+    import ruptures as rpt
+    HAS_RUPTURES = True
+except ImportError:
+    HAS_RUPTURES = False
+
+# Import truncation methods from 01_growth_curve_analysis.py
+import importlib.util as _ilu
+_gca_path = Path(__file__).parent / '01_growth_curve_analysis.py'
+_gca = None
+if _gca_path.exists():
+    try:
+        _gca_spec = _ilu.spec_from_file_location("growth_curve_analysis", str(_gca_path))
+        _gca = _ilu.module_from_spec(_gca_spec)
+        _gca_spec.loader.exec_module(_gca)
+    except Exception:
+        _gca = None
+
+
+@dataclass
+class EnsembleTruncationResult:
+    """Result of ensemble truncation across multiple methods."""
+    consensus_idx: int
+    consensus_time: float
+    consensus_confidence: float
+    method_results: Dict[str, Dict[str, Any]]
+    disagreement_hours: float
+    flagged_for_review: bool
+    method_used: str
+    n_methods_succeeded: int
+
 
 # =============================================================================
 # SECTION 0: Config & Data Loading
@@ -364,6 +396,346 @@ def plot_gp_truncation(time, od, truncation_idx, phases, gp_data,
     ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+
+
+# =============================================================================
+# SECTION 1.5: Ensemble Truncation
+# =============================================================================
+
+def weighted_median(values, weights):
+    """Compute weighted median of values with given weights."""
+    values = np.asarray(values, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    sorted_idx = np.argsort(values)
+    sorted_vals = values[sorted_idx]
+    sorted_wts = weights[sorted_idx]
+    cumulative = np.cumsum(sorted_wts)
+    midpoint = cumulative[-1] / 2.0
+    idx = np.searchsorted(cumulative, midpoint)
+    return float(sorted_vals[min(idx, len(sorted_vals) - 1)])
+
+
+def changepoint_truncate(time, od, config=None):
+    """
+    Changepoint-based truncation using ruptures PELT with RBF cost.
+
+    Detects regime transitions (lag -> exponential -> stationary).
+    Truncation = first changepoint where the next segment is near max OD
+    and has near-zero slope (stationary phase onset).
+
+    Returns:
+        truncation_idx: int, index into original time array
+        confidence: float (0-1), segmentation quality score
+        changepoints: list of int, all detected changepoint indices
+        n_changepoints: int
+    """
+    if not HAS_RUPTURES:
+        return None, 0.0, [], 0
+
+    cfg = (config or {}).get('advanced', {}).get('ensemble', {}).get('changepoint', {})
+    model = cfg.get('model', 'rbf')
+    min_size = cfg.get('min_size') or max(10, len(od) // 10)
+    penalty = cfg.get('penalty') or 3.0 * np.log(len(od))
+
+    try:
+        algo = rpt.Pelt(model=model, min_size=min_size).fit(od)
+        result = algo.predict(pen=penalty)
+        # ruptures returns breakpoint indices (1-indexed end of segment), last is always len(signal)
+        changepoints = [cp for cp in result if cp < len(od)]
+
+        if len(changepoints) == 0:
+            return int(np.argmax(od)), 0.0, [], 0
+
+        # Find the stationary onset: first changepoint where the next segment
+        # has mean OD >= 90% of max AND low slope
+        max_od = np.max(od)
+        best_cp = None
+        for i, cp in enumerate(changepoints):
+            # Look at the segment starting at this changepoint
+            next_end = changepoints[i + 1] if i + 1 < len(changepoints) else len(od)
+            seg = od[cp:next_end]
+            if len(seg) < 3:
+                continue
+            seg_mean = np.mean(seg)
+            seg_slope = (seg[-1] - seg[0]) / (time[min(next_end - 1, len(time) - 1)] - time[cp]) if next_end > cp + 1 else 0
+            if seg_mean >= 0.85 * max_od and abs(seg_slope) < 0.05:
+                best_cp = cp
+                break
+
+        if best_cp is None:
+            # Fallback: changepoint closest to and before the OD maximum
+            max_idx = int(np.argmax(od))
+            before_max = [cp for cp in changepoints if cp <= max_idx + 5]
+            if before_max:
+                best_cp = before_max[-1]
+            else:
+                best_cp = changepoints[0]
+
+        # Confidence: based on how well segmentation explains variance
+        total_var = np.var(od) * len(od)
+        if total_var > 0:
+            # Compute within-segment variance
+            segs = [0] + changepoints + ([len(od)] if changepoints[-1] != len(od) else [])
+            within_var = 0
+            for j in range(len(segs) - 1):
+                seg = od[segs[j]:segs[j + 1]]
+                if len(seg) > 1:
+                    within_var += np.var(seg) * len(seg)
+            confidence = max(0.0, min(1.0, 1.0 - within_var / total_var))
+        else:
+            confidence = 0.0
+
+        return int(best_cp), confidence, changepoints, len(changepoints)
+
+    except Exception:
+        return None, 0.0, [], 0
+
+
+def first_peak_truncate_wrapper(time, od, config=None):
+    """Wrapper around 01_gca.truncate_at_max(use_first_peak=True)."""
+    if _gca is None:
+        return None, 0.0, {}
+    try:
+        result = _gca.truncate_at_max(time, od, use_first_peak=True)
+        idx = result.truncation_index if hasattr(result, 'truncation_index') else result
+        if isinstance(idx, (tuple, list)):
+            idx = idx[0]
+        idx = int(idx)
+        # Confidence: derivative sharpness at the truncation point
+        smoothed = np.convolve(od, np.ones(5)/5, mode='same')
+        deriv = np.diff(smoothed)
+        if idx > 0 and idx < len(deriv):
+            # How clearly the derivative crosses zero at this peak
+            max_deriv = np.max(np.abs(deriv)) if len(deriv) > 0 else 1
+            confidence = min(1.0, abs(deriv[min(idx, len(deriv)-1)]) / max(max_deriv, 1e-6))
+            confidence = 1.0 - confidence  # near zero derivative AT peak = high confidence
+        else:
+            confidence = 0.5
+        return idx, confidence, {'source': 'first_peak'}
+    except Exception:
+        return None, 0.0, {}
+
+
+def stationary_phase_truncate_wrapper(time, od, config=None):
+    """Wrapper around 01_gca.find_stationary_phase_start()."""
+    if _gca is None:
+        return None, 0.0, {}
+    try:
+        result = _gca.find_stationary_phase_start(time, od)
+        if isinstance(result, tuple):
+            idx = int(result[0])
+            meta = result[1] if len(result) > 1 else {}
+        else:
+            idx = int(result)
+            meta = {}
+        # Confidence: agreement between the two internal criteria
+        # Lower disagreement = higher confidence
+        r90 = meta.get('reached_90_idx', idx)
+        rp = meta.get('rate_plateau_idx', idx)
+        spread = abs(r90 - rp) / max(len(time), 1)
+        confidence = max(0.0, 1.0 - spread)
+        return idx, confidence, meta
+    except Exception:
+        return None, 0.0, {}
+
+
+def adaptive_r2_truncate_wrapper(time, od, config=None):
+    """Wrapper around 01_gca.find_optimal_truncation()."""
+    if _gca is None:
+        return None, 0.0, {}
+    try:
+        result = _gca.find_optimal_truncation(time, od)
+        if isinstance(result, tuple) and len(result) >= 3:
+            start_idx, end_idx, best_r2 = result[0], result[1], result[2]
+            idx = int(end_idx)
+            confidence = float(best_r2)
+        else:
+            idx = int(result)
+            confidence = 0.5
+        return idx, confidence, {'best_r2': confidence}
+    except Exception:
+        return None, 0.0, {}
+
+
+def gp_truncate_wrapper(time, od, config=None):
+    """Wrapper around the existing gp_truncate() function."""
+    try:
+        trunc_idx, gp_conf, phases, gp_data = gp_truncate(time, od, config)
+        # Normalize GP confidence: gp_conf is std (lower = better)
+        max_od = np.max(od) if len(od) > 0 else 1.0
+        confidence = max(0.0, min(1.0, 1.0 - gp_conf / max(max_od, 1e-6)))
+        return trunc_idx, confidence, {'phases': phases}
+    except Exception:
+        return None, 0.0, {}
+
+
+def ensemble_truncate(time, od, config=None):
+    """
+    Run all enabled truncation methods and produce a consensus via weighted median.
+
+    Returns EnsembleTruncationResult with consensus + per-method details.
+    """
+    cfg = (config or {}).get('advanced', {}).get('ensemble', {})
+    method_cfg = cfg.get('methods', {})
+    consensus_method = cfg.get('consensus_method', 'weighted_median')
+    max_disagree = cfg.get('max_disagreement_hours', 4.0)
+    min_methods = cfg.get('min_methods_required', 3)
+
+    methods = []
+    if method_cfg.get('first_peak', True):
+        methods.append(('first_peak', first_peak_truncate_wrapper))
+    if method_cfg.get('stationary_phase', True):
+        methods.append(('stationary_phase', stationary_phase_truncate_wrapper))
+    if method_cfg.get('adaptive_r2', True):
+        methods.append(('adaptive_r2', adaptive_r2_truncate_wrapper))
+    if method_cfg.get('gp_derivative', True):
+        methods.append(('gp_derivative', gp_truncate_wrapper))
+    if method_cfg.get('changepoint', True):
+        methods.append(('changepoint', changepoint_truncate))
+
+    results = {}
+    for name, func in methods:
+        try:
+            out = func(time, od, config)
+            if out is None:
+                continue
+            if name == 'changepoint':
+                idx, conf, cps, n_cp = out
+                meta = {'changepoints': cps, 'n_changepoints': n_cp}
+            else:
+                idx, conf, meta = out
+            if idx is not None and 0 <= idx < len(time):
+                results[name] = {
+                    'idx': int(idx),
+                    'time': float(time[idx]),
+                    'confidence': float(conf),
+                    'metadata': meta,
+                }
+        except Exception:
+            continue
+
+    n_succeeded = len(results)
+
+    if n_succeeded == 0:
+        # Complete failure: use global max as last resort
+        fallback_idx = int(np.argmax(od))
+        return EnsembleTruncationResult(
+            consensus_idx=fallback_idx,
+            consensus_time=float(time[fallback_idx]),
+            consensus_confidence=0.0,
+            method_results={},
+            disagreement_hours=0.0,
+            flagged_for_review=True,
+            method_used='fallback_max',
+            n_methods_succeeded=0,
+        )
+
+    times = np.array([r['time'] for r in results.values()])
+    confs = np.array([r['confidence'] for r in results.values()])
+    # Ensure minimum confidence weight
+    confs = np.maximum(confs, 0.01)
+
+    # Compute consensus
+    if consensus_method == 'weighted_median' and n_succeeded >= 2:
+        consensus_time = weighted_median(times, confs)
+    elif consensus_method == 'weighted_mean' and n_succeeded >= 2:
+        consensus_time = float(np.average(times, weights=confs))
+    else:
+        consensus_time = float(np.median(times))
+
+    # Map consensus time to nearest index
+    consensus_idx = int(np.argmin(np.abs(time - consensus_time)))
+    consensus_idx = max(consensus_idx, 20)
+    consensus_idx = min(consensus_idx, len(time) - 1)
+    consensus_time = float(time[consensus_idx])
+
+    # Disagreement metrics
+    spread = float(np.max(times) - np.min(times))
+    if n_succeeded >= 4:
+        q1, q3 = np.percentile(times, [25, 75])
+        iqr = q3 - q1
+    else:
+        iqr = spread
+    total_duration = float(time[-1] - time[0]) if len(time) > 1 else 1.0
+    consensus_confidence = max(0.0, 1.0 - iqr / max(total_duration, 1e-6))
+
+    # Flagging
+    flagged = spread > max_disagree or n_succeeded < min_methods
+
+    return EnsembleTruncationResult(
+        consensus_idx=consensus_idx,
+        consensus_time=consensus_time,
+        consensus_confidence=consensus_confidence,
+        method_results=results,
+        disagreement_hours=spread,
+        flagged_for_review=flagged,
+        method_used=consensus_method,
+        n_methods_succeeded=n_succeeded,
+    )
+
+
+def plot_ensemble_truncation(time, od, ensemble_result, strain_name, output_path):
+    """Diagnostic plot: all methods overlaid + consensus."""
+    METHOD_COLORS = {
+        'first_peak': '#2ecc71',       # green
+        'stationary_phase': '#3498db',  # blue
+        'adaptive_r2': '#e67e22',       # orange
+        'gp_derivative': '#e74c3c',     # red
+        'changepoint': '#9b59b6',       # purple
+    }
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 7), height_ratios=[4, 1],
+                             gridspec_kw={'hspace': 0.08})
+
+    # Top: OD data + truncation lines
+    ax = axes[0]
+    ax.scatter(time, od, s=8, alpha=0.3, color='gray', label='Data', zorder=1)
+
+    for name, data in ensemble_result.method_results.items():
+        color = METHOD_COLORS.get(name, 'gray')
+        t_val = data['time']
+        conf = data['confidence']
+        ax.axvline(t_val, color=color, linestyle=':', linewidth=1.5,
+                   alpha=max(0.3, conf),
+                   label=f'{name} (t={t_val:.1f}h, c={conf:.2f})')
+
+    # Consensus line
+    ax.axvline(ensemble_result.consensus_time, color='black', linestyle='--',
+               linewidth=2.5, label=f'Consensus (t={ensemble_result.consensus_time:.1f}h)')
+
+    flag_str = " [FLAGGED]" if ensemble_result.flagged_for_review else ""
+    ax.set_title(f'{strain_name}: Ensemble Truncation '
+                 f'(conf={ensemble_result.consensus_confidence:.2f}, '
+                 f'{ensemble_result.n_methods_succeeded}/5 methods){flag_str}',
+                 fontsize=12, fontweight='bold')
+    ax.set_ylabel('OD600', fontsize=11)
+    ax.legend(fontsize=7, loc='upper left')
+    ax.grid(True, alpha=0.3)
+    ax.set_xticklabels([])
+
+    # Bottom: bar chart of method truncation times
+    ax2 = axes[1]
+    names = list(ensemble_result.method_results.keys())
+    t_vals = [ensemble_result.method_results[n]['time'] for n in names]
+    confs = [ensemble_result.method_results[n]['confidence'] for n in names]
+    colors = [METHOD_COLORS.get(n, 'gray') for n in names]
+    y_pos = range(len(names))
+
+    bars = ax2.barh(y_pos, t_vals, color=colors, alpha=0.7,
+                    edgecolor='black', linewidth=0.5, height=0.6)
+    # Set per-bar alpha based on method confidence
+    for bar, c in zip(bars, confs):
+        bar.set_alpha(max(0.3, c))
+    ax2.axvline(ensemble_result.consensus_time, color='black', linestyle='--', linewidth=2)
+    ax2.set_yticks(y_pos)
+    ax2.set_yticklabels([n.replace('_', ' ').title() for n in names], fontsize=8)
+    ax2.set_xlabel('Truncation Time (hours)', fontsize=10)
+    ax2.set_xlim(ax.get_xlim())
+    ax2.grid(True, alpha=0.3, axis='x')
+    ax2.invert_yaxis()
+
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
 
@@ -993,6 +1365,12 @@ Methods applied:
                         help='Only run Bayesian Haldane')
     parser.add_argument('--no-haldane', action='store_true',
                         help='Run everything except Haldane (skip slow ODE)')
+    parser.add_argument('--ensemble-truncation', action='store_true',
+                        help='Run ensemble truncation and feed consensus into downstream')
+    parser.add_argument('--ensemble-only', action='store_true',
+                        help='Only run ensemble truncation (no Bayesian/bootstrap)')
+    parser.add_argument('--no-ensemble', action='store_true',
+                        help='Skip ensemble truncation')
 
     # Sampling overrides
     parser.add_argument('--chains', type=int, default=None)
@@ -1041,11 +1419,16 @@ Methods applied:
 
     # Determine what to run
     any_specific = (args.gp_only or args.bootstrap_only or
-                    args.gompertz_only or args.haldane_only)
-    run_gp = args.gp_only or (not any_specific)
-    run_bootstrap = args.bootstrap_only or (not any_specific)
-    run_gompertz = args.gompertz_only or (not any_specific)
-    run_haldane = args.haldane_only or (not any_specific and not args.no_haldane)
+                    args.gompertz_only or args.haldane_only or
+                    args.ensemble_only)
+    run_gp = args.gp_only or args.ensemble_only or (not any_specific)
+    run_ensemble = (args.ensemble_truncation or args.ensemble_only or
+                    (not any_specific and config.get('advanced', {}).get('ensemble', {}).get('enabled', False)))
+    if args.no_ensemble:
+        run_ensemble = False
+    run_bootstrap = args.bootstrap_only or (not any_specific and not args.ensemble_only)
+    run_gompertz = args.gompertz_only or (not any_specific and not args.ensemble_only)
+    run_haldane = args.haldane_only or (not any_specific and not args.no_haldane and not args.ensemble_only)
 
     # Load pipeline results
     results_csv = results_dir / 'all_groups_results.csv'
@@ -1224,6 +1607,155 @@ Methods applied:
         n_ok = gp_df['truncation_idx'].notna().sum()
         print(f"  {n_ok}/{len(gp_rows)} strains successfully truncated")
 
+    # --- Ensemble Truncation ---
+    ensemble_results = {}
+    strain_data_truncated = list(strain_data_good)  # default: untruncated
+
+    if run_ensemble:
+        print(f"\n{'='*60}")
+        print("  PHASE 1.5: ENSEMBLE TRUNCATION")
+        print(f"{'='*60}\n")
+
+        ens_dir = output_dir / 'ensemble_truncation'
+        ens_plots = ens_dir / 'plots'
+        ens_dir.mkdir(parents=True, exist_ok=True)
+        ens_plots.mkdir(exist_ok=True)
+
+        ens_rows = []
+        strain_data_truncated = []
+
+        for i, (t, od) in enumerate(strain_data_good):
+            name = strain_names_good[i]
+            if not args.quiet:
+                print(f"  [{i+1}/{len(strain_data_good)}] {name}...", end=' ')
+
+            try:
+                result = ensemble_truncate(t, od, config)
+                ensemble_results[name] = result
+
+                # Build truncated data
+                cidx = result.consensus_idx
+                strain_data_truncated.append((t[:cidx+1], od[:cidx+1]))
+
+                # Build CSV row
+                row = {
+                    'strain': name,
+                    'consensus_idx': result.consensus_idx,
+                    'consensus_time': result.consensus_time,
+                    'consensus_confidence': result.consensus_confidence,
+                    'n_methods_succeeded': result.n_methods_succeeded,
+                    'disagreement_hours': result.disagreement_hours,
+                    'flagged_for_review': result.flagged_for_review,
+                    'consensus_method': result.method_used,
+                }
+                for method_name, mdata in result.method_results.items():
+                    row[f'{method_name}_idx'] = mdata.get('idx')
+                    row[f'{method_name}_time'] = mdata.get('time')
+                    row[f'{method_name}_confidence'] = mdata.get('confidence')
+                ens_rows.append(row)
+
+                # Plot
+                ens_cfg = config.get('advanced', {}).get('ensemble', {})
+                if ens_cfg.get('output_plots', True):
+                    safe = name.replace('/', '_').replace(' ', '_')
+                    plot_ensemble_truncation(
+                        t, od, result, name,
+                        str(ens_plots / f'{safe}_ensemble_truncation.png')
+                    )
+
+                if not args.quiet:
+                    flag = " [FLAGGED]" if result.flagged_for_review else ""
+                    print(f"consensus at {result.consensus_time:.1f}h "
+                          f"(conf={result.consensus_confidence:.2f}, "
+                          f"{result.n_methods_succeeded}/5 methods){flag}")
+            except Exception as e:
+                if not args.quiet:
+                    print(f"FAILED ({e})")
+                strain_data_truncated.append((t, od))  # fallback
+                ens_rows.append({'strain': name, 'consensus_idx': None})
+
+        # Save CSV outputs
+        ens_df = pd.DataFrame(ens_rows)
+        ens_df.to_csv(ens_dir / 'ensemble_truncation_results.csv', index=False)
+
+        flagged = ens_df[ens_df.get('flagged_for_review', pd.Series(dtype=bool)) == True]
+        if len(flagged) > 0:
+            flagged.to_csv(ens_dir / 'flagged_for_review.csv', index=False)
+
+        n_ok = ens_df['consensus_idx'].notna().sum()
+        n_flagged = len(flagged)
+        mean_disagree = ens_df['disagreement_hours'].mean() if 'disagreement_hours' in ens_df else 0
+        print(f"\nEnsemble truncation: {n_ok}/{len(ens_rows)} strains")
+        print(f"  Flagged for review: {n_flagged}")
+        print(f"  Mean disagreement: {mean_disagree:.2f} hours")
+        print(f"  Results saved to {ens_dir}")
+
+    # --- Re-wire Bayesian data with ensemble-truncated data ---
+    if run_ensemble and len(ensemble_results) > 0:
+        # Rebuild bayes_data_good from truncated data
+        bayes_data_good = list(strain_data_truncated)
+        bayes_names_good = list(strain_names_good)
+        bayes_pest_idx_good = pest_indices_good.copy()
+
+        # Truncate Haldane strains using ensemble results (match by name)
+        for i, name in enumerate(strain_names_haldane):
+            if name in ensemble_results:
+                cidx = ensemble_results[name].consensus_idx
+                t_h, od_h = strain_data_haldane[i]
+                # Map consensus time to the Haldane strain's time array
+                # (they share same raw data, but just in case of slight differences)
+                ens_time = ensemble_results[name].consensus_time
+                haldane_idx = np.searchsorted(t_h, ens_time, side='right')
+                haldane_idx = min(haldane_idx, len(t_h) - 1)
+                bayes_data_haldane[i] = (t_h[:haldane_idx+1], od_h[:haldane_idx+1])
+        bayes_names_haldane = list(strain_names_haldane)
+        bayes_pest_idx_haldane = pest_indices_haldane.copy()
+
+        # Re-apply --max-strains limit
+        if args.max_strains is not None:
+            if len(bayes_data_good) > args.max_strains:
+                print(f"  Re-limiting Bayesian Gompertz to {args.max_strains} strains "
+                      f"(from {len(bayes_data_good)})")
+                bayes_data_good = bayes_data_good[:args.max_strains]
+                bayes_names_good = bayes_names_good[:args.max_strains]
+                bayes_pest_idx_good = bayes_pest_idx_good[:args.max_strains]
+            if len(bayes_data_haldane) > args.max_strains:
+                print(f"  Re-limiting Bayesian Haldane to {args.max_strains} strains "
+                      f"(from {len(bayes_data_haldane)})")
+                bayes_data_haldane = bayes_data_haldane[:args.max_strains]
+                bayes_names_haldane = bayes_names_haldane[:args.max_strains]
+                bayes_pest_idx_haldane = bayes_pest_idx_haldane[:args.max_strains]
+
+        # Re-apply --thin
+        if args.thin is not None and args.thin > 0:
+            orig_pts = sum(len(t) for t, _ in bayes_data_good)
+            bayes_data_good = thin_strain_data(bayes_data_good, max_points=args.thin)
+            new_pts = sum(len(t) for t, _ in bayes_data_good)
+            print(f"  Re-thinned Gompertz data: {orig_pts} -> {new_pts} total observations")
+
+            orig_pts_h = sum(len(t) for t, _ in bayes_data_haldane)
+            bayes_data_haldane = thin_strain_data(bayes_data_haldane, max_points=args.thin)
+            new_pts_h = sum(len(t) for t, _ in bayes_data_haldane)
+            print(f"  Re-thinned Haldane data: {orig_pts_h} -> {new_pts_h} total observations")
+
+        # Re-remap pesticide indices
+        if args.max_strains is not None:
+            unique_pest_good = np.unique(bayes_pest_idx_good)
+            n_groups_good_bayes = len(unique_pest_good)
+            pest_remap_good = {old: new for new, old in enumerate(unique_pest_good)}
+            bayes_pest_idx_good = np.array([pest_remap_good[p] for p in bayes_pest_idx_good])
+            extended_pest_list_bayes = [extended_pest_list[i] for i in unique_pest_good]
+
+            unique_pest_hald = np.unique(bayes_pest_idx_haldane)
+            n_pesticides_bayes = len(unique_pest_hald)
+            pest_remap_hald = {old: new for new, old in enumerate(unique_pest_hald)}
+            bayes_pest_idx_haldane = np.array([pest_remap_hald[p] for p in bayes_pest_idx_haldane])
+            pesticide_list_bayes = [pesticide_list[i] for i in unique_pest_hald if i < len(pesticide_list)]
+
+        print(f"  Bayesian models will use ensemble-truncated data "
+              f"({sum(len(t) for t, _ in bayes_data_good)} Gompertz obs, "
+              f"{sum(len(t) for t, _ in bayes_data_haldane)} Haldane obs)")
+
     # --- Bootstrap CIs ---
     if run_bootstrap:
         print(f"\n{'='*60}")
@@ -1237,11 +1769,12 @@ Methods applied:
         n_resamples = boot_cfg.get('n_resamples', 1000)
         ci_level = boot_cfg.get('ci_level', 0.95)
 
+        boot_data = strain_data_truncated if run_ensemble else strain_data_good
         boot_rows = []
-        for i, (t, od) in enumerate(strain_data_good):
+        for i, (t, od) in enumerate(boot_data):
             name = strain_names_good[i]
             if not args.quiet:
-                print(f"  [{i+1}/{len(strain_data_good)}] {name}...", end=' ')
+                print(f"  [{i+1}/{len(boot_data)}] {name}...", end=' ')
 
             result = bootstrap_gompertz(t, od, n_resamples=n_resamples,
                                          ci_level=ci_level)
