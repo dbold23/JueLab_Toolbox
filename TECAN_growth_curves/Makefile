@@ -3,30 +3,31 @@
 # BIO380SP25 - Pesticide Bioremediating Bacteria Research Project
 #
 # PIPELINE ORDER (run 'make full-pipeline' for everything):
-#   Step 0: Preprocess raw data      (Group 1 only, if needed)
-#   Step 1: Gompertz curve analysis   (per group, --adaptive)
-#   Step 2: Combine group results     (→ all_groups_results.csv)
-#   Step 3: Haldane inhibition        (feedback inhibition modeling)
-#   Step 4: Advanced fitting          (GP, Bootstrap, Ensemble)
-#   Step 5: Statistical analysis      (figures, tests, R export)
-#   Step 6: Truncation comparison     (method ranking + bad strain rescue)
-#   Step 7: Export for collaboration   (clean CSV + methodology)
+#   Step 0: Preprocess raw data       (Group 1 only, if needed)
+#   Step 1: Train ML classifier       (auto-skips if models/ exists)
+#   Step 2: Gompertz curve analysis    (per group, --adaptive, with ML)
+#   Step 3: Combine group results      (→ all_groups_results.csv)
+#   Step 4: Haldane inhibition         (ODE model + AICc comparison)
+#   Step 5: Advanced fitting           (GP, Bootstrap, Ensemble)
+#   Step 6: Statistical analysis       (ANOVA, pairwise, pub figures)
+#   Step 7: Truncation comparison      (5-method ranking + rescue)
+#   Step 8: Export for collaboration    (clean CSV + methodology)
+#   Step 9: Synthetic validation       (480 curves → accuracy metrics)
 #
 # =============================================================================
 
 PYTHON = python3
 SCRIPTS = scripts
-DATA = data/raw
 RESULTS = results/tables
 SYNTH = synthetic_data
 
 .PHONY: help install test test-quick \
-        full-pipeline core-pipeline \
-        step-1 step-2 step-3 step-4 step-5 step-6 step-7 \
+        full-pipeline core-pipeline dry-run \
+        step-0 step-1 step-2 step-3 step-4 step-5 step-6 step-7 step-8 step-9 \
         run-advanced run-advanced-gp run-advanced-bootstrap \
         run-advanced-ensemble run-compare-methods run-compare-bad \
         train-classifier validate validate-synthetic validate-truncation \
-        dry-run clean
+        clean
 
 # ─── Help ────────────────────────────────────────────────────────────────────
 
@@ -41,37 +42,46 @@ help: ## Show this help message
 
 # ─── Full Pipeline ───────────────────────────────────────────────────────────
 
-full-pipeline: ## Run complete end-to-end pipeline (all 8 steps)
+full-pipeline: ## Run complete end-to-end pipeline (steps 0-9)
 	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py
 
-core-pipeline: ## Run core steps only (0-3, 5, 7 — skip advanced)
+core-pipeline: ## Run core steps only (skip GP/Ensemble)
 	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --skip-advanced
 
-dry-run: ## Preview pipeline steps without executing
+dry-run: ## Preview all pipeline steps without executing
 	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --dry-run
 
 # ─── Individual Steps ────────────────────────────────────────────────────────
 
-step-1: ## Step 1: Gompertz curve analysis (all groups)
-	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 0,1
+step-0: ## Step 0: Preprocess raw plate data
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 0
 
-step-2: ## Step 2: Combine group results
+step-1: ## Step 1: Train ML classifier
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 1
+
+step-2: ## Step 2: Gompertz curve analysis (all groups)
 	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 2
 
-step-3: ## Step 3: Haldane inhibition analysis
+step-3: ## Step 3: Combine group results
 	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 3
 
-step-4: ## Step 4: Advanced fitting (GP + Bootstrap + Ensemble)
+step-4: ## Step 4: Haldane inhibition analysis
 	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 4
 
-step-5: ## Step 5: Statistical analysis + figures
+step-5: ## Step 5: Advanced fitting (GP + Bootstrap + Ensemble)
 	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 5
 
-step-6: ## Step 6: Truncation comparison + bad strain rescue
+step-6: ## Step 6: Statistical analysis + figures
 	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 6
 
-step-7: ## Step 7: Export for collaboration
+step-7: ## Step 7: Truncation method comparison + rescue
 	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 7
+
+step-8: ## Step 8: Export for collaboration
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 8
+
+step-9: ## Step 9: Synthetic validation (accuracy metrics)
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 9
 
 # ─── Advanced (granular) ─────────────────────────────────────────────────────
 
@@ -113,9 +123,7 @@ validate: ## Launch interactive curve validation tool
 	$(PYTHON) $(SCRIPTS)/validate_results_interactive.py
 
 validate-synthetic: ## Run pipeline on synthetic data + compute metrics
-	$(PYTHON) $(SCRIPTS)/01_growth_curve_analysis.py \
-		$(SYNTH)/output/comprehensive_test/test_data/DATA \
-		-o $(SYNTH)/output/comprehensive_test/validation_latest -q
+	$(PYTHON) $(SCRIPTS)/run_full_pipeline.py --steps 9
 
 validate-truncation: ## Launch interactive truncation method validator
 	$(PYTHON) $(SCRIPTS)/08_validate_truncation.py
