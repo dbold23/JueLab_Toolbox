@@ -3,52 +3,48 @@
     "n_ground_truth": 480,
     "n_pipeline_results": 480,
     "n_matched": 480,
-    "n_failures": 9
+    "n_failures": 2
   },
   "classification": {
-    "accuracy": 0.98125,
+    "accuracy": 0.9958333333333333,
     "precision": 1.0,
-    "recall": 0.9739130434782609,
-    "f1_score": 0.986784140969163,
+    "recall": 0.9942028985507246,
+    "f1_score": 0.9970930232558141,
     "confusion_matrix": {
-      "true_positives": 336,
+      "true_positives": 343,
       "true_negatives": 135,
       "false_positives": 0,
-      "false_negatives": 9
+      "false_negatives": 2
     }
   },
   "parameter_recovery": {
     "A": {
-      "mean_error": 0.10520527492705753,
-      "rmse": 0.44548344614280505,
-      "r_squared": -0.811672182283093,
-      "bias": 0.10520527492705753,
-      "n_samples": 336
+      "mean_error": 0.10376437744468965,
+      "rmse": 0.4409486843615933,
+      "r_squared": -0.7432552901725831,
+      "bias": 0.10376437744468965,
+      "n_samples": 343
     },
     "mu": {
-      "mean_error": -0.010475393440011808,
-      "rmse": 0.03504697016580821,
-      "r_squared": 0.8706805652797003,
-      "bias": -0.010475393440011808,
-      "n_samples": 336
+      "mean_error": -0.010686173045960298,
+      "rmse": 0.0355677034351274,
+      "r_squared": 0.8645944652322297,
+      "bias": -0.010686173045960298,
+      "n_samples": 343
     },
     "lambda": {
-      "mean_error": -0.443680000682917,
-      "rmse": 1.1851964722982715,
-      "r_squared": 0.976681909341696,
-      "bias": -0.443680000682917,
-      "n_samples": 336
+      "mean_error": -0.44858121903988385,
+      "rmse": 1.1960137670546092,
+      "r_squared": 0.975823431386179,
+      "bias": -0.44858121903988385,
+      "n_samples": 343
     }
   },
   "failure_analysis": {
     "n_false_positives": 0,
-    "n_false_negatives": 9,
+    "n_false_negatives": 2,
     "failure_scenarios": {
-      "borderline_r2_good": 5,
-      "low_A": 1,
-      "death_phase_moderate": 1,
-      "logistic_generated": 1,
-      "outlier_contaminated": 1
+      "sparse_data": 2
     }
   }
 }
