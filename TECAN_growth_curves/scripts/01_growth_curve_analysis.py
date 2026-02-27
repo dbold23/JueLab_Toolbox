@@ -2453,26 +2453,50 @@ def process_growth_curves(
                 continue
 
             # =================================================================
-            # FIT-FIRST APPROACH (New, more rigorous)
+            # FIT-FIRST APPROACH
+            # When ML models are available, ML is the primary classifier.
+            # Rule-based gates are only used as fallback when ML is absent.
             # =================================================================
             if use_fit_based_classification:
 
-                # Pre-fit noise filter: skip fitting if signal is buried in noise
+                # Compute pre-fit signal metrics (used by both ML and rule-based)
                 n_baseline = min(15, len(od600_clean) // 5)
                 noise_std = float(np.std(od600_clean[:n_baseline])) if n_baseline > 2 else 1e-8
                 signal_range = float(np.max(od600_clean) - np.mean(od600_clean[:min(5, len(od600_clean))]))
                 pre_fit_snr = signal_range / max(noise_std, 1e-8)
 
-                snr_thresh = fit_quality_thresholds.get('pre_fit_snr_threshold', 3.0)
-                od_override = fit_quality_thresholds.get('pre_fit_delta_od_override', 0.5)
-                if pre_fit_snr < snr_thresh and signal_range < od_override:
-                    # Signal is buried in noise AND growth is small -- skip fitting, classify BAD
-                    # (If signal_range >= override we let the fitter decide; large growth overrides low SNR)
+                # ─── PRE-FIT GATE ───────────────────────────────────
+                # ML pre-fit gate is primary when available;
+                # rule-based SNR check is fallback only
+                prefit_rejected = False
+
+                if prefit_gate is not None:
+                    # ML decides whether to skip fitting
+                    if prefit_gate.should_skip(time_clean, od600_clean, strain_name=strain_name):
+                        prefit_rejected = True
+                        reject_reason = "BAD: Rejected by ML pre-fit gate"
+                        reject_metrics = {'delta_od': signal_range,
+                                          'max_od': float(np.max(od600_clean)),
+                                          'snr': pre_fit_snr,
+                                          'ml_classification': 'BAD',
+                                          'p_good': 0.0}
+                        if verbose:
+                            print(f"  {strain_name}: BAD (ML pre-fit gate)")
+                else:
+                    # No ML model → fall back to rule-based SNR check
+                    snr_thresh = fit_quality_thresholds.get('pre_fit_snr_threshold', 3.0)
+                    od_override = fit_quality_thresholds.get('pre_fit_delta_od_override', 0.5)
+                    if pre_fit_snr < snr_thresh and signal_range < od_override:
+                        prefit_rejected = True
+                        reject_reason = "BAD: Pre-fit SNR too low ({:.1f} < {:.1f})".format(pre_fit_snr, snr_thresh)
+                        reject_metrics = {'snr': pre_fit_snr, 'delta_od': signal_range,
+                                          'max_od': float(np.max(od600_clean))}
+                        if verbose:
+                            print(f"  {strain_name}: BAD (pre-fit SNR={pre_fit_snr:.1f})")
+
+                if prefit_rejected:
                     classification = ClassificationResult(
-                        is_good=False,
-                        reason="BAD: Pre-fit SNR too low ({:.1f} < {:.1f})".format(pre_fit_snr, snr_thresh),
-                        metrics={'snr': pre_fit_snr, 'delta_od': signal_range,
-                                 'max_od': float(np.max(od600_clean))}
+                        is_good=False, reason=reject_reason, metrics=reject_metrics
                     )
                     truncation = TruncationResult(
                         truncation_index=len(od600_clean)-1,
@@ -2487,54 +2511,8 @@ def process_growth_curves(
                         a_err=0, mu_err=0, lambda_err=0,
                         mae=0, mse=0, rmse=0, r_squared=0,
                         predicted=np.array([]), residuals=np.array([]),
-                        error_message=f"Skipped: pre-fit SNR={pre_fit_snr:.1f}"
+                        error_message=reject_reason
                     )
-
-                    if verbose:
-                        print(f"  {strain_name}: BAD (pre-fit SNR={pre_fit_snr:.1f})")
-
-                    if not no_plots:
-                        plot_bad_curve_with_fit(
-                            time_clean, od600_clean,
-                            truncation, fit,
-                            classification, strain_name,
-                            plots_dir
-                        )
-
-                    results[strain_name] = ProcessingResult(
-                        strain_name=strain_name,
-                        classification=classification,
-                        truncation=truncation,
-                        fit=fit
-                    )
-                    continue
-
-                # ML pre-fit gate: reject obvious junk before expensive fitting
-                if prefit_gate is not None and prefit_gate.should_skip(time_clean, od600_clean, strain_name=strain_name):
-                    classification = ClassificationResult(
-                        is_good=False,
-                        reason="BAD: Rejected by ML pre-fit gate",
-                        metrics={'delta_od': signal_range, 'max_od': float(np.max(od600_clean)),
-                                 'snr': pre_fit_snr, 'ml_classification': 'BAD',
-                                 'p_good': 0.0}
-                    )
-                    truncation = TruncationResult(
-                        truncation_index=len(od600_clean)-1,
-                        truncation_time=float(time_clean[-1]),
-                        max_od=float(np.max(od600_clean)),
-                        time_truncated=time_clean, od_truncated=od600_clean,
-                        time_original=time_clean, od_original=od600_clean,
-                        smoothed_od=od600_clean
-                    )
-                    fit = FitResult(
-                        success=False, a_opt=0, mu_opt=0, lambda_opt=0,
-                        a_err=0, mu_err=0, lambda_err=0,
-                        mae=0, mse=0, rmse=0, r_squared=0,
-                        predicted=np.array([]), residuals=np.array([]),
-                        error_message="Skipped: ML pre-fit gate rejected"
-                    )
-                    if verbose:
-                        print(f"  {strain_name}: BAD (ML pre-fit gate)")
                     if not no_plots:
                         plot_bad_curve_with_fit(
                             time_clean, od600_clean, truncation, fit,
@@ -2548,10 +2526,9 @@ def process_growth_curves(
                     )
                     continue
 
-                # Check if curve is incomplete (still rising at experiment end)
+                # ─── TRUNCATION ─────────────────────────────────────
                 is_incomplete, _ = detect_incomplete_curve(time_clean, od600_clean)
 
-                # Step 1: Truncate (using specified method)
                 truncation = truncate_at_max(
                     time_clean, od600_clean,
                     smoothing_window=truncation_params['smoothing_window'],
@@ -2560,7 +2537,6 @@ def process_growth_curves(
                     use_adaptive=truncation_params.get('use_adaptive', False)
                 )
 
-                # Validate truncation before fitting
                 trunc_valid, trunc_reason = validate_truncation(
                     truncation,
                     min_points=truncation_params['min_points_for_fit']
@@ -2590,15 +2566,13 @@ def process_growth_curves(
                     )
                     continue
 
-                # Step 2: Attempt Gompertz fit
+                # ─── GOMPERTZ FIT ───────────────────────────────────
                 fit = fit_gompertz(
                     truncation.time_truncated,
                     truncation.od_truncated
                 )
 
-                # Step 2b: Multi-model fallback (disabled by default — net negative
-                # on validation: rescues 6 good curves but creates 14 false positives
-                # because Baranyi is flexible enough to fit contamination artifacts)
+                # Multi-model fallback (disabled by default)
                 best_model_name = 'gompertz'
                 use_multi_model = truncation_params.get('try_multi_model', False)
 
@@ -2616,48 +2590,67 @@ def process_growth_curves(
                             print(f"    Multi-model: {alt_model} R²={alt_fit.r_squared:.3f} "
                                   f"(Gompertz was {gompertz_r2_val:.3f})")
 
-                # Step 3: Classify based on fit quality (with secondary quality gates)
-                classification = classify_by_fit_quality(
-                    fit, fit_quality_thresholds,
-                    time=time_clean, od600=od600_clean,
-                    is_incomplete=is_incomplete
-                )
-
-                # Add basic OD metrics to classification for reference
-                if 'delta_od' not in classification.metrics:
-                    classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
-                classification.metrics['max_od'] = np.max(od600_clean)
-                classification.metrics['best_model'] = best_model_name
-
-                # ML post-fit classifier: override rule-based with probability
+                # ─── POST-FIT CLASSIFICATION ────────────────────────
+                # ML post-fit classifier is primary when available;
+                # rule-based classify_by_fit_quality() is fallback only
                 if postfit_clf is not None:
+                    # ML is the primary classifier — compute metrics
+                    # for export but let the model decide GOOD/BAD
+                    rule_classification = classify_by_fit_quality(
+                        fit, fit_quality_thresholds,
+                        time=time_clean, od600=od600_clean,
+                        is_incomplete=is_incomplete
+                    )
+                    # Ensure OD metrics are present for ML feature extraction
+                    if 'delta_od' not in rule_classification.metrics:
+                        rule_classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
+                    rule_classification.metrics['max_od'] = np.max(od600_clean)
+                    rule_classification.metrics['best_model'] = best_model_name
+
                     ml_result = postfit_clf.classify(
                         fit_result=fit,
-                        classification_metrics=classification.metrics,
+                        classification_metrics=rule_classification.metrics,
                         truncation_time=truncation.truncation_time,
                         points_used=len(truncation.od_truncated),
                         strain_name=strain_name,
                     )
                     if ml_result is not None:
-                        classification.metrics['p_good'] = ml_result['p_good']
-                        classification.metrics['ml_classification'] = ml_result['ml_classification']
-                        classification.metrics['rule_based_result'] = classification.is_good
-                        classification.metrics['rule_based_reason'] = classification.reason
+                        # ML makes the call; store rule-based for audit trail
+                        classification_metrics = rule_classification.metrics.copy()
+                        classification_metrics['p_good'] = ml_result['p_good']
+                        classification_metrics['ml_classification'] = ml_result['ml_classification']
+                        classification_metrics['rule_based_result'] = rule_classification.is_good
+                        classification_metrics['rule_based_reason'] = rule_classification.reason
                         classification = ClassificationResult(
                             is_good=ml_result['is_good'],
                             reason=ml_result['reason'],
-                            metrics=classification.metrics,
+                            metrics=classification_metrics,
                         )
+                    else:
+                        # ML returned None (error) — fall back to rules
+                        classification = rule_classification
+                else:
+                    # No ML model → rule-based classification
+                    classification = classify_by_fit_quality(
+                        fit, fit_quality_thresholds,
+                        time=time_clean, od600=od600_clean,
+                        is_incomplete=is_incomplete
+                    )
+                    if 'delta_od' not in classification.metrics:
+                        classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
+                    classification.metrics['max_od'] = np.max(od600_clean)
+                    classification.metrics['best_model'] = best_model_name
 
                 if verbose:
                     status = "GOOD" if classification.is_good else "BAD"
                     r2 = fit.r_squared if fit.success else 0
                     model_tag = f" [{best_model_name}]" if best_model_name != 'gompertz' else ""
-                    print(f"  {strain_name}: {status} (R²={r2:.3f}, A={fit.a_opt:.3f}){model_tag}")
+                    ml_tag = " [ML]" if postfit_clf is not None else ""
+                    print(f"  {strain_name}: {status} (R²={r2:.3f}, A={fit.a_opt:.3f}){model_tag}{ml_tag}")
                     if not classification.is_good:
                         print(f"    Reason: {classification.reason}")
 
-                # Step 4: Generate visualization
+                # Generate visualization
                 if not no_plots:
                     if classification.is_good:
                         plot_truncation_comparison(
