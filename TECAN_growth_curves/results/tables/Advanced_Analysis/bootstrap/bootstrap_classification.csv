@@ -11,6 +11,7 @@ LB-LCY4,1.0,GOOD (high confidence),False
 LB-BIF6,1.0,GOOD (high confidence),False
 LB-BIF9,1.0,GOOD (high confidence),False
 LB-FLUPC8,1.0,GOOD (high confidence),False
+Bifenthrin-BIF6,1.0,GOOD (high confidence),False
 LAMBDACYHALOTHRINANDLB-LCY1,1.0,GOOD (high confidence),False
 MALATHIONANDLB-MAL8,1.0,GOOD (high confidence),False
 MALATHIONANDLB-MAL1,1.0,GOOD (high confidence),False
@@ -40,6 +41,9 @@ LAMBDACYHALOTHRINANDLB-LCY3,1.0,GOOD (high confidence),False
 PERMETHRINANDLB-PERM4,1.0,GOOD (high confidence),False
 PERMETHRINANDLB-CYPERM2,1.0,GOOD (high confidence),False
 PERMETHRINANDLB-PERM7,1.0,GOOD (high confidence),False
+PERMETHRINANDLB-CISPERM1,1.0,GOOD (high confidence),False
 LB-PERM4,1.0,GOOD (high confidence),False
 LB-PERM7,1.0,GOOD (high confidence),False
 LB-LCY3,1.0,GOOD (high confidence),False
+H2O-CYPERM2,0.0,BAD,False
+H2O-LCY3,0.0,BAD,False

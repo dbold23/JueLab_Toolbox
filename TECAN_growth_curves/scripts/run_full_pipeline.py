@@ -353,12 +353,13 @@ def step9_validate(config, dry_run=False, **kwargs):
     synth_gt = PROJECT_DIR / 'synthetic_data' / 'output' / 'comprehensive_test' / 'test_data' / 'ground_truth.csv'
     out_dir = PROJECT_DIR / 'synthetic_data' / 'output' / 'comprehensive_test' / 'validation_latest'
 
-    # Run pipeline on synthetic data
+    # Run pipeline on synthetic data (same flags as step 2: adaptive + ML)
     cmd = [
         sys.executable, str(SCRIPT_DIR / '01_growth_curve_analysis.py'),
         str(synth_data),
         '-o', str(out_dir),
         '-q',
+        '--adaptive',
     ]
     if not no_ml and ml_models_exist():
         cmd.append('--ml-classify')
