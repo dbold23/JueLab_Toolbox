@@ -71,18 +71,42 @@ groups:
     data_dir: data/raw/Group1/Group_1_DATA
     output_dir: results/tables/Group1_Results
     pesticides: [Bifenthrin, Flupyradifurone, LambdaCyhalothrin]
+    operator: Operator1
+    year: 2025
   Group2:
     data_dir: data/raw/Group 2/Group_2_DATA
     output_dir: results/tables/Group2_Results
     pesticides: [Malathion, LambdaCyhalothrin]
+    operator: Operator1
+    year: 2025
   Group3:
     data_dir: data/raw/Group 3/Group_3_DATA
     output_dir: results/tables/Group3_Results
     pesticides: [Imidacloprid, LambdaCyhalothrin]
+    operator: Operator1
+    year: 2025
   Group4:
     data_dir: data/raw/Group 4/Group4_DATA
     output_dir: results/tables/Group4_Results
     pesticides: [Permethrin, LambdaCyhalothrin]
+    operator: Operator1
+    year: 2025
+  Group5:
+    data_dir: data/raw/Group5/Group5_DATA_processed
+    output_dir: results/tables/Group5_Results
+    pesticides: [Imidacloprid, Malathion, Diazinon]
+    operator: Walton
+    year: 2022
+    raw_data: data/raw/Group5/Group5_DATA.csv
+    raw_key: data/raw/Group5/Group5_KEY.csv
+  Group6:
+    data_dir: data/raw/Group6/Group6_DATA_processed
+    output_dir: results/tables/Group6_Results
+    pesticides: [Imidacloprid]
+    operator: Dominique
+    year: 2018
+    raw_data: data/raw/Group6/Group6_DATA.csv
+    raw_key: data/raw/Group6/Group6_KEY.csv
 
 # =============================================================================
 # Advanced Statistical Methods (06_advanced_fitting.py)
@@ -166,7 +190,7 @@ advanced:
 # =============================================================================
 
 ml_classifier:
-  enabled: false                                   # Use ML classifier (requires trained models)
+  enabled: true                                    # Use ML classifier (requires trained models)
   prefit_gate:
     model_path: models/prefit_gate.joblib           # Pre-fit gate model
     reject_threshold: 0.05                          # P(good) <= this → skip fitting (conservative)
@@ -176,3 +200,25 @@ ml_classifier:
     bad_threshold: 0.3                              # P(good) <= this → BAD
   feature_config_path: models/feature_config.json
   fallback_to_rules: true                           # Fall back to rule-based if models missing
+
+# =============================================================================
+# Genomic Prediction (11_genomic_prediction.py, genomic_features.py)
+# =============================================================================
+
+genomic:
+  enabled: true                                            # Run genomic prediction step
+  blast_results_dir: data/genomic/blast_results            # BLAST format-6 output files
+  strain_mapping: data/genomic/strain_mapping.csv          # Strain ID -> genome mapping
+  features_csv: data/genomic/genomic_features.csv          # Pre-computed feature matrix
+  annotations_dir: data/genomic/annotations                # Prokka GFF files (fallback)
+  reference_databases:
+    organophosphate: data/genomic/reference_databases/organophosphate_degradation.fasta
+    pyrethroid: data/genomic/reference_databases/pyrethroid_degradation.fasta
+    neonicotinoid: data/genomic/reference_databases/neonicotinoid_degradation.fasta
+  blast_evalue_threshold: 1.0e-10                          # BLAST e-value filter
+  blast_min_identity: 30.0                                 # BLAST minimum % identity
+  prediction_model: elastic_net                            # elastic_net | bayesian_ridge
+  pesticide_filter: null                                   # Restrict to one pesticide (e.g., Malathion)
+  prior_integration:
+    enabled: true                                          # Use genomic priors in Bayesian models
+    prior_weight: 0.5                                      # 0=ignore, 1=fully replace population prior

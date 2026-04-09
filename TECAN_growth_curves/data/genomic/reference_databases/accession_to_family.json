@@ -1,0 +1,302 @@
+{
+  "UPK63685.1": {
+    "family": "carboxylesterase",
+    "description": "carboxylesterase/lipase family protein [Rhodococcus pyridinivorans] [family=organophosphate]"
+  },
+  "UPK63173.1": {
+    "family": "carboxylesterase",
+    "description": "carboxylesterase/lipase family protein [Rhodococcus pyridinivorans] [family=organophosphate]"
+  },
+  "QXF81282.1": {
+    "family": "carboxylesterase",
+    "description": "carboxylesterase/lipase family protein [Rhodococcus pyridinivorans] [family=organophosphate]"
+  },
+  "QXF80816.1": {
+    "family": "carboxylesterase",
+    "description": "carboxylesterase/lipase family protein [Rhodococcus pyridinivorans] [family=organophosphate]"
+  },
+  "QXF13303.1": {
+    "family": "carboxylesterase",
+    "description": "carboxylesterase family protein [Sphingopyxis terrae subsp. terrae] [family=organophosphate]"
+  },
+  "QXF13297.1": {
+    "family": "carboxylesterase",
+    "description": "carboxylesterase family protein [Sphingopyxis terrae subsp. terrae] [family=organophosphate]"
+  },
+  "QXF12825.1": {
+    "family": "carboxylesterase",
+    "description": "carboxylesterase/lipase family protein [Sphingopyxis terrae subsp. terrae] [family=organophosphate]"
+  },
+  "QDC40419.1": {
+    "family": "other",
+    "description": "hypothetical protein FIL70_25135 (plasmid) [Sphingobium fuliginis ATCC 27551] [family=organophosphat"
+  },
+  "QDC40051.1": {
+    "family": "carboxylesterase",
+    "description": "carboxylesterase/lipase family protein [Sphingobium fuliginis ATCC 27551] [family=organophosphate]"
+  },
+  "AVA15237.1": {
+    "family": "carboxylesterase",
+    "description": "carboxylesterase [Sphingopyxis sp. MG] [family=organophosphate]"
+  },
+  "WP_343944626.1": {
+    "family": "carboxylesterase",
+    "description": "amidohydrolase family protein [Pseudonocardia zijingensis] [family=organophosphate]"
+  },
+  "sp|P0A433.1|OPD_SPHSA": {
+    "family": "opd_mpd",
+    "description": "RecName: Full=Parathion hydrolase; AltName: Full=Phosphotriesterase; Short=PTE; Flags: Precursor [fa"
+  },
+  "pdb|8ZXG|A": {
+    "family": "opd_mpd",
+    "description": "Chain A, Paraoxonase from Bacillus sp. strain S3wahi [family=organophosphate]"
+  },
+  "WP_015063462.1": {
+    "family": "carboxylesterase",
+    "description": "MULTISPECIES: organophosphate hydrolase OPH [Sphingomonadales] [family=organophosphate]"
+  },
+  "GLZ93990.1": {
+    "family": "carboxylesterase",
+    "description": "MBL fold metallo-hydrolase [Klebsiella variicola] [family=organophosphate]"
+  },
+  "BFF67854.1": {
+    "family": "carboxylesterase",
+    "description": "MBL fold metallo-hydrolase [Afipia dichlorophenoxyacetatis] [family=organophosphate]"
+  },
+  "BFF67615.1": {
+    "family": "carboxylesterase",
+    "description": "MBL fold metallo-hydrolase [Afipia dichlorophenoxyacetatis] [family=organophosphate]"
+  },
+  "BFF67252.1": {
+    "family": "carboxylesterase",
+    "description": "MBL fold metallo-hydrolase [Afipia dichlorophenoxyacetatis] [family=organophosphate]"
+  },
+  "BFF65979.1": {
+    "family": "carboxylesterase",
+    "description": "MBL fold metallo-hydrolase [Afipia dichlorophenoxyacetatis] [family=organophosphate]"
+  },
+  "BFF64845.1": {
+    "family": "carboxylesterase",
+    "description": "MBL fold metallo-hydrolase [Afipia dichlorophenoxyacetatis] [family=organophosphate]"
+  },
+  "WP_477741816.1": {
+    "family": "other",
+    "description": "FixH family protein, partial [Priestia sp. P5_B4] [family=organophosphate]"
+  },
+  "WP_477626582.1": {
+    "family": "other",
+    "description": "FixH family protein [Peribacillus sp. P4_B1] [family=organophosphate]"
+  },
+  "WP_477589237.1": {
+    "family": "other",
+    "description": "FixH family protein [Peribacillus sp. P4_D6] [family=organophosphate]"
+  },
+  "WP_477585730.1": {
+    "family": "other",
+    "description": "FixH family protein [Paenisporosarcina sp. P4_E4_2] [family=organophosphate]"
+  },
+  "WP_477579388.1": {
+    "family": "other",
+    "description": "FixH family protein [Paenibacillus sp. 01T431] [family=organophosphate]"
+  },
+  "WP_477549457.1": {
+    "family": "other",
+    "description": "FixH family protein [Paenibacillus sp. 01T47] [family=organophosphate]"
+  },
+  "WP_477547102.1": {
+    "family": "other",
+    "description": "MULTISPECIES: FixH family protein [unclassified Paenisporosarcina] [family=organophosphate]"
+  },
+  "WP_477546684.1": {
+    "family": "other",
+    "description": "MULTISPECIES: FixH family protein [unclassified Paenisporosarcina] [family=organophosphate]"
+  },
+  "WP_477536632.1": {
+    "family": "other",
+    "description": "FixH family protein [Paenisporosarcina sp. P5_A11] [family=organophosphate]"
+  },
+  "WP_477532479.1": {
+    "family": "other",
+    "description": "MULTISPECIES: FixH family protein [unclassified Paenisporosarcina] [family=organophosphate]"
+  },
+  "sp|Q6XBH1.1|GPDQ_KLEAE": {
+    "family": "carboxylesterase",
+    "description": "RecName: Full=Glycerophosphodiester phosphodiesterase GpdQ; Short=GDPD; Short=Glycerophosphoryl dies"
+  },
+  "pdb|1P9E|B": {
+    "family": "opd_mpd",
+    "description": "Chain B, Methyl Parathion Hydrolase [family=organophosphate]"
+  },
+  "pdb|1P9E|A": {
+    "family": "opd_mpd",
+    "description": "Chain A, Methyl Parathion Hydrolase [family=organophosphate]"
+  },
+  "pdb|3A4J|A": {
+    "family": "opd_mpd",
+    "description": "Chain A, Phosphotriesterase [family=organophosphate]"
+  },
+  "pdb|3A3X|A": {
+    "family": "opd_mpd",
+    "description": "Chain A, Phosphotriesterase [family=organophosphate]"
+  },
+  "pdb|3A3W|A": {
+    "family": "opd_mpd",
+    "description": "Chain A, Phosphotriesterase [family=organophosphate]"
+  },
+  "PYD02464.1": {
+    "family": "opd_mpd",
+    "description": "aryldialkylphosphatase [Microbacterium esteraromaticum] [family=organophosphate]"
+  },
+  "OCC22257.1": {
+    "family": "opd_mpd",
+    "description": "aryldialkylphosphatase [Prescottella equi] [family=organophosphate]"
+  },
+  "OCC21814.1": {
+    "family": "opd_mpd",
+    "description": "phosphotriesterase [Prescottella equi] [family=organophosphate]"
+  },
+  "UQX47894.1": {
+    "family": "carboxylesterase",
+    "description": "carbon-nitrogen family hydrolase [Bacillus velezensis] [family=neonicotinoid]"
+  },
+  "UQX47445.1": {
+    "family": "carboxylesterase",
+    "description": "bifunctional GNAT family N-acetyltransferase/carbon-nitrogen hydrolase family protein [Bacillus vele"
+  },
+  "QIR83838.1": {
+    "family": "carboxylesterase",
+    "description": "carbon-nitrogen hydrolase family protein [Paracoccus sp. AK26] [family=neonicotinoid]"
+  },
+  "PQM29507.1": {
+    "family": "nitrilase",
+    "description": "nitrilase [Sphingopyxis lindanitolerans] [family=neonicotinoid]"
+  },
+  "PQM29039.1": {
+    "family": "other",
+    "description": "hypothetical protein CVO77_11630 [Sphingopyxis lindanitolerans] [family=neonicotinoid]"
+  },
+  "PQM27397.1": {
+    "family": "nitrilase",
+    "description": "nitrilase [Sphingopyxis lindanitolerans] [family=neonicotinoid]"
+  },
+  "TFF53969.1": {
+    "family": "carboxylesterase",
+    "description": "amidohydrolase [Pseudomonas putida] [family=neonicotinoid]"
+  },
+  "TFF53494.1": {
+    "family": "other",
+    "description": "hydratase [Pseudomonas putida] [family=neonicotinoid]"
+  },
+  "TFF50418.1": {
+    "family": "carboxylesterase",
+    "description": "amidohydrolase [Pseudomonas putida] [family=neonicotinoid]"
+  },
+  "RRJ18786.1": {
+    "family": "carboxylesterase",
+    "description": "amidohydrolase [Rheinheimera mesophila] [family=neonicotinoid]"
+  },
+  "AZR40669.1": {
+    "family": "other",
+    "description": "xanthine dehydrogenase [Marinobacter salarius] [family=neonicotinoid]"
+  },
+  "WEF26037.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "serine hydrolase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF26003.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "glycoside hydrolase family 25 protein [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF25996.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "hydroxyisourate hydrolase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF25989.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "DNA mismatch repair protein MutT [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF25765.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "alpha/beta hydrolase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF25732.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "phosphoglycolate phosphatase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF25693.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "endonuclease/exonuclease/phosphatase family protein [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF25676.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "aminoacyl-tRNA hydrolase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF25640.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "serine hydrolase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF25638.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "heavy metal translocating P-type ATPase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF25605.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "PHB depolymerase family esterase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF25514.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "alpha/beta hydrolase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF24911.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "VOC family protein [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF24897.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "alpha/beta hydrolase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF24565.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "alpha/beta fold hydrolase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF24259.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "P1 family peptidase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF23968.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "alpha/beta hydrolase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF23879.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "dienelactone hydrolase family protein [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF23470.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "alpha/beta fold hydrolase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "WEF22886.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "alpha/beta hydrolase [Paracoccus qomolangmaensis] [family=pyrethroid]"
+  },
+  "XXQ42250.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "cypermethrin hydrolase [Rhodococcus sp. (in: high G+C Gram-positive bacteria)] [family=pyrethroid]"
+  },
+  "sp|Q8Y678.1|STP1_LISMO": {
+    "family": "pyrethroid_hydrolase",
+    "description": "RecName: Full=Serine/threonine phosphatase stp [family=pyrethroid]"
+  },
+  "sp|C0LA90.1|PYRHY_SPHWJ": {
+    "family": "pyrethroid_hydrolase",
+    "description": "RecName: Full=Pyrethroid hydrolase [family=pyrethroid]"
+  },
+  "sp|Q52NW7.1|PYRHY_KLESP": {
+    "family": "pyrethroid_hydrolase",
+    "description": "RecName: Full=Pyrethroid hydrolase [family=pyrethroid]"
+  },
+  "ODP27570.1": {
+    "family": "pyrethroid_hydrolase",
+    "description": "Pyrethroid hydrolase [Paenibacillus nuruki] [family=pyrethroid]"
+  }
+}

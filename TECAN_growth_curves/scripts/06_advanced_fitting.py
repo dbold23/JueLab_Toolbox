@@ -136,14 +136,20 @@ else:
         return np.full_like(time, X0, dtype=float), np.full_like(time, S0, dtype=float)
 
     def identify_pesticide_strains(df):
-        """Filter to pesticide+LB strains (contain 'ANDLB')."""
-        mask = df['strain'].str.contains('ANDLB', case=False, na=False)
+        """Filter to pesticide+nutrient strains (contain 'ANDLB' or 'ANDG')."""
+        mask = (
+            df['strain'].str.contains('ANDLB', case=False, na=False) |
+            df['strain'].str.contains('ANDG', case=False, na=False)
+        )
         return df[mask].copy()
 
     def extract_pesticide_name(strain):
-        """Extract pesticide from strain like 'BifenthrinANDLB-BIF2'."""
-        if 'ANDLB' in strain.upper():
-            return strain.upper().split('ANDLB')[0]
+        """Extract pesticide from strain like 'BifenthrinANDLB-BIF2' or 'DiazinnonANDG-DIAZ1'."""
+        s = strain.upper()
+        if 'ANDLB' in s:
+            return s.split('ANDLB')[0]
+        if 'ANDG' in s:
+            return s.split('ANDG')[0]
         return 'UNKNOWN'
 
 
@@ -159,6 +165,8 @@ def load_raw_data(data_dir, strain_name, group):
         'Group2': 'Group 2/Group_2_DATA',
         'Group3': 'Group 3/Group_3_DATA',
         'Group4': 'Group 4/Group4_DATA',
+        'Group5': 'Group5/Group5_DATA_processed',
+        'Group6': 'Group6/Group6_DATA_processed',
     }
     group_path = data_dir / group_dirs.get(group, group)
     if not group_path.exists():
@@ -809,7 +817,8 @@ def plot_ensemble_truncation(time, od, ensemble_result, strain_name, output_path
 # =============================================================================
 
 def build_gompertz_model(strain_data, strain_names, pesticide_indices,
-                         n_pesticides, mle_estimates=None, config=None):
+                         n_pesticides, mle_estimates=None, config=None,
+                         genomic_priors=None):
     """
     Build hierarchical Bayesian Gompertz model in PyMC.
 
@@ -823,6 +832,11 @@ def build_gompertz_model(strain_data, strain_names, pesticide_indices,
         n_pesticides: number of pesticide groups
         mle_estimates: dict of MLE estimates for initialization
         config: pipeline config dict
+        genomic_priors: optional DataFrame with per-strain genomic prior shifts.
+            Expected columns: strain_id, mu_prior_mean, mu_prior_sigma
+            (and optionally lam_prior_mean/sigma, a_prior_mean/sigma).
+            When provided, adds per-strain shifts to the non-centered
+            parameterization based on genomic predictions.
 
     Returns:
         PyMC model, (time_padded, od_padded, mask, strain_idx_per_obs)
@@ -882,22 +896,49 @@ def build_gompertz_model(strain_data, strain_names, pesticide_indices,
         sigma_mu_strain = pm.HalfNormal('sigma_mu_strain', sigma=0.05)
         sigma_lam_strain = pm.HalfNormal('sigma_lam_strain', sigma=1.0)
 
+        # === Genomic prior shifts (fixed data, not random variables) ===
+        # When genomic priors are available, shift each strain's mean
+        # based on genotype-to-phenotype predictions
+        genomic_mu_shift = np.zeros(n_strains)
+        genomic_lam_shift = np.zeros(n_strains)
+        genomic_A_shift = np.zeros(n_strains)
+
+        if genomic_priors is not None and len(genomic_priors) > 0:
+            from genomic_features import resolve_strain_id
+            for i, name in enumerate(strain_names):
+                bio_id = resolve_strain_id(name)
+                match = genomic_priors[genomic_priors['strain_id'] == bio_id]
+                if len(match) > 0:
+                    row = match.iloc[0]
+                    # Shift = genomic prediction - population prior mean
+                    # This moves the strain's prior center toward the genomic prediction
+                    if 'mu_prior_mean' in row and not np.isnan(row['mu_prior_mean']):
+                        genomic_mu_shift[i] = row['mu_prior_mean'] - mu_mu_prior[0]
+                    if 'lambda_prior_mean' in row and not np.isnan(row['lambda_prior_mean']):
+                        genomic_lam_shift[i] = row['lambda_prior_mean'] - mu_lam_prior[0]
+                    if 'a_prior_mean' in row and not np.isnan(row['a_prior_mean']):
+                        genomic_A_shift[i] = row['a_prior_mean'] - mu_A_prior[0]
+
+            n_shifted = np.sum(genomic_mu_shift != 0)
+            if n_shifted > 0:
+                logger.info(f"  Applied genomic prior shifts to {n_shifted}/{n_strains} strains")
+
         A_offset = pm.Normal('A_offset', mu=0, sigma=1, shape=n_strains)
         A_strain = pm.Deterministic(
             'A_strain',
-            A_group[pesticide_indices] + sigma_A_strain * A_offset
+            A_group[pesticide_indices] + genomic_A_shift + sigma_A_strain * A_offset
         )
 
         mu_offset = pm.Normal('mu_offset', mu=0, sigma=1, shape=n_strains)
         mu_strain = pm.Deterministic(
             'mu_strain',
-            pm.math.abs(mu_group[pesticide_indices] + sigma_mu_strain * mu_offset)
+            pm.math.abs(mu_group[pesticide_indices] + genomic_mu_shift + sigma_mu_strain * mu_offset)
         )
 
         lam_offset = pm.Normal('lam_offset', mu=0, sigma=1, shape=n_strains)
         lam_strain = pm.Deterministic(
             'lam_strain',
-            lam_group[pesticide_indices] + sigma_lam_strain * lam_offset
+            lam_group[pesticide_indices] + genomic_lam_shift + sigma_lam_strain * lam_offset
         )
 
         # === Observation noise ===
@@ -1443,6 +1484,8 @@ Methods applied:
                         help='Only run ensemble truncation (no Bayesian/bootstrap)')
     parser.add_argument('--no-ensemble', action='store_true',
                         help='Skip ensemble truncation')
+    parser.add_argument('--no-genomic', action='store_true',
+                        help='Skip genomic prior integration even if data exists')
 
     # Sampling overrides
     parser.add_argument('--chains', type=int, default=None)
@@ -1933,11 +1976,22 @@ Methods applied:
               f"{n_groups_good_bayes} groups "
               f"({sum(len(t) for t, _ in bayes_data_good)} total obs)...")
 
+        # Load genomic priors if available
+        genomic_priors = None
+        genomic_priors_path = output_dir.parent / 'Genomic_Analysis' / 'genomic_priors.csv'
+        if genomic_priors_path.exists() and not args.no_genomic:
+            try:
+                genomic_priors = pd.read_csv(genomic_priors_path)
+                print(f"  Loaded genomic priors from {genomic_priors_path} "
+                      f"({len(genomic_priors)} strains)")
+            except Exception as e:
+                print(f"  Warning: could not load genomic priors: {e}")
+
         try:
             gomp_model = build_gompertz_model(
                 bayes_data_good, bayes_names_good,
                 bayes_pest_idx_good, n_groups_good_bayes,
-                config=config
+                config=config, genomic_priors=genomic_priors
             )
             print("Model built. Sampling...")
             gompertz_trace = fit_bayesian_gompertz(gomp_model, config)
