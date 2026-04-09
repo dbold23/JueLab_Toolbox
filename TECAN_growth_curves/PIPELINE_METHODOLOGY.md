@@ -1682,5 +1682,105 @@ The ML classifier uses a two-stage HistGradientBoosting architecture trained on 
 
 ---
 
+## 16. Step 11 — Genomic Prediction (Genotype-to-Phenotype)
+
+**Status**: Implemented and tested (52/52 tests passing). Awaiting strain genome sequences.
+
+**Scripts**: `genomic_features.py`, `11_genomic_prediction.py`
+
+### 16.1 Purpose
+
+Predict bacterial growth curve parameters (Gompertz mu, lambda, A) from genomic features **before** running the plate reader. This enables computational screening of which strains are likely pesticide degraders, and provides informative Bayesian priors for the hierarchical models in Step 5.
+
+### 16.2 Genomic Feature Extraction (`genomic_features.py`)
+
+The module extracts degradation gene features from two data sources:
+
+1. **BLAST results** (primary): Parses format-6 tabular output against curated reference databases. Filters by e-value (<1e-10) and minimum identity (>30%).
+2. **Prokka GFF annotations** (fallback): Parses gene product annotations when BLAST results are unavailable.
+
+**Strain ID resolution**: Extracts biological strain IDs (e.g., `BIF2`) from full pipeline names (e.g., `BifenthrinANDLB-BIF2`, `LB-BIF2`, `H2O-BIF2`) using regex pattern matching.
+
+**Target gene families per pesticide class**:
+
+| Gene Family | Keywords | Relevant Pesticides | Weight |
+|-------------|----------|---------------------|--------|
+| Carboxylesterase | estA, estB, carE, CE | Malathion, Diazinon | 1.0 |
+| OPD/MPD | opd, mpd, OPH, PTE | Malathion, Diazinon | 0.8 |
+| Pyrethroid hydrolase | pytH, pytZ, Est3385 | Bifenthrin, Permethrin, Lambda-cyhalothrin | 1.0 |
+| Cytochrome P450 | CYP, monooxygenase | All pesticides | 0.5 |
+| Nitroreductase | nfl, nitroreductase | Imidacloprid, Flupyradifurone | 1.0 |
+| Nitrilase | nitrilase, amidase | Imidacloprid, Flupyradifurone | 0.7 |
+| Efflux pump | acrAB, tolC, MFS | All (general tolerance) | 0.3 |
+
+**Features extracted per strain** (~37 features):
+- `n_degradation_genes` — total unique hits
+- `has_[family]` — binary presence/absence per gene family
+- `max_pident_[family]` — highest percent identity per family
+- `best_bitscore_[family]` — best bitscore per family
+- `pesticide_gene_relevance_score` — weighted score combining presence with pesticide-specific importance
+
+### 16.3 Prediction Models (`11_genomic_prediction.py`)
+
+Three models are trained on merged genomic + phenotypic data:
+
+**Model A — Elastic Net** (primary predictor):
+- Predicts Gompertz mu (growth rate) from genomic features + pesticide one-hot encoding
+- ElasticNetCV with L1/L2 regularization (handles p > n with ~30 unique strains)
+- Validated via leave-one-strain-out cross-validation (LOSOCV)
+
+**Model B — Bayesian Ridge** (prior generation):
+- Returns posterior mean + variance per Gompertz parameter per strain
+- Output feeds directly into `build_gompertz_model()` as per-strain prior shifts
+
+**Model C — HistGradientBoosting** (degradation classifier):
+- Binary classification: can this strain degrade this pesticide?
+- Rapid screening prediction before any wet lab work
+
+### 16.4 Bayesian Prior Integration
+
+In `06_advanced_fitting.py`, `build_gompertz_model()` accepts an optional `genomic_priors` DataFrame. When provided, per-strain shifts are added to the non-centered parameterization:
+
+```
+mu_strain = |mu_group[pesticide] + genomic_mu_shift[strain] + sigma_mu * offset|
+```
+
+The genomic shift is fixed data (not a random variable) — it moves each strain's prior center based on genomic prediction while `sigma_mu_strain` still captures residual unexplained variation.
+
+### 16.5 Data Requirements
+
+```
+data/genomic/
+  strain_mapping.csv              # strain_id -> genome accession
+  blast_results/                  # BLAST format-6 output per strain
+  reference_databases/            # Curated degradation gene FASTAs
+  annotations/                    # Optional: Prokka GFF files
+  genomic_features.csv            # Output: pre-computed feature matrix
+```
+
+### 16.6 Pipeline Integration
+
+Step 11 runs after Step 3 (combine results) and before Step 5 (Bayesian analysis). It is **optional** — the pipeline skips gracefully if `data/genomic/` does not exist or `--no-genomic` is passed. All genomic features default to NaN when absent; HistGradientBoosting handles NaN natively for backward compatibility.
+
+### 16.7 Empirical Results
+
+Applied to 30 RagTag-scaffolded genome assemblies (8 malathion, 7 diazinon, 8 chlorpyrifos, 7 dimethoate strains), 15 of which overlap with TECAN growth curve data (all MAL and DIAZ strains).
+
+**Phase 1 — BLAST gene presence features (37 features):**
+- Elastic net R² = 0.000, 0/37 features selected
+- All MAL strains share 100% carboxylesterase identity to *Pseudomonas putida* — no discriminating variation
+
+**Phase 2 — Combined features (33 features: BLAST + codon usage + assembly stats):**
+- Elastic net R² = 0.000, 0/33 features selected
+- LOSOCV R² = -0.056
+- Permutation test p = 1.000 (1000 shuffles; null R² mean = 0.095)
+- No individual feature significantly correlated with Gompertz mu (all p > 0.45)
+
+**Interpretation:** MAL strains are near-clonal (ENC 38.5 ± 0.3, GC 62%) with no genomic variation to predict from. Growth rate variation (mu 0.004–0.38) is driven by pesticide condition, not genotype. This is consistent with literature findings that within-species genomic features have weak predictive power for growth phenotypes, and that environmental context dominates genotype for growth rate determination (James et al. 2025; Malik et al. 2019).
+
+**Implication:** Genotype-to-phenotype prediction for pesticide degradation requires (a) phylogenetically diverse strain panels and/or (b) transcriptomic data capturing gene expression under pesticide exposure. The 15 Chlorp + Dimeth strains (GC 37–68%, ENC 31–56) provide the diversity needed; TECAN assays on these strains are the planned next step.
+
+---
+
 *Generated for BIO380SP25 — Pesticide Bioremediating Bacteria Research Project*
-*Pipeline version: February 2026*
+*Pipeline version: April 2026*

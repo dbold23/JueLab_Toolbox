@@ -27,6 +27,17 @@ METADATA_FEATURES = [
     'concentration_numeric', # parsed numeric concentration from strain name
 ]
 
+# Genomic features (optional — NaN when genomic data unavailable)
+# These are added to the postfit feature set when a model is trained with them.
+# HistGradientBoosting handles NaN natively, so backward compatibility is maintained.
+GENOMIC_FEATURES = [
+    'n_degradation_genes',
+    'has_carboxylesterase', 'has_opd_mpd', 'has_pyrethroid_hydrolase',
+    'has_cytochrome_p450', 'has_nitroreductase',
+    'max_pident_carboxylesterase', 'max_pident_opd_mpd',
+    'pesticide_gene_relevance_score',
+]
+
 PREFIT_FEATURES = [
     'raw_delta_od', 'raw_max_od', 'raw_snr', 'raw_monotone_fraction',
     'raw_baseline_std', 'raw_baseline_mean', 'n_points', 'time_span',
@@ -179,6 +190,44 @@ def compute_derived_features(features: Dict[str, float]) -> Dict[str, float]:
         'err_product': (a_err * mu_err) if not (np.isnan(a_err) or np.isnan(mu_err)) else float('nan'),
         'points_per_hour': safe_div(pts, trunc),
     }
+
+
+def extract_genomic_features_for_classifier(
+    strain_name: Optional[str],
+    genomic_df: Optional['pd.DataFrame'] = None,
+) -> Dict[str, float]:
+    """
+    Look up pre-computed genomic features for a strain.
+
+    Args:
+        strain_name: Full pipeline strain name (e.g., 'BifenthrinANDLB-BIF2')
+        genomic_df: DataFrame indexed by biological strain ID with genomic features.
+            If None, returns NaN for all genomic features.
+
+    Returns:
+        Dict of genomic feature name -> value (float or NaN)
+    """
+    nan_features = {f: float('nan') for f in GENOMIC_FEATURES}
+
+    if genomic_df is None or strain_name is None:
+        return nan_features
+
+    try:
+        from genomic_features import resolve_strain_id
+        bio_id = resolve_strain_id(strain_name)
+    except ImportError:
+        return nan_features
+
+    if bio_id not in genomic_df.index:
+        return nan_features
+
+    row = genomic_df.loc[bio_id]
+    features = {}
+    for feat in GENOMIC_FEATURES:
+        val = row.get(feat, float('nan'))
+        features[feat] = float(val) if not isinstance(val, float) else val
+
+    return features
 
 
 # ---------------------------------------------------------------------------

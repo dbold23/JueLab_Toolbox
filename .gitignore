@@ -4,3 +4,7 @@ __pycache__/
 .claude/
 .pytest_cache/
 *.joblib
+*.zip
+*.nc
+TECAN_growth_curves/data/genomic/assemblies/
+TECAN_growth_curves/Imid analysis Jan 2024/
