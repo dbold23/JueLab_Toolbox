@@ -363,6 +363,118 @@ class RMSEBasedNoise:
         return noisy, actual_r2, actual_rmse
 
 
+class ResidualBootstrapNoise:
+    """
+    Heteroscedastic noise sampled by bootstrapping real Gompertz fit residuals.
+
+    Phase B.1 companion to PosteriorPredictiveSampler. Real TECAN noise is
+    OD-dependent (low-OD: instrument floor, high-OD: photometric scaling),
+    autocorrelated, and occasionally bursty — none of which a homoscedastic
+    Gaussian captures. This model bins real residuals by OD level and samples
+    from the empirical residual pool at each synthetic timepoint.
+
+    Usage::
+
+        pool = ResidualBootstrapNoise.build_pool_from_fits(strain_residuals)
+        noise = ResidualBootstrapNoise(residual_pool=pool)
+        noisy = noise.apply(clean_od_curve, seed=42)
+
+    If ``residual_pool`` is None or empty, falls back to ``ODDependentNoise``
+    so callers can use this class unconditionally during scaffolding.
+    """
+
+    DEFAULT_OD_BINS = np.array([0.0, 0.1, 0.3, 0.6, 1.0, 1.5, 3.0])
+    MIN_RESIDUALS_PER_BIN = 10
+
+    def __init__(
+        self,
+        residual_pool: Optional[dict] = None,
+        od_bins: Optional[np.ndarray] = None,
+        fallback_sigma_base: float = 0.002,
+        fallback_sigma_scale: float = 0.02,
+    ):
+        """
+        Args:
+            residual_pool: dict mapping bin index (int) to array of residuals.
+                Produced by ``build_pool_from_fits`` below. When None or any
+                bin is underpopulated, the fallback OD-dependent model is
+                used for that bin.
+            od_bins: bin edges for OD; defaults to DEFAULT_OD_BINS.
+            fallback_sigma_base / fallback_sigma_scale: parameters for the
+                OD-dependent fallback (same API as ODDependentNoise).
+        """
+        self.od_bins = od_bins if od_bins is not None else self.DEFAULT_OD_BINS
+        self.residual_pool = residual_pool or {}
+        self._fallback = ODDependentNoise(
+            sigma_base=fallback_sigma_base, sigma_scale=fallback_sigma_scale
+        )
+
+    @classmethod
+    def build_pool_from_fits(
+        cls,
+        curves: list,
+        od_bins: Optional[np.ndarray] = None,
+    ) -> dict:
+        """Bin residuals from a list of (clean_od, observed_od) pairs by OD level.
+
+        Args:
+            curves: list of (clean_od_array, observed_od_array) tuples, where
+                clean is the Gompertz fit prediction and observed is the raw
+                blanked OD600.
+            od_bins: bin edges (uses DEFAULT_OD_BINS if None).
+
+        Returns:
+            dict[int -> np.ndarray] — residuals per bin.
+        """
+        bins = od_bins if od_bins is not None else cls.DEFAULT_OD_BINS
+        pool: dict[int, list[float]] = {i: [] for i in range(len(bins) - 1)}
+        for clean, observed in curves:
+            clean = np.asarray(clean, dtype=float)
+            observed = np.asarray(observed, dtype=float)
+            if clean.shape != observed.shape or len(clean) == 0:
+                continue
+            resid = observed - clean
+            bin_idx = np.clip(
+                np.digitize(clean, bins[1:-1]),
+                0, len(bins) - 2,
+            )
+            for i in range(len(bins) - 1):
+                pool[i].extend(resid[bin_idx == i].tolist())
+        return {i: np.asarray(v) for i, v in pool.items() if len(v) > 0}
+
+    def apply(self, signal: np.ndarray, seed: Optional[int] = None) -> np.ndarray:
+        """Add bootstrapped residual noise to ``signal``.
+
+        Fallback path (OD-dependent Gaussian) is used for any OD bin whose
+        residual pool has fewer than ``MIN_RESIDUALS_PER_BIN`` samples.
+        """
+        rng = np.random.default_rng(seed)
+        noisy = signal.astype(float).copy()
+
+        if not self.residual_pool:
+            return self._fallback.apply(signal, seed=seed)
+
+        bin_idx = np.clip(
+            np.digitize(signal, self.od_bins[1:-1]),
+            0, len(self.od_bins) - 2,
+        )
+
+        for i in range(len(self.od_bins) - 1):
+            mask = bin_idx == i
+            if not np.any(mask):
+                continue
+            pool = self.residual_pool.get(i)
+            if pool is None or len(pool) < self.MIN_RESIDUALS_PER_BIN:
+                # Fall back to OD-dependent Gaussian for this bin only
+                sigma_i = self._fallback.get_sigma_at_od(float(np.mean(signal[mask])))
+                noisy[mask] += rng.normal(0, sigma_i, size=int(mask.sum()))
+            else:
+                # Bootstrap from real residuals in this OD bin
+                noisy[mask] += rng.choice(pool, size=int(mask.sum()), replace=True)
+
+        return np.maximum(0, noisy)
+
+
 # =============================================================================
 # Noise Level Presets
 # =============================================================================

@@ -250,9 +250,120 @@ def _prepare_prefit_from_csv(df: pd.DataFrame) -> tuple:
     return X, y
 
 
+def leave_one_isolate_out_cv(
+    synthetic_df: pd.DataFrame,
+    real_df: pd.DataFrame,
+    model_type: str = 'hgb',
+) -> Dict:
+    """Phase B.2: leave-one-isolate-out CV to evaluate classifier on real data.
+
+    Groups real curves by strain_id (extracted from the strain column —
+    suffix after the last '-'). For each unique isolate, trains on
+    (full synthetic set + all OTHER real isolates) and evaluates on the
+    held-out isolate. Reports macro-F1 per fold and aggregate.
+
+    This is the correct evaluation for augmented training sets (synthetic-only,
+    PPC-augmented, mixed) because it measures how well the classifier
+    generalizes to an unseen bacterial strain — the actual deployment scenario.
+
+    Args:
+        synthetic_df: DataFrame from load_training_data (synthetic + ground truth)
+        real_df: DataFrame from load_real_audit_data (real + audit labels)
+        model_type: 'hgb' (HistGradientBoosting) or 'logistic'
+
+    Returns:
+        dict with keys:
+          per_fold: list of {strain_id, n_test, accuracy, f1, precision, recall}
+          aggregate: {accuracy, f1_macro, f1_std, n_folds}
+          confusion_total: np.ndarray (2, 2)
+    """
+    import re
+    from sklearn.metrics import (accuracy_score, precision_score, recall_score,
+                                  f1_score, confusion_matrix)
+
+    if len(real_df) == 0:
+        print("  LOIO-CV: no real audit data — skipping")
+        return {'per_fold': [], 'aggregate': None, 'confusion_total': None}
+
+    def _isolate_id(strain: str) -> str:
+        m = re.search(r'-(.+)$', str(strain))
+        return m.group(1).upper() if m else str(strain).upper()
+
+    real_df = real_df.copy()
+    real_df['_isolate'] = real_df['strain'].map(_isolate_id)
+    isolates = sorted(real_df['_isolate'].unique())
+    print(f"  LOIO-CV: {len(isolates)} unique isolates, {len(real_df)} real curves")
+
+    per_fold: List[Dict] = []
+    y_true_all, y_pred_all = [], []
+
+    for isolate in isolates:
+        test_mask = real_df['_isolate'] == isolate
+        real_train = real_df[~test_mask]
+        real_test = real_df[test_mask]
+        if len(real_test) == 0:
+            continue
+
+        # Training set: synthetic + all other real isolates
+        train_df = pd.concat([synthetic_df, real_train], ignore_index=True)
+
+        X_train, y_train = prepare_postfit_features(train_df)
+        X_test, y_test = prepare_postfit_features(real_test)
+
+        X_train = X_train.replace([np.inf, -np.inf], np.nan)
+        X_test = X_test.replace([np.inf, -np.inf], np.nan)
+
+        model, _ = train_model(X_train, y_train, model_type, n_folds=3)
+        y_pred = model.predict(X_test[ALL_POSTFIT_FEATURES])
+
+        fold = {
+            'isolate': isolate,
+            'n_test': len(y_test),
+            'n_good_test': int((y_test == 1).sum()),
+            'accuracy': accuracy_score(y_test, y_pred),
+            'f1': f1_score(y_test, y_pred, zero_division=0, average='macro'),
+            'precision': precision_score(y_test, y_pred, zero_division=0, average='macro'),
+            'recall': recall_score(y_test, y_pred, zero_division=0, average='macro'),
+        }
+        per_fold.append(fold)
+        y_true_all.extend(y_test.tolist())
+        y_pred_all.extend(y_pred.tolist())
+        print(f"    {isolate:10s}  n_test={fold['n_test']:2d}  "
+              f"acc={fold['accuracy']:.3f}  f1_macro={fold['f1']:.3f}")
+
+    if y_true_all:
+        f1_scores = [f['f1'] for f in per_fold]
+        aggregate = {
+            'n_folds': len(per_fold),
+            'accuracy': accuracy_score(y_true_all, y_pred_all),
+            'f1_macro_mean': float(np.mean(f1_scores)),
+            'f1_macro_std': float(np.std(f1_scores)),
+            'f1_pooled': f1_score(y_true_all, y_pred_all, zero_division=0, average='macro'),
+        }
+        confusion_total = confusion_matrix(y_true_all, y_pred_all)
+    else:
+        aggregate = None
+        confusion_total = None
+
+    return {'per_fold': per_fold, 'aggregate': aggregate,
+            'confusion_total': confusion_total}
+
+
 def prepare_postfit_features(df: pd.DataFrame) -> tuple:
     """Extract post-fit feature matrix and labels from merged data."""
+    from ml_classifier import _ident_to_ord  # local import to reuse helper
+
     X = pd.DataFrame()
+
+    # Phase A.4: derive ordinal identifiability columns if the string versions exist
+    df = df.copy()
+    for src_col, ord_col in [
+        ('mu_identifiable', 'mu_identifiable_ord'),
+        ('A_identifiable', 'A_identifiable_ord'),
+        ('lam_identifiable', 'lam_identifiable_ord'),
+    ]:
+        if src_col in df.columns:
+            df[ord_col] = df[src_col].map(_ident_to_ord)
 
     # Direct and secondary features from CSV
     for feat in ALL_POSTFIT_FEATURES:

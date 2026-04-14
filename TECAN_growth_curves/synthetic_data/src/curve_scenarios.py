@@ -164,6 +164,25 @@ GOOD_GROWTH_SCENARIOS = {
         noise_level='medium',
         tags=['pesticide', 'treatment']
     ),
+
+    'posterior_predictive': ScenarioConfig(
+        name='posterior_predictive',
+        description=(
+            'Data-driven augmentation — parameters sampled from the fitted '
+            'hierarchical Bayesian Gompertz posterior (preserves A/μ/λ joint '
+            'correlations). Noise from residual bootstrap when available. '
+            'Pattern="ppc" routes generation through PosteriorPredictiveSampler.'
+        ),
+        expected_class='GOOD',
+        # Parameter ranges are ignored under pattern='ppc' — sampler draws from posterior.
+        # Kept for schema compatibility and as fallback if trace is unavailable.
+        A=(0.3, 2.5),
+        mu=(0.05, 0.80),
+        lambda_=(0.5, 20.0),
+        noise_level='medium',
+        pattern='ppc',
+        tags=['ppc', 'data_driven', 'bayesian']
+    ),
 }
 
 

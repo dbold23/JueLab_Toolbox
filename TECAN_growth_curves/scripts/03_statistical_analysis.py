@@ -65,6 +65,79 @@ PESTICIDE_MAP = {
 
 
 # ---------------------------------------------------------------------------
+# 0.  Refined-parameter substitution (Phase A.2)
+# ---------------------------------------------------------------------------
+
+def apply_refined_substitution(df: pd.DataFrame) -> pd.DataFrame:
+    """Substitute refined per-parameter Gompertz estimates into gompertz_*.
+
+    When 01_growth_curve_analysis.py emits the *_final/*_source columns
+    (post Phase A.1 refactor), this function:
+
+    1. Preserves original whole-curve values under ``gompertz_{a,mu,lambda}_wc``
+       for audit.
+    2. Replaces ``gompertz_a``/``gompertz_mu``/``gompertz_lambda`` with the
+       corresponding ``*_final`` values (refined where identifiable, else
+       whole-curve fallback).
+    3. Gates ``is_good`` on the ``usable_for`` column: a row remains good only
+       if its growth_rate, carrying_capacity, and lag_time are all usable.
+
+    If the new schema columns are absent (older CSV), returns ``df`` unchanged
+    with a warning.
+
+    Justification: Phase 0 synthetic validation (tasks/phase0_validate_refined.py)
+    showed refined beats whole-curve 6.6×/13.8×/3.4× on RMSE for A/μ/λ.
+    """
+    required = {"mu_final", "A_final", "lam_final",
+                "mu_source", "A_source", "lam_source"}
+    if not required.issubset(df.columns):
+        print("  WARNING: refined-parameter columns not found — using whole-curve "
+              "gompertz_* values directly. Re-run 01_growth_curve_analysis.py to "
+              "emit *_final columns.")
+        return df
+
+    df = df.copy()
+
+    # Audit: preserve originals
+    df["gompertz_a_wc"] = df["gompertz_a"]
+    df["gompertz_mu_wc"] = df["gompertz_mu"]
+    df["gompertz_lambda_wc"] = df["gompertz_lambda"]
+
+    # Substitute refined where identifiable, whole-curve otherwise
+    df["gompertz_a"] = df["A_final"]
+    df["gompertz_mu"] = df["mu_final"]
+    df["gompertz_lambda"] = df["lam_final"]
+
+    # Report substitution rates
+    for p, src in [("μ", "mu_source"), ("A", "A_source"), ("λ", "lam_source")]:
+        counts = df[src].value_counts(dropna=False).to_dict()
+        refined = counts.get("refined", 0)
+        fallback = counts.get("whole_curve_fallback", 0)
+        unusable = counts.get("unusable", 0)
+        total = refined + fallback + unusable
+        if total > 0:
+            print(f"  {p}: refined={refined}/{total} ({refined/total:.0%}), "
+                  f"fallback={fallback}, unusable={unusable}")
+
+    # Do NOT tighten is_good here — per-test gating happens inside each
+    # statistical test (see _usable_mask below) because e.g. an ANOVA on μ
+    # does not care whether λ is identifiable.
+    return df
+
+
+def _usable_mask(df: pd.DataFrame, param_name: str) -> pd.Series:
+    """Return a boolean mask: is_good AND usable_for contains ``param_name``.
+
+    ``param_name`` must be one of 'growth_rate' (μ), 'carrying_capacity' (A),
+    or 'lag_time' (λ). Falls back to just ``is_good`` if usable_for absent.
+    """
+    base = df["is_good"].astype(bool)
+    if "usable_for" not in df.columns:
+        return base
+    return base & df["usable_for"].fillna("").str.contains(param_name, regex=False)
+
+
+# ---------------------------------------------------------------------------
 # 1.  Parsing helpers
 # ---------------------------------------------------------------------------
 
@@ -150,9 +223,21 @@ def compute_doubling_time(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def run_statistical_tests(df: pd.DataFrame) -> None:
-    """Run and print statistical tests on good-fit data."""
+    """Run and print statistical tests on good-fit data.
 
+    Per-test identifiability gating applied: μ tests restrict to rows where
+    'growth_rate' ∈ usable_for; λ tests to 'lag_time'; A tests to
+    'carrying_capacity'. This prevents non-identifiable parameters from
+    polluting population-level inference.
+    """
+
+    # Backwards-compat master view: any good-fit row, pre-gating
     good = df[df["is_good"]].copy()
+
+    # Per-parameter gated views
+    good_mu = df[_usable_mask(df, "growth_rate")].copy()
+    good_a = df[_usable_mask(df, "carrying_capacity")].copy()
+    good_lam = df[_usable_mask(df, "lag_time")].copy()
 
     sep = "=" * 72
     thin = "-" * 72
@@ -174,15 +259,15 @@ def run_statistical_tests(df: pd.DataFrame) -> None:
 
     # --- Assumption tests ---
     print(f"{thin}")
-    print("ASSUMPTION TESTS (gompertz_mu by treatment_type)")
+    print(f"ASSUMPTION TESTS (gompertz_mu by treatment_type, n={len(good_mu)} μ-usable)")
     print(f"{thin}")
     groups_mu = [
         grp["gompertz_mu"].dropna().values
-        for _, grp in good.groupby("treatment_type")
+        for _, grp in good_mu.groupby("treatment_type")
     ]
     groups_mu = [g for g in groups_mu if len(g) > 0]
     group_names_mu = [
-        name for name, grp in good.groupby("treatment_type")
+        name for name, grp in good_mu.groupby("treatment_type")
         if len(grp["gompertz_mu"].dropna()) > 0
     ]
 
@@ -242,7 +327,7 @@ def run_statistical_tests(df: pd.DataFrame) -> None:
             import statsmodels.api as sm
             from statsmodels.formula.api import ols
 
-            anova_df = good[["gompertz_mu", "treatment_type", "operator"]].dropna()
+            anova_df = good_mu[["gompertz_mu", "treatment_type", "operator"]].dropna()
             if len(anova_df["operator"].unique()) > 1:
                 model = ols("gompertz_mu ~ C(treatment_type) + C(operator)", data=anova_df).fit()
                 anova_table = sm.stats.anova_lm(model, typ=2)
@@ -285,12 +370,12 @@ def run_statistical_tests(df: pd.DataFrame) -> None:
     print(f"{thin}")
     print("Pairwise Mann-Whitney U: LB_only vs Pesticide_plus_LB (gompertz_mu)")
     print("  Question: Does adding pesticide to LB inhibit growth?")
-    print(f"  Bonferroni correction applied for {len(good['group'].unique())} comparisons")
+    print(f"  Bonferroni correction applied for {len(good_mu['group'].unique())} comparisons")
     print(f"{thin}")
     n_comparisons = 0
     pairwise_results = []
-    for group_name in sorted(good["group"].unique()):
-        sub = good[good["group"] == group_name]
+    for group_name in sorted(good_mu["group"].unique()):
+        sub = good_mu[good_mu["group"] == group_name]
         lb_vals = sub.loc[sub["treatment_type"] == "LB_only", "gompertz_mu"].dropna()
         pest_lb_vals = sub.loc[
             sub["treatment_type"] == "Pesticide_plus_LB", "gompertz_mu"
@@ -321,11 +406,11 @@ def run_statistical_tests(df: pd.DataFrame) -> None:
 
     # --- One-way ANOVA on gompertz_lambda by treatment_type ---
     print(f"{thin}")
-    print("One-way ANOVA: gompertz_lambda ~ treatment_type")
+    print(f"One-way ANOVA: gompertz_lambda ~ treatment_type (n={len(good_lam)} λ-usable)")
     print(f"{thin}")
     groups_lam = [
         grp["gompertz_lambda"].dropna().values
-        for _, grp in good.groupby("treatment_type")
+        for _, grp in good_lam.groupby("treatment_type")
     ]
     groups_lam = [g for g in groups_lam if len(g) > 0]
     if len(groups_lam) >= 2:
@@ -344,6 +429,8 @@ def run_statistical_tests(df: pd.DataFrame) -> None:
     print(f"{thin}")
     print("Summary statistics by treatment_type (good fits, mean +/- SD):")
     print(f"{thin}")
+    # gompertz_* now hold refined values post-substitution; gompertz_*_wc
+    # retain whole-curve originals for audit if present.
     summary_cols = ["gompertz_a", "gompertz_mu", "gompertz_lambda", "doubling_time"]
     for ttype in ["LB_only", "H2O_only", "Pesticide_plus_LB", "Pesticide_only"]:
         sub = good[good["treatment_type"] == ttype]
@@ -701,6 +788,14 @@ def main() -> None:
     df["is_good"] = df["is_good"].astype(str).str.strip().str.lower() == "true"
 
     print(f"Loaded {len(df)} rows  ({df['is_good'].sum()} good, {(~df['is_good']).sum()} bad)")
+
+    # --- Apply refined-parameter substitution if new schema cols exist ---
+    # When 01_growth_curve_analysis.py emits *_final/*_source columns (post
+    # Phase A.1 refactor), use refined values for all downstream stats and
+    # figures. Phase 0 synthetic validation showed refined beats whole-curve
+    # 6.6×/13.8×/3.4× RMSE on A/μ/λ. Whole-curve values preserved under new
+    # names for audit.
+    df = apply_refined_substitution(df)
 
     # --- Step 1: Parse strain column ---
     df = parse_strain_column(df)

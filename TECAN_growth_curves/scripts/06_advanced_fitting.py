@@ -818,7 +818,7 @@ def plot_ensemble_truncation(time, od, ensemble_result, strain_name, output_path
 
 def build_gompertz_model(strain_data, strain_names, pesticide_indices,
                          n_pesticides, mle_estimates=None, config=None,
-                         genomic_priors=None):
+                         genomic_priors=None, refined_priors=None):
     """
     Build hierarchical Bayesian Gompertz model in PyMC.
 
@@ -837,6 +837,14 @@ def build_gompertz_model(strain_data, strain_names, pesticide_indices,
             (and optionally lam_prior_mean/sigma, a_prior_mean/sigma).
             When provided, adds per-strain shifts to the non-centered
             parameterization based on genomic predictions.
+        refined_priors: optional DataFrame indexed by strain name with columns:
+            mu_refined, A_refined, lam_refined, mu_identifiable,
+            A_identifiable, lam_identifiable (strings: 'identifiable'/'weak'/
+            'unidentifiable'). When provided, shifts each strain's prior mean
+            toward the refined per-parameter estimate WHERE IDENTIFIABLE.
+            This is the Phase A.3 integration path — refined μ/A/λ from
+            truncation-optimized fits (Phase 0 showed 13.8×/6.6×/3.4× RMSE
+            improvement) become informative priors for the hierarchical model.
 
     Returns:
         PyMC model, (time_padded, od_padded, mask, strain_idx_per_obs)
@@ -921,24 +929,65 @@ def build_gompertz_model(strain_data, strain_names, pesticide_indices,
 
             n_shifted = np.sum(genomic_mu_shift != 0)
             if n_shifted > 0:
-                logger.info(f"  Applied genomic prior shifts to {n_shifted}/{n_strains} strains")
+                print(f"  Applied genomic prior shifts to {n_shifted}/{n_strains} strains")
+
+        # === Refined-parameter prior shifts (Phase A.3) ===
+        # Gate each parameter on its own identifiability flag; use pesticide
+        # group mean for the reference point (so shift is strain-specific
+        # deviation from its group), fallback to overall prior mean otherwise.
+        refined_A_shift = np.zeros(n_strains)
+        refined_mu_shift = np.zeros(n_strains)
+        refined_lam_shift = np.zeros(n_strains)
+
+        if refined_priors is not None and len(refined_priors) > 0:
+            rp = refined_priors.set_index('strain') if 'strain' in refined_priors.columns else refined_priors
+            n_mu_shifted = n_A_shifted = n_lam_shifted = 0
+            for i, name in enumerate(strain_names):
+                if name not in rp.index:
+                    continue
+                row = rp.loc[name]
+                # Handle duplicate index case by taking first
+                if hasattr(row, 'iloc') and row.ndim > 1:
+                    row = row.iloc[0]
+                # μ
+                if (row.get('mu_identifiable') == 'identifiable'
+                        and pd.notna(row.get('mu_refined'))
+                        and row.get('mu_refined', 0) > 0):
+                    refined_mu_shift[i] = float(row['mu_refined']) - mu_mu_prior[0]
+                    n_mu_shifted += 1
+                # A
+                if (row.get('A_identifiable') == 'identifiable'
+                        and pd.notna(row.get('A_refined'))
+                        and row.get('A_refined', 0) > 0):
+                    refined_A_shift[i] = float(row['A_refined']) - mu_A_prior[0]
+                    n_A_shifted += 1
+                # λ
+                if (row.get('lam_identifiable') == 'identifiable'
+                        and pd.notna(row.get('lam_refined'))):
+                    refined_lam_shift[i] = float(row['lam_refined']) - mu_lam_prior[0]
+                    n_lam_shifted += 1
+            print(
+                f"  Applied refined-param prior shifts: "
+                f"μ={n_mu_shifted}/{n_strains}, A={n_A_shifted}/{n_strains}, "
+                f"λ={n_lam_shifted}/{n_strains}"
+            )
 
         A_offset = pm.Normal('A_offset', mu=0, sigma=1, shape=n_strains)
         A_strain = pm.Deterministic(
             'A_strain',
-            A_group[pesticide_indices] + genomic_A_shift + sigma_A_strain * A_offset
+            A_group[pesticide_indices] + genomic_A_shift + refined_A_shift + sigma_A_strain * A_offset
         )
 
         mu_offset = pm.Normal('mu_offset', mu=0, sigma=1, shape=n_strains)
         mu_strain = pm.Deterministic(
             'mu_strain',
-            pm.math.abs(mu_group[pesticide_indices] + genomic_mu_shift + sigma_mu_strain * mu_offset)
+            pm.math.abs(mu_group[pesticide_indices] + genomic_mu_shift + refined_mu_shift + sigma_mu_strain * mu_offset)
         )
 
         lam_offset = pm.Normal('lam_offset', mu=0, sigma=1, shape=n_strains)
         lam_strain = pm.Deterministic(
             'lam_strain',
-            lam_group[pesticide_indices] + genomic_lam_shift + sigma_lam_strain * lam_offset
+            lam_group[pesticide_indices] + genomic_lam_shift + refined_lam_shift + sigma_lam_strain * lam_offset
         )
 
         # === Observation noise ===
@@ -1988,11 +2037,29 @@ Methods applied:
             except Exception as e:
                 print(f"  Warning: could not load genomic priors: {e}")
 
+        # Phase A.3: refined-parameter priors from step-01 per-param truncation.
+        # Uses mu_refined/A_refined/lam_refined gated by *_identifiable. When
+        # the schema is missing (older CSVs), refined_priors is None and the
+        # model falls back to its default wide population priors.
+        refined_priors = None
+        refined_cols = {'mu_refined', 'A_refined', 'lam_refined',
+                        'mu_identifiable', 'A_identifiable', 'lam_identifiable'}
+        if refined_cols.issubset(all_results.columns):
+            subset_cols = ['strain'] + list(refined_cols)
+            refined_priors = all_results[subset_cols].copy()
+            n_refined_mu = (refined_priors['mu_identifiable'] == 'identifiable').sum()
+            print(f"  Loaded refined-parameter priors: {len(refined_priors)} strains, "
+                  f"μ identifiable in {n_refined_mu}")
+        else:
+            print("  No refined-parameter columns found — using default hierarchical priors "
+                  "(re-run step 01 to enable Phase A.3 priors)")
+
         try:
             gomp_model = build_gompertz_model(
                 bayes_data_good, bayes_names_good,
                 bayes_pest_idx_good, n_groups_good_bayes,
-                config=config, genomic_priors=genomic_priors
+                config=config, genomic_priors=genomic_priors,
+                refined_priors=refined_priors,
             )
             print("Model built. Sampling...")
             gompertz_trace = fit_bayesian_gompertz(gomp_model, config)
