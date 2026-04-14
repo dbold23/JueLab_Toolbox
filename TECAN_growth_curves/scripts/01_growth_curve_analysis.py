@@ -2552,7 +2552,8 @@ def process_growth_curves(
     use_ml_classifier: bool = False,
     ml_classifier_config: Optional[Dict] = None,
     verbose: bool = True,
-    no_plots: bool = False
+    no_plots: bool = False,
+    skip_residuals: bool = False,
 ) -> Dict[str, ProcessingResult]:
     """
     Main pipeline function to process all growth curves in a directory.
@@ -3024,13 +3025,14 @@ def process_growth_curves(
         classifications = {k: v.classification for k, v in results.items()}
         plot_classification_summary(classifications, output_dir)
 
-    # Export results to CSV
-    export_results_to_csv(results, output_dir)
+    # Export results to CSV (writes per-curve residuals unless skipped)
+    export_results_to_csv(results, output_dir, skip_residuals=skip_residuals)
 
     return results
 
 
-def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str) -> str:
+def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str,
+                           skip_residuals: bool = False) -> str:
     """
     Export all results to a summary CSV file.
 
@@ -3089,6 +3091,32 @@ def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str)
                 'fit_rmse': result.fit.rmse,
                 'fit_mae': result.fit.mae,
             })
+
+            # Phase 4 (next_steps_plan): persist per-curve residuals for the
+            # ResidualBootstrapNoise model (posterior-predictive augmentation).
+            # Writes one CSV per successful-fit strain with columns
+            # time, od_observed, od_predicted, residual.
+            # Skipped when --no-residuals flag is set (see CLI below).
+            if not skip_residuals and result.truncation is not None:
+                try:
+                    residuals_dir = Path(output_dir) / "residuals"
+                    residuals_dir.mkdir(exist_ok=True)
+                    safe_name = strain_name.replace("/", "_").replace(" ", "_")
+                    # Use the truncated time/od that the fit was computed on —
+                    # this is what predictions and residuals align with.
+                    t_fit = result.truncation.time_truncated
+                    od_fit = result.truncation.od_truncated
+                    n = min(len(t_fit), len(result.fit.predicted), len(result.fit.residuals))
+                    resid_df = pd.DataFrame({
+                        "time": np.asarray(t_fit)[:n],
+                        "od_observed": np.asarray(od_fit)[:n],
+                        "od_predicted": np.asarray(result.fit.predicted)[:n],
+                        "residual": np.asarray(result.fit.residuals)[:n],
+                    })
+                    resid_df.to_csv(residuals_dir / f"{safe_name}.csv", index=False)
+                except Exception:
+                    # Non-fatal: residuals are an optional artifact
+                    pass
         else:
             row.update({
                 'gompertz_a': None,
@@ -3278,6 +3306,12 @@ def main():
         help='Skip generating per-curve plots (faster for batch/validation runs)'
     )
     parser.add_argument(
+        '--no-residuals',
+        action='store_true',
+        help='Skip writing per-curve residuals to output/residuals/*.csv '
+             '(used by ResidualBootstrapNoise; omit for default production runs)'
+    )
+    parser.add_argument(
         '--ml-classify',
         action='store_true',
         help='Use pre-trained ML classifier (requires models/ directory with trained models)'
@@ -3363,7 +3397,8 @@ def main():
         use_ml_classifier=args.ml_classify,
         ml_classifier_config=ml_config,
         verbose=not args.quiet,
-        no_plots=args.no_plots
+        no_plots=args.no_plots,
+        skip_residuals=args.no_residuals,
     )
 
     # Print summary
