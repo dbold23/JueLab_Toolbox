@@ -190,6 +190,54 @@ class PosteriorPredictiveSampler:
         return pd.DataFrame(rows)
 
     # ---------------------------------------------------------------
+    # Residual pool loader (Phase Step 4)
+    # ---------------------------------------------------------------
+
+    @staticmethod
+    def build_residual_pool_from_dir(residuals_dir: str | Path,
+                                      od_bins=None) -> dict:
+        """Load all per-strain residuals from step 01's `residuals/` output.
+
+        Pairs each curve's `od_predicted` (clean Gompertz) with `od_observed`
+        (noisy), then delegates to ``ResidualBootstrapNoise.build_pool_from_fits``
+        for OD-binned bootstrapping.
+
+        Args:
+            residuals_dir: path to a `residuals/` directory containing
+                ``{strain}.csv`` files with columns time, od_observed,
+                od_predicted, residual (as produced by step 01 post-Phase-A.1).
+            od_bins: optional bin edges; uses
+                ``ResidualBootstrapNoise.DEFAULT_OD_BINS`` if None.
+
+        Returns:
+            dict[int -> np.ndarray] suitable for
+            ``ResidualBootstrapNoise(residual_pool=...)``.
+        """
+        from pathlib import Path as _P
+        import pandas as _pd
+        # Local import to avoid circular if noise_models imports from here later
+        from noise_models import ResidualBootstrapNoise
+
+        residuals_dir = _P(residuals_dir)
+        if not residuals_dir.exists():
+            raise FileNotFoundError(f"Residuals directory not found: {residuals_dir}")
+
+        curves = []
+        for fpath in sorted(residuals_dir.glob("*.csv")):
+            try:
+                df = _pd.read_csv(fpath)
+                if not {"od_observed", "od_predicted"}.issubset(df.columns):
+                    continue
+                curves.append((df["od_predicted"].values, df["od_observed"].values))
+            except Exception:
+                continue
+
+        if not curves:
+            raise ValueError(f"No usable residual files in {residuals_dir}")
+
+        return ResidualBootstrapNoise.build_pool_from_fits(curves, od_bins=od_bins)
+
+    # ---------------------------------------------------------------
     # Diagnostics
     # ---------------------------------------------------------------
 

@@ -900,9 +900,12 @@ def build_gompertz_model(strain_data, strain_names, pesticide_indices,
                                      mu_lam + sigma_lam * lam_group_offset)
 
         # === Strain level (non-centered) ===
-        sigma_A_strain = pm.HalfNormal('sigma_A_strain', sigma=0.15)
-        sigma_mu_strain = pm.HalfNormal('sigma_mu_strain', sigma=0.05)
-        sigma_lam_strain = pm.HalfNormal('sigma_lam_strain', sigma=1.0)
+        # Base sigmas apply to strains whose refined value is NOT identifiable.
+        # For identifiable strains, per-strain sigma is narrowed to
+        # max(floor, refined_rel_err * refined_value) — see Phase A.3 update.
+        sigma_A_strain_base = pm.HalfNormal('sigma_A_strain_base', sigma=0.15)
+        sigma_mu_strain_base = pm.HalfNormal('sigma_mu_strain_base', sigma=0.05)
+        sigma_lam_strain_base = pm.HalfNormal('sigma_lam_strain_base', sigma=1.0)
 
         # === Genomic prior shifts (fixed data, not random variables) ===
         # When genomic priors are available, shift each strain's mean
@@ -932,12 +935,24 @@ def build_gompertz_model(strain_data, strain_names, pesticide_indices,
                 print(f"  Applied genomic prior shifts to {n_shifted}/{n_strains} strains")
 
         # === Refined-parameter prior shifts (Phase A.3) ===
-        # Gate each parameter on its own identifiability flag; use pesticide
-        # group mean for the reference point (so shift is strain-specific
-        # deviation from its group), fallback to overall prior mean otherwise.
+        # Gate each parameter on its own identifiability flag; shift mean AND
+        # narrow per-strain sigma when identifiable.
+        # Sigma floors prevent over-tight priors that hurt coverage:
+        #   μ floor = 0.01, A floor = 0.05, λ floor = 0.2 (plan spec).
+        SIGMA_FLOOR_MU = 0.01
+        SIGMA_FLOOR_A = 0.05
+        SIGMA_FLOOR_LAM = 0.2
+
         refined_A_shift = np.zeros(n_strains)
         refined_mu_shift = np.zeros(n_strains)
         refined_lam_shift = np.zeros(n_strains)
+
+        # Per-strain sigma overrides. np.nan = "use the sampled base sigma"
+        # (i.e. strain is not identifiable for that parameter and we defer to
+        # the wide population prior). Set to a positive value to override.
+        sigma_A_strain_override = np.full(n_strains, np.nan, dtype=float)
+        sigma_mu_strain_override = np.full(n_strains, np.nan, dtype=float)
+        sigma_lam_strain_override = np.full(n_strains, np.nan, dtype=float)
 
         if refined_priors is not None and len(refined_priors) > 0:
             rp = refined_priors.set_index('strain') if 'strain' in refined_priors.columns else refined_priors
@@ -954,17 +969,30 @@ def build_gompertz_model(strain_data, strain_names, pesticide_indices,
                         and pd.notna(row.get('mu_refined'))
                         and row.get('mu_refined', 0) > 0):
                     refined_mu_shift[i] = float(row['mu_refined']) - mu_mu_prior[0]
+                    rel = float(row.get('mu_refined_rel_err', 0.0)) if pd.notna(row.get('mu_refined_rel_err')) else 0.0
+                    sigma_mu_strain_override[i] = max(
+                        SIGMA_FLOOR_MU, rel * float(row['mu_refined'])
+                    )
                     n_mu_shifted += 1
                 # A
                 if (row.get('A_identifiable') == 'identifiable'
                         and pd.notna(row.get('A_refined'))
                         and row.get('A_refined', 0) > 0):
                     refined_A_shift[i] = float(row['A_refined']) - mu_A_prior[0]
+                    rel = float(row.get('A_refined_rel_err', 0.0)) if pd.notna(row.get('A_refined_rel_err')) else 0.0
+                    sigma_A_strain_override[i] = max(
+                        SIGMA_FLOOR_A, rel * float(row['A_refined'])
+                    )
                     n_A_shifted += 1
                 # λ
                 if (row.get('lam_identifiable') == 'identifiable'
                         and pd.notna(row.get('lam_refined'))):
                     refined_lam_shift[i] = float(row['lam_refined']) - mu_lam_prior[0]
+                    rel = float(row.get('lam_refined_rel_err', 0.0)) if pd.notna(row.get('lam_refined_rel_err')) else 0.0
+                    sigma_lam_strain_override[i] = max(
+                        SIGMA_FLOOR_LAM,
+                        rel * abs(float(row['lam_refined'])) + SIGMA_FLOOR_LAM,
+                    )
                     n_lam_shifted += 1
             print(
                 f"  Applied refined-param prior shifts: "
@@ -972,22 +1000,45 @@ def build_gompertz_model(strain_data, strain_names, pesticide_indices,
                 f"λ={n_lam_shifted}/{n_strains}"
             )
 
+        # Build per-strain effective sigma tensors: use override where set,
+        # otherwise use the sampled base sigma. Uses pm.math.switch on a
+        # sentinel (-1.0) since PyTensor can't NaN-switch natively.
+        import pytensor.tensor as _pt
+        sigma_mu_override_pt = _pt.as_tensor_variable(
+            np.where(np.isnan(sigma_mu_strain_override), -1.0, sigma_mu_strain_override)
+        )
+        sigma_A_override_pt = _pt.as_tensor_variable(
+            np.where(np.isnan(sigma_A_strain_override), -1.0, sigma_A_strain_override)
+        )
+        sigma_lam_override_pt = _pt.as_tensor_variable(
+            np.where(np.isnan(sigma_lam_strain_override), -1.0, sigma_lam_strain_override)
+        )
+        effective_sigma_mu = pm.math.switch(
+            sigma_mu_override_pt < 0, sigma_mu_strain_base, sigma_mu_override_pt
+        )
+        effective_sigma_A = pm.math.switch(
+            sigma_A_override_pt < 0, sigma_A_strain_base, sigma_A_override_pt
+        )
+        effective_sigma_lam = pm.math.switch(
+            sigma_lam_override_pt < 0, sigma_lam_strain_base, sigma_lam_override_pt
+        )
+
         A_offset = pm.Normal('A_offset', mu=0, sigma=1, shape=n_strains)
         A_strain = pm.Deterministic(
             'A_strain',
-            A_group[pesticide_indices] + genomic_A_shift + refined_A_shift + sigma_A_strain * A_offset
+            A_group[pesticide_indices] + genomic_A_shift + refined_A_shift + effective_sigma_A * A_offset
         )
 
         mu_offset = pm.Normal('mu_offset', mu=0, sigma=1, shape=n_strains)
         mu_strain = pm.Deterministic(
             'mu_strain',
-            pm.math.abs(mu_group[pesticide_indices] + genomic_mu_shift + refined_mu_shift + sigma_mu_strain * mu_offset)
+            pm.math.abs(mu_group[pesticide_indices] + genomic_mu_shift + refined_mu_shift + effective_sigma_mu * mu_offset)
         )
 
         lam_offset = pm.Normal('lam_offset', mu=0, sigma=1, shape=n_strains)
         lam_strain = pm.Deterministic(
             'lam_strain',
-            lam_group[pesticide_indices] + genomic_lam_shift + refined_lam_shift + sigma_lam_strain * lam_offset
+            lam_group[pesticide_indices] + genomic_lam_shift + refined_lam_shift + effective_sigma_lam * lam_offset
         )
 
         # === Observation noise ===
