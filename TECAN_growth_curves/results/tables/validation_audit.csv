@@ -91,3 +91,53 @@ H2O-CYPERM2,Group4,False,BAD: Low R²: -1.151 < 0.95,correct,,2026-02-23T12:52:4
 H2O-PERM7,Group4,False,BAD: Low R²: 0.940 < 0.95,correct,,2026-02-23T12:52:47.965230,0.9395802489938788,0.0812226991602971,0.0062604470081463,5.575548278028389e-16
 H2O-LCY3,Group4,False,BAD: Low R²: 0.586 < 0.95,wrong,Water control showing growth-like curve - possible contamination,2026-02-23T12:52:52.478813,0.5863728767785328,0.0602405352153842,0.005631639825547,8.782161658195252e-32
 H2O-CISPERM1,Group4,False,BAD: Fit failed - Initial guess is outside of provided bounds,correct,,2026-02-23T12:52:55.706309,,,,
+IMIDACLOPRID-IMID1Y,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:49:34.077194,,,,
+IMIDACLOPRID-IMID6,Group5,False,BAD: Rejected by ML pre-fit gate,unsure,,2026-04-14T00:49:48.852459,,,,
+IMIDACLOPRID-IMID9Y,Group5,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:49:52.962243,,,,
+DIAZINONANDG-DIAZ18,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:49:56.981591,,,,
+DIAZINONANDG-DIAZ22,Group5,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:50:04.106301,,,,
+DIAZINONANDG-DIAZ23,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:50:13.631299,,,,
+DIAZINONANDG-DIAZ26,Group5,True,"GOOD (per-param): growth_rate,carrying_capacity,lag_time identifiable (ML said BAD, per-param override)",correct,,2026-04-14T00:50:22.527159,0.9980958560850371,0.101840511510171,0.0045601268208523,11.193580485143327
+DIAZINONANDG-DIAZ28,Group5,True,"GOOD (per-param): growth_rate,carrying_capacity,lag_time identifiable (ML said BAD, per-param override)",correct,,2026-04-14T00:50:27.127206,0.9918299148327436,0.0970760243338149,0.0269306407251857,11.6073070990371
+DIAZINONANDG-DIAZ8,Group5,True,GOOD (ML): P(good)=1.000,correct,,2026-04-14T00:50:31.990991,0.9968445024090824,0.1703076159349787,0.0483584596121402,7.8643640971252
+DIAZINON-DIAZ11,Group5,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:50:34.570765,,,,
+DIAZINON-DIAZ18,Group5,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:50:36.476991,,,,
+DIAZINON-DIAZ21,Group5,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:50:37.698419,,,,
+DIAZINON-DIAZ22,Group5,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:50:38.658376,,,,
+DIAZINON-DIAZ23,Group5,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:50:39.311110,,,,
+DIAZINON-DIAZ26,Group5,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:50:40.443772,,,,
+DIAZINON-DIAZ28,Group5,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:50:41.057936,,,,
+DIAZINON-DIAZ8,Group5,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:50:42.423213,,,,
+MALATHIONANDG-MAL1,Group5,True,"GOOD (per-param): growth_rate,carrying_capacity,lag_time identifiable (ML said BAD, per-param override)",correct,,2026-04-14T00:50:48.086106,0.9844870269287967,0.0248849798463742,0.0012274165497837,12.8411329683449
+MALATHIONANDG-MAL10,Group5,True,"GOOD (per-param): growth_rate,carrying_capacity,lag_time identifiable (ML said BAD, per-param override)",correct,,2026-04-14T00:50:50.996900,0.9759283826261776,0.0188777114832076,0.0031787670065952,12.003161420462291
+MALATHIONANDG-MAL2,Group5,True,"GOOD (per-param): growth_rate,carrying_capacity,lag_time identifiable (ML said BAD, per-param override)",correct,,2026-04-14T00:50:54.251536,0.9057178948174588,0.0276283918550647,0.001,1.9323688829090704
+MALATHIONANDG-MAL3,Group5,False,BAD: Rejected by ML pre-fit gate,unsure,,2026-04-14T00:51:15.971033,,,,
+MALATHIONANDG-MAL4,Group5,True,"GOOD (per-param): growth_rate,carrying_capacity,lag_time identifiable (ML said BAD, per-param override)",unsure,,2026-04-14T00:51:26.658632,0.9786061417330392,0.0456475731673848,0.0026745257401153,25.382823942540103
+MALATHIONANDG-MAL5,Group5,True,"GOOD (per-param): growth_rate,carrying_capacity,lag_time identifiable (ML said BAD, per-param override)",correct,,2026-04-14T00:51:28.541141,0.989077381068006,0.0232193744634783,0.0020399109358911,25.601804555876186
+MALATHIONANDG-MAL6,Group5,True,"GOOD (per-param): growth_rate,carrying_capacity,lag_time identifiable (ML said BAD, per-param override)",correct,,2026-04-14T00:51:30.746459,0.9825483492928482,0.0137743876971891,0.0038376582228544,14.366092568635429
+MALATHIONANDG-MAL7,Group5,False,BAD: Rejected by ML pre-fit gate,unsure,,2026-04-14T00:51:35.846714,,,,
+MALATHIONANDG-MAL8,Group5,True,"GOOD (per-param): growth_rate,carrying_capacity,lag_time identifiable (ML said BAD, per-param override)",correct,,2026-04-14T00:51:38.381605,0.9724126450345142,0.03794846141259,0.0014028652428696,9.021654079851938
+IMIDACLOPRIDANDG-IMID1Y,Group5,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:51:41.051339,,,,
+IMIDACLOPRIDANDG-IMID2,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:51:52.196311,,,,
+IMIDACLOPRIDANDG-IMID3,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:51:54.798765,,,,
+IMIDACLOPRIDANDG-IMID5,Group5,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:51:56.726737,,,,
+IMIDACLOPRIDANDG-IMID6,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:52:03.675212,,,,
+IMIDACLOPRIDANDG-IMID8,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:52:12.195167,,,,
+IMIDACLOPRIDANDG-IMID9Y,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:52:25.088474,,,,
+DIAZINONANDLB-DIAZ18,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:52:26.363490,,,,
+DIAZINONANDLB-DIAZ23,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:52:27.698069,,,,
+DIAZINONANDLB-DIAZ26,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:52:28.733279,,,,
+DIAZINONANDLB-DIAZ28,Group5,True,GOOD (ML): P(good)=1.000,correct,,2026-04-14T00:52:30.744427,0.9989342017868842,1.3178974209691037,0.1276645115784495,2.0966639382011728e-17
+DIAZINONANDLB-DIAZ8,Group5,True,GOOD (ML): P(good)=1.000,correct,,2026-04-14T00:52:31.490886,0.7284899353383505,0.3800536090578837,0.1037508849269643,4.135249323204632e-12
+MALATHIONANDLB-MAL2,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:52:34.300512,,,,
+MALATHION-MAL2,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:52:36.623054,,,,
+MALATHION-MAL3,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:52:37.402661,,,,
+MALATHION-MAL6,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:52:38.136288,,,,
+MALATHION-MAL7,Group5,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:52:40.491828,,,,
+IMIDACLOPRIDANDLB-IMID1Y,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:52:42.848049,,,,
+IMIDACLOPRIDANDLB-IMID6,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:52:46.163158,,,,
+IMIDACLOPRIDANDLB-IMID9Y,Group5,False,BAD: Rejected by ML pre-fit gate,wrong,,2026-04-14T00:52:47.813234,,,,
+IMIDACLOPRID-IMID6,Group6,True,"GOOD (per-param): growth_rate,carrying_capacity,lag_time identifiable (ML said BAD, per-param override)",correct,,2026-04-14T00:52:50.287939,0.9941705790500448,0.1042795024473404,0.0043182435030325,3.4420071095857554
+IMIDACLOPRID-IMID9,Group6,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:52:55.029019,,,,
+IMIDACLOPRIDANDLB-IMID6,Group6,True,"GOOD (per-param): growth_rate,carrying_capacity identifiable (ML said BAD, per-param override)",correct,,2026-04-14T00:52:56.735931,0.917186551119547,0.641275598012109,0.0169170918947469,2.6304115554807947e-19
+IMIDACLOPRIDANDLB-IMID9,Group6,False,BAD: Rejected by ML pre-fit gate,correct,,2026-04-14T00:53:03.231579,,,,
