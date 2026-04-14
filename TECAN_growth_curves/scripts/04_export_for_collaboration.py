@@ -207,6 +207,7 @@ def generate_methodology(df: pd.DataFrame, clean: pd.DataFrame, output_path: Pat
             t for t in treatments
             if t.upper() not in ("LB", "H2O")
             and "ANDLB" not in t.upper()
+            and "ANDG" not in t.upper()
         ]
         pesticide_str = ", ".join(pesticides) if pesticides else "None"
         strain_str = ", ".join(strain_ids)

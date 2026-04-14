@@ -1,0 +1,48 @@
+{
+  "summary": {
+    "n_ground_truth": 480,
+    "n_pipeline_results": 480,
+    "n_matched": 480,
+    "n_failures": 0
+  },
+  "classification": {
+    "accuracy": 1.0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1_score": 1.0,
+    "confusion_matrix": {
+      "true_positives": 345,
+      "true_negatives": 135,
+      "false_positives": 0,
+      "false_negatives": 0
+    }
+  },
+  "parameter_recovery": {
+    "A": {
+      "mean_error": 0.06290193740777485,
+      "rmse": 0.29109350386389365,
+      "r_squared": 0.23601029048760203,
+      "bias": 0.06290193740777485,
+      "n_samples": 345
+    },
+    "mu": {
+      "mean_error": -0.009952470091165585,
+      "rmse": 0.035223904259983764,
+      "r_squared": 0.8665534389950468,
+      "bias": -0.009952470091165585,
+      "n_samples": 345
+    },
+    "lambda": {
+      "mean_error": -0.465346491364538,
+      "rmse": 1.2410373535415575,
+      "r_squared": 0.9738307570736573,
+      "bias": -0.465346491364538,
+      "n_samples": 345
+    }
+  },
+  "failure_analysis": {
+    "n_false_positives": 0,
+    "n_false_negatives": 0,
+    "failure_scenarios": {}
+  }
+}

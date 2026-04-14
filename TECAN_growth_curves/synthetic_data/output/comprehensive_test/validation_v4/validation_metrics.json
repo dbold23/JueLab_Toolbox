@@ -1,0 +1,42 @@
+{
+  "classification": {
+    "accuracy": 0.8666666666666667,
+    "precision": 0.8807588075880759,
+    "recall": 0.9420289855072463,
+    "f1_score": 0.9103641456582633,
+    "confusion_matrix": {
+      "TP": 325,
+      "TN": 91,
+      "FP": 44,
+      "FN": 20
+    }
+  },
+  "parameters": {
+    "A": {
+      "mean_error": 0.015027896814963342,
+      "rmse": 0.019014374584745426,
+      "r_squared": 0.9968271262035528,
+      "bias": 0.015027896814963342,
+      "n_samples": 325
+    },
+    "mu": {
+      "mean_error": -0.0034177111679129274,
+      "rmse": 0.03171393970904378,
+      "r_squared": 0.8972140562537149,
+      "bias": -0.0034177111679129274,
+      "n_samples": 325
+    },
+    "lambda": {
+      "mean_error": -0.24018226694887035,
+      "rmse": 1.0331535234828209,
+      "r_squared": 0.9828347100549933,
+      "bias": -0.24018226694887035,
+      "n_samples": 325
+    }
+  },
+  "summary": {
+    "total_ground_truth": 480,
+    "total_pipeline_results": 480,
+    "n_failures": 64
+  }
+}

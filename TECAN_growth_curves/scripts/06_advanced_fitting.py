@@ -1157,9 +1157,10 @@ def bootstrap_gompertz(time, od, n_resamples=1000, ci_level=0.95):
     boot_good = 0
 
     for _ in range(n_resamples):
-        # Resample residuals
-        boot_resid = rng.choice(residuals, size=len(residuals), replace=True)
-        boot_y = fitted + boot_resid
+        # Wild bootstrap: preserves heteroscedasticity structure
+        # Multiply each residual by random sign (+1/-1) instead of resampling
+        signs = rng.choice([-1.0, 1.0], size=len(residuals))
+        boot_y = fitted + residuals * signs
 
         try:
             bp, _ = curve_fit(

@@ -99,6 +99,7 @@ class ProcessingResult:
     classification: ClassificationResult
     truncation: Optional[TruncationResult]
     fit: Optional[FitResult]
+    per_param_trunc: Optional['PerParamTruncation'] = None
 
 
 @dataclass
@@ -289,7 +290,9 @@ def classify_by_fit_quality(
 
         snr = (max_od - baseline_mean) / baseline_std
 
-        # Bypass noise-based gates when fit quality is excellent
+        # Bypass SNR/delta-OD-CI gates when fit quality is excellent.
+        # Note: monotonicity and autocorrelation checks are always enforced
+        # regardless of R² (these target noise/non-growth patterns).
         excellent_threshold = thresholds.get('excellent_r2_threshold', 0.98)
         fit_is_excellent = fit_result.r_squared >= excellent_threshold
 
@@ -1192,6 +1195,151 @@ def find_optimal_truncation_v2(
     )
 
 
+@dataclass
+class PerParamTruncation:
+    """Optimal truncation for each Gompertz parameter independently."""
+    # Best truncation per parameter (minimizes relative uncertainty)
+    mu_best_idx: int
+    mu_best_time: float
+    mu_value: float
+    mu_rel_err: float       # relative std error (lower = better)
+
+    lam_best_idx: int
+    lam_best_time: float
+    lam_value: float
+    lam_rel_err: float
+
+    A_best_idx: int
+    A_best_time: float
+    A_value: float
+    A_rel_err: float
+
+    # Diagnostic: do the parameters agree on where to truncate?
+    disagreement_hours: float  # max spread between optimal truncation times
+    r2_at_mu_trunc: float
+    r2_at_lam_trunc: float
+    r2_at_A_trunc: float
+
+
+def find_per_param_truncation(
+    time: np.ndarray,
+    od600: np.ndarray,
+    landscape: Optional[TruncationLandscape] = None,
+    min_points: int = 30,
+) -> PerParamTruncation:
+    """
+    Find the optimal truncation point for each Gompertz parameter independently.
+
+    For each candidate truncation point, fits Gompertz and records the relative
+    standard error on A, mu, and lambda from the covariance matrix. The optimal
+    truncation for each parameter is the one that minimizes its relative error.
+
+    Parameters
+    ----------
+    time, od600 : np.ndarray
+        Full time and OD600 arrays
+    landscape : TruncationLandscape, optional
+        Pre-computed MCCV landscape (reuses candidates to avoid re-scanning)
+    min_points : int
+        Minimum data points for fitting
+
+    Returns
+    -------
+    PerParamTruncation
+        Optimal truncation per parameter with disagreement diagnostic
+    """
+    # Use landscape candidates if available, otherwise scan
+    if landscape is not None and landscape.candidates:
+        candidate_indices = [c.end_idx for c in landscape.candidates]
+        start_idx = landscape.best_start_idx
+    else:
+        start_idx = 0
+        inflection = int(np.argmax(np.diff(
+            np.convolve(od600, np.ones(5)/5, mode='same')
+        )))
+        scan_start = max(start_idx + min_points, inflection)
+        step = max(1, (len(time) - scan_start) // 50)
+        candidate_indices = list(range(scan_start, len(time), step))
+
+    # Score each candidate by parameter uncertainty
+    results = []  # (end_idx, A, mu, lam, A_rel_err, mu_rel_err, lam_rel_err, r2)
+    for end_idx in candidate_indices:
+        n_pts = end_idx + 1 - start_idx
+        if n_pts < min_points:
+            continue
+
+        t_seg = time[start_idx:end_idx + 1]
+        od_seg = od600[start_idx:end_idx + 1]
+
+        try:
+            p0, bounds = _gompertz_p0(t_seg, od_seg)
+            popt, pcov = curve_fit(gompertz_model, t_seg, od_seg, p0=p0,
+                                   bounds=bounds, maxfev=2000)
+            A, mu, lam = popt
+
+            # Parameter standard errors from covariance diagonal
+            perr = np.sqrt(np.diag(pcov))
+            A_err, mu_err, lam_err = perr
+
+            # Relative errors (lower = more precise)
+            A_rel = A_err / abs(A) if abs(A) > 1e-8 else 999.0
+            mu_rel = mu_err / abs(mu) if abs(mu) > 1e-8 else 999.0
+            lam_rel = lam_err / abs(lam) if abs(lam) > 1e-8 else 999.0
+
+            # R² at this truncation
+            pred = gompertz_model(t_seg, *popt)
+            ss_res = np.sum((od_seg - pred)**2)
+            ss_tot = np.sum((od_seg - np.mean(od_seg))**2)
+            r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+            # Skip nonsensical fits
+            if A_rel > 10 or mu_rel > 10 or r2 < 0.5:
+                continue
+
+            results.append((end_idx, A, mu, lam, A_rel, mu_rel, lam_rel, r2))
+        except Exception:
+            continue
+
+    if not results:
+        # Fallback: use MCCV best or full curve
+        fallback_idx = landscape.best_end_idx if landscape else len(time) - 1
+        return PerParamTruncation(
+            mu_best_idx=fallback_idx, mu_best_time=float(time[fallback_idx]),
+            mu_value=0.0, mu_rel_err=999.0,
+            lam_best_idx=fallback_idx, lam_best_time=float(time[fallback_idx]),
+            lam_value=0.0, lam_rel_err=999.0,
+            A_best_idx=fallback_idx, A_best_time=float(time[fallback_idx]),
+            A_value=0.0, A_rel_err=999.0,
+            disagreement_hours=0.0,
+            r2_at_mu_trunc=0.0, r2_at_lam_trunc=0.0, r2_at_A_trunc=0.0,
+        )
+
+    # Find optimal truncation for each parameter
+    # mu: minimize mu_rel_err
+    mu_best = min(results, key=lambda r: r[5])
+    # lambda: minimize lam_rel_err
+    lam_best = min(results, key=lambda r: r[6])
+    # A: minimize A_rel_err
+    A_best = min(results, key=lambda r: r[4])
+
+    # Disagreement: how far apart are the three optimal truncations?
+    trunc_times = [time[mu_best[0]], time[lam_best[0]], time[A_best[0]]]
+    disagreement = max(trunc_times) - min(trunc_times)
+
+    return PerParamTruncation(
+        mu_best_idx=mu_best[0], mu_best_time=float(time[mu_best[0]]),
+        mu_value=mu_best[2], mu_rel_err=mu_best[5],
+        lam_best_idx=lam_best[0], lam_best_time=float(time[lam_best[0]]),
+        lam_value=lam_best[3], lam_rel_err=lam_best[6],
+        A_best_idx=A_best[0], A_best_time=float(time[A_best[0]]),
+        A_value=A_best[1], A_rel_err=A_best[4],
+        disagreement_hours=disagreement,
+        r2_at_mu_trunc=mu_best[7],
+        r2_at_lam_trunc=lam_best[7],
+        r2_at_A_trunc=A_best[7],
+    )
+
+
 def _UNUSED_find_optimal_truncation_v1(
     time: np.ndarray,
     od600: np.ndarray,
@@ -1705,6 +1853,8 @@ def fit_gompertz(
         )
 
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Gompertz fit failed: {e} (n_points={len(time)})")
         return FitResult(
             success=False,
             a_opt=0, mu_opt=0, lambda_opt=0,
@@ -2590,49 +2740,105 @@ def process_growth_curves(
                             print(f"    Multi-model: {alt_model} R²={alt_fit.r_squared:.3f} "
                                   f"(Gompertz was {gompertz_r2_val:.3f})")
 
-                # ─── POST-FIT CLASSIFICATION ────────────────────────
-                # ML post-fit classifier is primary when available;
-                # rule-based classify_by_fit_quality() is fallback only
+                # ─── PER-PARAMETER TRUNCATION + CLASSIFICATION ─────
+                # Compute per-parameter optimal truncation, then classify
+                # based on what parameters are identifiable.
+                # A strain is GOOD if at least one parameter can be
+                # reliably extracted from its optimal truncation.
+                pp_trunc = None
+                if fit.success and truncation_params.get('per_param_refinement', True):
+                    try:
+                        pp_trunc = find_per_param_truncation(
+                            time_clean, od600_clean,
+                            min_points=min(30, len(time_clean) // 3)
+                        )
+                    except Exception:
+                        pass
+
+                # Determine the best fit for classification:
+                # use whichever truncation (MCCV or per-param) gives best R²
+                best_fit_for_class = fit
+                if pp_trunc is not None:
+                    for trunc_idx in set([pp_trunc.mu_best_idx, pp_trunc.A_best_idx, pp_trunc.lam_best_idx]):
+                        n_pts = trunc_idx + 1
+                        if n_pts < truncation_params.get('min_points_for_fit', 20):
+                            continue
+                        t_seg = time_clean[:n_pts]
+                        od_seg = od600_clean[:n_pts]
+                        try:
+                            alt_fit = fit_gompertz(t_seg, od_seg)
+                            if (alt_fit.success and
+                                    alt_fit.r_squared > best_fit_for_class.r_squared):
+                                best_fit_for_class = alt_fit
+                        except Exception:
+                            pass
+
+                # Build usable_for list from identifiability
+                usable_for = []
+                if pp_trunc is not None:
+                    if pp_trunc.mu_rel_err < 0.50:
+                        usable_for.append('growth_rate')
+                    if pp_trunc.A_rel_err < 0.50:
+                        usable_for.append('carrying_capacity')
+                    if pp_trunc.lam_rel_err < 0.50:
+                        usable_for.append('lag_time')
+                elif fit.success and fit.r_squared > 0.90:
+                    usable_for = ['growth_rate', 'carrying_capacity', 'lag_time']
+
+                # ─── CLASSIFY ──────────────────────────────────────
+                # ML post-fit classifier runs on the best available fit;
+                # rule-based classify_by_fit_quality() is fallback
+                fit_for_class = best_fit_for_class
+
                 if postfit_clf is not None:
-                    # ML is the primary classifier — compute metrics
-                    # for export but let the model decide GOOD/BAD
                     rule_classification = classify_by_fit_quality(
-                        fit, fit_quality_thresholds,
+                        fit_for_class, fit_quality_thresholds,
                         time=time_clean, od600=od600_clean,
                         is_incomplete=is_incomplete
                     )
-                    # Ensure OD metrics are present for ML feature extraction
                     if 'delta_od' not in rule_classification.metrics:
                         rule_classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
                     rule_classification.metrics['max_od'] = np.max(od600_clean)
                     rule_classification.metrics['best_model'] = best_model_name
 
                     ml_result = postfit_clf.classify(
-                        fit_result=fit,
+                        fit_result=fit_for_class,
                         classification_metrics=rule_classification.metrics,
                         truncation_time=truncation.truncation_time,
                         points_used=len(truncation.od_truncated),
                         strain_name=strain_name,
                     )
                     if ml_result is not None:
-                        # ML makes the call; store rule-based for audit trail
                         classification_metrics = rule_classification.metrics.copy()
                         classification_metrics['p_good'] = ml_result['p_good']
                         classification_metrics['ml_classification'] = ml_result['ml_classification']
                         classification_metrics['rule_based_result'] = rule_classification.is_good
                         classification_metrics['rule_based_reason'] = rule_classification.reason
+
+                        # Override: if per-param says ANY parameter is usable
+                        # but ML says BAD, trust per-param IF there's real signal.
+                        # Don't override on noise — identifiable parameters on
+                        # delta_od < 0.15 are fitting noise, not growth.
+                        is_good = ml_result['is_good']
+                        reason = ml_result['reason']
+                        min_signal = fit_quality_thresholds.get('min_absolute_delta_od', 0.15)
+                        signal = classification_metrics.get('delta_od', 0)
+                        if not is_good and usable_for and signal >= min_signal:
+                            is_good = True
+                            reason = (f"GOOD (per-param): {','.join(usable_for)} identifiable "
+                                      f"(ML said BAD, per-param override)")
+                            classification_metrics['per_param_override'] = True
+
                         classification = ClassificationResult(
-                            is_good=ml_result['is_good'],
-                            reason=ml_result['reason'],
+                            is_good=is_good,
+                            reason=reason,
                             metrics=classification_metrics,
                         )
                     else:
-                        # ML returned None (error) — fall back to rules
                         classification = rule_classification
                 else:
-                    # No ML model → rule-based classification
                     classification = classify_by_fit_quality(
-                        fit, fit_quality_thresholds,
+                        fit_for_class, fit_quality_thresholds,
                         time=time_clean, od600=od600_clean,
                         is_incomplete=is_incomplete
                     )
@@ -2640,6 +2846,16 @@ def process_growth_curves(
                         classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
                     classification.metrics['max_od'] = np.max(od600_clean)
                     classification.metrics['best_model'] = best_model_name
+
+                    # Per-param override for rule-based too (only if real signal)
+                    signal_rb = classification.metrics.get('delta_od', 0)
+                    min_signal_rb = fit_quality_thresholds.get('min_absolute_delta_od', 0.15)
+                    if not classification.is_good and usable_for and signal_rb >= min_signal_rb:
+                        classification = ClassificationResult(
+                            is_good=True,
+                            reason=f"GOOD (per-param): {','.join(usable_for)} identifiable",
+                            metrics=classification.metrics,
+                        )
 
                 if verbose:
                     status = "GOOD" if classification.is_good else "BAD"
@@ -2729,11 +2945,14 @@ def process_growth_curves(
                         plots_dir
                     )
 
+            # pp_trunc was computed before classification (in fit-based path)
+            # For OD-threshold path, pp_trunc stays None
             results[strain_name] = ProcessingResult(
                 strain_name=strain_name,
                 classification=classification,
                 truncation=truncation,
-                fit=fit
+                fit=fit,
+                per_param_trunc=pp_trunc,
             )
 
     # Generate summary visualization
@@ -2828,6 +3047,56 @@ def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str)
             'p_good': metrics.get('p_good'),
             'ml_classification': metrics.get('ml_classification'),
         })
+
+        # Per-parameter refined estimates + identifiability flags
+        pp = result.per_param_trunc
+        if pp is not None:
+            def _identifiability(rel_err):
+                """Classify parameter identifiability from relative error."""
+                if rel_err < 0.10:
+                    return 'identifiable'
+                if rel_err < 0.50:
+                    return 'weak'
+                return 'unidentifiable'
+
+            mu_id = _identifiability(pp.mu_rel_err)
+            A_id = _identifiability(pp.A_rel_err)
+            lam_id = _identifiability(pp.lam_rel_err)
+
+            id_flags = [mu_id, A_id, lam_id]
+            if all(f == 'identifiable' for f in id_flags):
+                param_quality = 'all_identifiable'
+            elif any(f == 'unidentifiable' for f in id_flags):
+                param_quality = 'poor'
+            else:
+                param_quality = 'partial'
+
+            row.update({
+                'mu_refined': pp.mu_value,
+                'mu_refined_rel_err': pp.mu_rel_err,
+                'mu_trunc_time': pp.mu_best_time,
+                'mu_identifiable': mu_id,
+                'A_refined': pp.A_value,
+                'A_refined_rel_err': pp.A_rel_err,
+                'A_trunc_time': pp.A_best_time,
+                'A_identifiable': A_id,
+                'lam_refined': pp.lam_value,
+                'lam_refined_rel_err': pp.lam_rel_err,
+                'lam_trunc_time': pp.lam_best_time,
+                'lam_identifiable': lam_id,
+                'param_disagreement_hours': pp.disagreement_hours,
+                'param_quality': param_quality,
+            })
+
+            # usable_for: which downstream analyses this strain is valid for
+            usable = []
+            if mu_id in ('identifiable', 'weak'):
+                usable.append('growth_rate')
+            if A_id in ('identifiable', 'weak'):
+                usable.append('carrying_capacity')
+            if lam_id in ('identifiable', 'weak'):
+                usable.append('lag_time')
+            row['usable_for'] = ','.join(usable) if usable else 'none'
 
         rows.append(row)
 
@@ -2978,6 +3247,7 @@ def main():
         'min_points_for_fit': cfg_trunc.get('min_points_for_fit', 20),
         'use_first_peak': not args.global_max,  # Default: use first peak
         'use_adaptive': args.adaptive,  # Adaptive overrides other truncation methods
+        'per_param_refinement': cfg_trunc.get('per_param_refinement', True),
     }
 
     # Run pipeline

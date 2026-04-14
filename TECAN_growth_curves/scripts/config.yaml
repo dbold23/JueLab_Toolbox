@@ -30,6 +30,8 @@ truncation:
   # Incomplete curve detection (prevents FNs when experiment ended early)
   incomplete_curve_tail_fraction: 0.15  # Fraction of tail to check for rising
   incomplete_curve_slope_threshold: 0.005  # dOD/dt threshold for "still rising"
+  per_param_refinement: true          # Compute per-parameter optimal truncation
+  disagreement_threshold: 5.0         # Flag strains with > this disagreement (hours)
   # Monte Carlo Cross-Validated truncation (used when use_adaptive: true)
   mccv:
     n_coarse_candidates: 50          # Coarse scan points across full range
@@ -47,9 +49,20 @@ od_thresholds:
   min_snr: 5.0                 # Minimum signal-to-noise ratio
   max_initial_od: 0.15         # Maximum starting OD (contamination check)
 
+# Pesticide concentrations used in media prep (mg/L)
+# Source: pesticide media concentrations - Sheet1.csv
+pesticide_concentrations:
+  Bifenthrin: 50.0
+  Flupyradifurone: 20.0
+  LambdaCyhalothrin: 50.0
+  Malathion: 50.0
+  Imidacloprid: 20.0
+  Permethrin: 100.0
+  Diazinon: 20.0
+
 # Haldane model settings
 haldane:
-  default_S0: 1.0              # Default substrate concentration (arbitrary units)
+  default_S0: 1.0              # Fallback if pesticide not in concentrations above
   parameter_bounds:
     mu_max: [0.001, 5.0]
     Ks: [0.001, 10.0]
@@ -137,12 +150,15 @@ advanced:
       sampler: DEMetropolisZ       # gradient-free (ODE model)
 
   # Bayesian priors
+  # Justified: centered on observed data medians from all_groups_results.csv
+  # with sigma wide enough to cover the observed range.
+  # Sensitivity analysis: re-run with 2x sigma to check prior influence.
   priors:
-    # Gompertz hyperpriors (based on observed data ranges)
-    mu_A: [1.3, 0.5]              # Normal(mu, sigma) for max OD
-    mu_mu: [0.25, 0.15]           # Normal(mu, sigma) for growth rate
-    mu_lam: [2.0, 2.0]            # Normal(mu, sigma) for lag time
-    sigma_obs: 0.05               # HalfNormal sigma for observation noise
+    # Gompertz hyperpriors
+    mu_A: [1.3, 0.5]              # Normal(mu, sigma) for max OD (observed median ~1.3, range 0.01-2.5)
+    mu_mu: [0.25, 0.15]           # Normal(mu, sigma) for growth rate (observed median ~0.2, range 0.01-1.2)
+    mu_lam: [2.0, 2.0]            # Normal(mu, sigma) for lag time (observed median ~2h, range 0-20h)
+    sigma_obs: 0.05               # HalfNormal sigma for observation noise (typical TECAN noise ~0.01-0.05 OD)
     # Haldane hyperpriors
     mu_log_Ki: [2.0, 1.0]         # Normal(mu, sigma) for log(Ki) population mean
     sigma_log_Ki: 1.0             # HalfNormal sigma for between-pesticide Ki variance
@@ -158,11 +174,11 @@ advanced:
     p_good_low: 0.50              # moderate confidence GOOD
     borderline_range: [0.30, 0.70]
 
-  # Convergence diagnostics
+  # Convergence diagnostics (tightened per Vehtari et al. 2021)
   convergence:
-    max_rhat: 1.05
-    min_ess_bulk: 400
-    min_ess_tail: 200
+    max_rhat: 1.01             # was 1.05 — standard for publication
+    min_ess_bulk: 1000         # was 400 — need sufficient effective samples
+    min_ess_tail: 400          # was 200 — tail ESS for credible intervals
 
   # Ensemble truncation
   ensemble:

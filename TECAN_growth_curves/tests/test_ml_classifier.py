@@ -186,17 +186,32 @@ class TestMetadataFeatures:
     def test_water_control_detected(self):
         meta = extract_metadata_features('H2O-MAL10')
         assert meta['is_control'] == 1.0
-        assert meta['concentration_numeric'] == 10.0
+        assert meta['concentration_numeric'] == 0.0  # controls have 0 pesticide
 
     def test_lb_control_detected(self):
         meta = extract_metadata_features('LB-CISPERM1')
         assert meta['is_control'] == 1.0
-        assert meta['concentration_numeric'] == 1.0
+        assert meta['concentration_numeric'] == 0.0  # controls have 0 pesticide
 
-    def test_treatment_not_control(self):
+    def test_treatment_has_real_concentration(self):
         meta = extract_metadata_features('Bifenthrin-BIF3')
         assert meta['is_control'] == 0.0
-        assert meta['concentration_numeric'] == 3.0
+        assert meta['concentration_numeric'] == 50.0  # bifenthrin = 50 mg/L
+
+    def test_malathion_concentration(self):
+        meta = extract_metadata_features('MALATHIONANDLB-MAL10')
+        assert meta['is_control'] == 0.0
+        assert meta['concentration_numeric'] == 50.0  # malathion = 50 mg/L
+
+    def test_imidacloprid_concentration(self):
+        meta = extract_metadata_features('IMIDACLOPRID-IMID2')
+        assert meta['is_control'] == 0.0
+        assert meta['concentration_numeric'] == 20.0  # imidacloprid = 20 mg/L
+
+    def test_permethrin_concentration(self):
+        meta = extract_metadata_features('PERMETHRINANDLB-PERM4')
+        assert meta['is_control'] == 0.0
+        assert meta['concentration_numeric'] == 100.0  # permethrin = 100 mg/L
 
     def test_synthetic_name_not_control(self):
         meta = extract_metadata_features('CURVE0005')
@@ -211,7 +226,7 @@ class TestMetadataFeatures:
         t, od = good_curve
         features = extract_prefit_features(t, od, strain_name='H2O-TEST5')
         assert features['is_control'] == 1.0
-        assert features['concentration_numeric'] == 5.0
+        assert features['concentration_numeric'] == 0.0  # H2O control = 0 pesticide
 
 
 # ---------------------------------------------------------------------------

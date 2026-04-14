@@ -116,9 +116,15 @@ def preprocess_group1(
         if len(blank_wells) > 0:
             blank_data = data_df[blank_wells].values
             blank_avg = np.mean(blank_data, axis=1)
+            blank_std = np.std(blank_data, axis=1)
             if verbose:
                 print(f"  Blank wells: {blank_wells}")
                 print(f"  Blank average OD range: {blank_avg.min():.4f} to {blank_avg.max():.4f}")
+            # QC: flag high blank variability
+            max_blank_std = np.max(blank_std) if len(blank_std) > 0 else 0
+            if max_blank_std > 0.01:
+                print(f"  WARNING: High blank variability for {media} "
+                      f"(max sigma={max_blank_std:.4f} > 0.01 OD)")
         else:
             blank_avg = np.zeros(len(time_hours))
             if verbose:
@@ -139,8 +145,20 @@ def preprocess_group1(
             # Get data for these wells
             strain_data = data_df[wells].values
 
-            # Average triplicates
-            strain_avg = np.mean(strain_data, axis=1)
+            # Outlier replicate detection (flag if any well >3σ from median)
+            if strain_data.shape[1] >= 3:
+                median_vals = np.median(strain_data, axis=1, keepdims=True)
+                deviations = np.abs(strain_data - median_vals)
+                mad = np.median(deviations, axis=1, keepdims=True)
+                mad = np.maximum(mad, 1e-6)  # avoid division by zero
+                outlier_mask = deviations > 3 * 1.4826 * mad  # MAD-based outlier
+                n_outliers = outlier_mask.sum()
+                if n_outliers > 0:
+                    print(f"  WARNING: {strain} has {n_outliers} outlier replicate "
+                          f"timepoints (>3 MAD from median)")
+
+            # Average triplicates (use median for robustness against outliers)
+            strain_avg = np.median(strain_data, axis=1) if strain_data.shape[1] >= 3 else np.mean(strain_data, axis=1)
 
             # Subtract blank
             strain_blanked = strain_avg - blank_avg

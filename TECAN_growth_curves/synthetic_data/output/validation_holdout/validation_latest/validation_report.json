@@ -1,0 +1,62 @@
+{
+  "summary": {
+    "n_ground_truth": 555,
+    "n_pipeline_results": 555,
+    "n_matched": 555,
+    "n_failures": 44
+  },
+  "classification": {
+    "accuracy": 0.9207207207207208,
+    "precision": 0.9240196078431373,
+    "recall": 0.9666666666666667,
+    "f1_score": 0.9448621553884713,
+    "confusion_matrix": {
+      "true_positives": 377,
+      "true_negatives": 134,
+      "false_positives": 31,
+      "false_negatives": 13
+    }
+  },
+  "parameter_recovery": {
+    "A": {
+      "mean_error": 0.1278630006295051,
+      "rmse": 0.40860477363100917,
+      "r_squared": -0.46510746488325494,
+      "bias": 0.1278630006295051,
+      "n_samples": 377
+    },
+    "mu": {
+      "mean_error": -0.016412006136376885,
+      "rmse": 0.043791526541668846,
+      "r_squared": 0.7413590206905112,
+      "bias": -0.016412006136376885,
+      "n_samples": 377
+    },
+    "lambda": {
+      "mean_error": -0.32922149723494415,
+      "rmse": 1.3132189837307862,
+      "r_squared": 0.9649300633972543,
+      "bias": -0.32922149723494415,
+      "n_samples": 377
+    }
+  },
+  "failure_analysis": {
+    "n_false_positives": 31,
+    "n_false_negatives": 13,
+    "failure_scenarios": {
+      "borderline_r2_bad": 11,
+      "high_noise": 8,
+      "borderline_noise": 8,
+      "borderline_r2_good": 7,
+      "contamination": 2,
+      "low_A": 1,
+      "fast_growth": 1,
+      "erratic": 1,
+      "pesticide_only": 1,
+      "richards_asymmetric": 1,
+      "outlier_contaminated": 1,
+      "haldane_strong_inhibition": 1,
+      "bubble_spike": 1
+    }
+  }
+}
