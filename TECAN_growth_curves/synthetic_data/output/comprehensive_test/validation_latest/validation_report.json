@@ -3,48 +3,53 @@
     "n_ground_truth": 480,
     "n_pipeline_results": 480,
     "n_matched": 480,
-    "n_failures": 2
+    "n_failures": 8
   },
   "classification": {
-    "accuracy": 0.9958333333333333,
+    "accuracy": 0.9833333333333333,
     "precision": 1.0,
-    "recall": 0.9942028985507246,
-    "f1_score": 0.9970930232558141,
+    "recall": 0.9768115942028985,
+    "f1_score": 0.9882697947214076,
     "confusion_matrix": {
-      "true_positives": 343,
+      "true_positives": 337,
       "true_negatives": 135,
       "false_positives": 0,
-      "false_negatives": 2
+      "false_negatives": 8
     }
   },
   "parameter_recovery": {
     "A": {
-      "mean_error": 0.10376437744468965,
-      "rmse": 0.4409486843615933,
-      "r_squared": -0.7432552901725831,
-      "bias": 0.10376437744468965,
-      "n_samples": 343
+      "mean_error": 0.05616836058360353,
+      "rmse": 0.2560910266501273,
+      "r_squared": 0.4193168791384767,
+      "bias": 0.05616836058360353,
+      "n_samples": 337
     },
     "mu": {
-      "mean_error": -0.010686173045960298,
-      "rmse": 0.0355677034351274,
-      "r_squared": 0.8645944652322297,
-      "bias": -0.010686173045960298,
-      "n_samples": 343
+      "mean_error": -0.009602600571265458,
+      "rmse": 0.034714313700825845,
+      "r_squared": 0.8710520405957609,
+      "bias": -0.009602600571265458,
+      "n_samples": 337
     },
     "lambda": {
-      "mean_error": -0.44858121903988385,
-      "rmse": 1.1960137670546092,
-      "r_squared": 0.975823431386179,
-      "bias": -0.44858121903988385,
-      "n_samples": 343
+      "mean_error": -0.4467199030444382,
+      "rmse": 1.2066568136525473,
+      "r_squared": 0.9700717966069815,
+      "bias": -0.4467199030444382,
+      "n_samples": 337
     }
   },
   "failure_analysis": {
     "n_false_positives": 0,
-    "n_false_negatives": 2,
+    "n_false_negatives": 8,
     "failure_scenarios": {
-      "sparse_data": 2
+      "long_lag": 2,
+      "long_experiment": 2,
+      "slow_growth": 1,
+      "short_lag": 1,
+      "pesticide_lb_typical": 1,
+      "baranyi_generated": 1
     }
   }
 }

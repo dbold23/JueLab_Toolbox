@@ -182,10 +182,12 @@ only **Good** fits and uses human-readable column names:
 | Group | Pesticide(s) | Strains | Total Curves | Good | Bad |
 |-------|-------------|---------|--------------|------|-----|
 | Group1 | Bifenthrin, Flupyradifurone, LambdaCyhalothrin | BIF2, BIF6, BIF9, BiF7, FLUPC8, LCY4 | 24 | 13 | 11 |
-| Group2 | LAMBDACYHALOTHRIN, MALATHION | LCY1, MAL1, MAL10, MAL4, MAL5, MAL8 | 24 | 11 | 13 |
-| Group3 | IMIDACLOPRID, LAMBDACYHALOTHRIN | IMID2, IMID3, IMID5, IMID8, LCY01, LCY2 | 24 | 12 | 12 |
+| Group2 | LAMBDACYHALOTHRIN, MALATHION | LCY1, MAL1, MAL10, MAL4, MAL5, MAL8 | 24 | 16 | 8 |
+| Group3 | IMIDACLOPRID, LAMBDACYHALOTHRIN | IMID2, IMID3, IMID5, IMID8, LCY01, LCY2 | 24 | 16 | 8 |
 | Group4 | LAMBDACYHALOTHRIN, PERMETHRIN | CISPERM1, CYPERM2, LCY3, PERM4, PERM7 | 20 | 12 | 8 |
-| **Total** | | | **92** | **48** | **44** |
+| Group5 | DIAZINON, IMIDACLOPRID, MALATHION | DIAZ11, DIAZ18, DIAZ21, DIAZ22, DIAZ23, DIAZ26, DIAZ28, DIAZ8, IMID1Y, IMID2, IMID3, IMID5, IMID6, IMID8, IMID9Y, MAL1, MAL10, MAL2, MAL3, MAL4, MAL5, MAL6, MAL7, MAL8 | 59 | 13 | 46 |
+| Group6 | IMIDACLOPRID | IMID2, IMID5, IMID6, IMID8, IMID9 | 10 | 5 | 5 |
+| **Total** | | | **161** | **75** | **86** |
 
 ### Treatment Conditions per Strain
 

@@ -52,6 +52,9 @@ class ScenarioConfig:
     # Model to use for generation
     model: str = 'gompertz'
 
+    # Instrument noise simulation
+    instrument_noise: bool = False
+
     # Additional metadata
     tags: List[str] = field(default_factory=list)
 

@@ -1,0 +1,10 @@
+pesticide,base_id,operators,n_operators,n_curves
+Imidacloprid,IMID2,"['Operator1', 'Dominique']",2,3
+Imidacloprid,IMID3,"['Operator1', 'Walton']",2,2
+Imidacloprid,IMID5,"['Operator1', 'Dominique']",2,2
+Imidacloprid,IMID8,"['Operator1', 'Dominique']",2,3
+Malathion,MAL1,"['Operator1', 'Walton']",2,2
+Malathion,MAL10,"['Operator1', 'Walton']",2,2
+Malathion,MAL4,"['Operator1', 'Walton']",2,2
+Malathion,MAL5,"['Operator1', 'Walton']",2,2
+Malathion,MAL8,"['Operator1', 'Walton']",2,2

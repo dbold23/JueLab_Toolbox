@@ -1,0 +1,7 @@
+pesticide,strain_base_id,parameter,test,statistic,p_value,cv_percent,n_operators,n_total
+Imidacloprid,IMID2,Growth Rate (mu),Welch t-test,,,36.8108947381151,2,3
+Imidacloprid,IMID2,Lag Time (lambda),Welch t-test,,,18.785588565424167,2,3
+Imidacloprid,IMID2,Max OD (A),Welch t-test,,,37.76876897123476,2,3
+Imidacloprid,IMID8,Growth Rate (mu),Welch t-test,,,39.032267086116654,2,3
+Imidacloprid,IMID8,Lag Time (lambda),Welch t-test,,,41.474547309660196,2,3
+Imidacloprid,IMID8,Max OD (A),Welch t-test,,,28.442944412125552,2,3

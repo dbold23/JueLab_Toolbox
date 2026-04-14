@@ -38,35 +38,35 @@
     "concentration_numeric"
   ],
   "prefit_metrics": {
-    "accuracy": 0.9417721518987341,
-    "precision": 0.996078431372549,
-    "recall": 0.9191245791245791,
-    "f1": 0.9560041655846749,
-    "specificity": 0.992,
-    "accuracy_std": 0.006201239855147265,
-    "precision_std": 0.007843137254901978,
-    "recall_std": 0.008909271600560925,
-    "f1_std": 0.0048322702836714705,
-    "specificity_std": 0.016000000000000014
+    "accuracy": 0.8821439325504367,
+    "precision": 0.9679470457079153,
+    "recall": 0.8562987012987013,
+    "f1": 0.9081801923324841,
+    "specificity": 0.9381538461538461,
+    "accuracy_std": 0.016022666967863607,
+    "precision_std": 0.01481931538533283,
+    "recall_std": 0.03126378933412292,
+    "f1_std": 0.014489836921931686,
+    "specificity_std": 0.030543789498408306
   },
   "postfit_metrics": {
-    "accuracy": 0.9873417721518987,
-    "precision": 0.9963636363636365,
-    "recall": 0.9853198653198654,
-    "f1": 0.9907551890726548,
-    "specificity": 0.9916666666666668,
-    "accuracy_std": 0.011321863177214135,
-    "precision_std": 0.007272727272727276,
-    "recall_std": 0.013822932873611008,
-    "f1_std": 0.008287489877125015,
-    "specificity_std": 0.016666666666666653
+    "accuracy": 0.9951219512195122,
+    "precision": 0.9964912280701753,
+    "recall": 0.9964285714285716,
+    "f1": 0.9964282866937733,
+    "specificity": 0.9923076923076923,
+    "accuracy_std": 0.00597436522630044,
+    "precision_std": 0.007017543859649145,
+    "recall_std": 0.007142857142857162,
+    "f1_std": 0.00437472815046616,
+    "specificity_std": 0.015384615384615375
   },
   "postfit_feature_importance": {},
-  "training_date": "2026-02-26T14:59:13.498658",
-  "n_training_samples": 565,
+  "training_date": "2026-04-09T01:37:59.772426",
+  "n_training_samples": 582,
   "class_distribution": {
-    "GOOD": 389,
-    "BAD": 176
+    "GOOD": 398,
+    "BAD": 184
   },
   "model_type": "HistGradientBoostingClassifier"
 }

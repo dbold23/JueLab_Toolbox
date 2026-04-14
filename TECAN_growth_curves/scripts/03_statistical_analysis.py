@@ -39,16 +39,25 @@ from scipy import stats
 # e.g. "LAMBDACYHALOTHRINANDLB" is not mistakenly caught by a shorter prefix.
 PESTICIDE_MAP = {
     "FLUPYRADIFURONEANDLB": "Flupyradifurone",
+    "FLUPYRADIFURONEANDG":  "Flupyradifurone",
     "FLUPYRADIFURONE":      "Flupyradifurone",
     "BIFENTHRINANDLB":      "Bifenthrin",
+    "BIFENTHRINANDG":       "Bifenthrin",
     "BIFENTHRIN":           "Bifenthrin",
     "LAMBDACYHALOTHRINANDLB": "Lambda-Cyhalothrin",
+    "LAMBDACYHALOTHRINANDG": "Lambda-Cyhalothrin",
     "LAMBDACYHALOTHRIN":    "Lambda-Cyhalothrin",
+    "DIAZINONANDLB":        "Diazinon",
+    "DIAZINONANDG":         "Diazinon",
+    "DIAZINON":             "Diazinon",
     "MALATHIONANDLB":       "Malathion",
+    "MALATHIONANDG":        "Malathion",
     "MALATHION":            "Malathion",
     "IMIDACLOPRIDANDLB":    "Imidacloprid",
+    "IMIDACLOPRIDANDG":     "Imidacloprid",
     "IMIDACLOPRID":         "Imidacloprid",
     "PERMETHRINANDLB":      "Permethrin",
+    "PERMETHRINANDG":       "Permethrin",
     "PERMETHRIN":           "Permethrin",
     "LB":                   "Control-LB",
     "H2O":                  "Control-H2O",
@@ -80,9 +89,9 @@ def parse_strain_column(df: pd.DataFrame) -> pd.DataFrame:
 
     df["pesticide"] = df["treatment"].apply(_map_pesticide)
 
-    # Nutrient flag: True when treatment contains "ANDLB" or IS "LB"
+    # Nutrient flag: True when treatment contains "ANDLB", "ANDG", or IS "LB"
     df["has_nutrients"] = df["treatment"].apply(
-        lambda t: "ANDLB" in t.upper() or t.upper() == "LB"
+        lambda t: "ANDLB" in t.upper() or "ANDG" in t.upper() or t.upper() == "LB"
     )
 
     # Treatment type classification
@@ -92,7 +101,7 @@ def parse_strain_column(df: pd.DataFrame) -> pd.DataFrame:
             return "LB_only"
         if t == "H2O":
             return "H2O_only"
-        if "ANDLB" in t:
+        if "ANDLB" in t or "ANDG" in t:
             return "Pesticide_plus_LB"
         return "Pesticide_only"
 
@@ -163,31 +172,40 @@ def run_statistical_tests(df: pd.DataFrame) -> None:
     print(good["treatment_type"].value_counts().to_string())
     print()
 
-    # --- One-way ANOVA on gompertz_mu by treatment_type ---
+    # --- Assumption tests ---
     print(f"{thin}")
-    print("One-way ANOVA: gompertz_mu ~ treatment_type")
+    print("ASSUMPTION TESTS (gompertz_mu by treatment_type)")
     print(f"{thin}")
     groups_mu = [
         grp["gompertz_mu"].dropna().values
         for _, grp in good.groupby("treatment_type")
     ]
-    # Need at least 2 groups with data
     groups_mu = [g for g in groups_mu if len(g) > 0]
-    if len(groups_mu) >= 2:
-        f_stat, p_val = stats.f_oneway(*groups_mu)
-        print(f"  F-statistic = {f_stat:.4f}")
-        print(f"  p-value     = {p_val:.4e}")
-        if p_val < 0.05:
-            print("  --> Significant difference among treatment types (p < 0.05)")
+    group_names_mu = [
+        name for name, grp in good.groupby("treatment_type")
+        if len(grp["gompertz_mu"].dropna()) > 0
+    ]
+
+    normality_ok = True
+    for name, g in zip(group_names_mu, groups_mu):
+        if len(g) >= 3:
+            w_stat, p_norm = stats.shapiro(g)
+            status = "OK" if p_norm >= 0.05 else "VIOLATED"
+            if p_norm < 0.05:
+                normality_ok = False
+            print(f"  Shapiro-Wilk ({name[:25]}): W={w_stat:.4f} p={p_norm:.4f} [{status}]")
         else:
-            print("  --> No significant difference (p >= 0.05)")
-    else:
-        print("  Not enough groups with data for ANOVA.")
+            print(f"  Shapiro-Wilk ({name[:25]}): n={len(g)} (too few for test)")
+
+    if len(groups_mu) >= 2:
+        lev_stat, p_lev = stats.levene(*groups_mu)
+        lev_status = "OK" if p_lev >= 0.05 else "VIOLATED"
+        print(f"  Levene (homoscedasticity):  stat={lev_stat:.4f} p={p_lev:.4f} [{lev_status}]")
     print()
 
-    # --- Kruskal-Wallis on gompertz_mu by treatment_type ---
+    # --- Primary test: Kruskal-Wallis (non-parametric, no assumptions) ---
     print(f"{thin}")
-    print("Kruskal-Wallis: gompertz_mu ~ treatment_type (non-parametric)")
+    print("PRIMARY: Kruskal-Wallis: gompertz_mu ~ treatment_type (non-parametric)")
     print(f"{thin}")
     if len(groups_mu) >= 2:
         h_stat, p_val_kw = stats.kruskal(*groups_mu)
@@ -201,11 +219,76 @@ def run_statistical_tests(df: pd.DataFrame) -> None:
         print("  Not enough groups with data for Kruskal-Wallis.")
     print()
 
+    # --- Secondary: One-way ANOVA (for reference, with assumption caveats) ---
+    print(f"{thin}")
+    print("SECONDARY: One-way ANOVA: gompertz_mu ~ treatment_type")
+    if not normality_ok:
+        print("  WARNING: Normality assumption violated — interpret with caution")
+    print(f"{thin}")
+    if len(groups_mu) >= 2:
+        f_stat, p_val = stats.f_oneway(*groups_mu)
+        print(f"  F-statistic = {f_stat:.4f}")
+        print(f"  p-value     = {p_val:.4e}")
+    else:
+        print("  Not enough groups.")
+    print()
+
+    # --- Two-way ANOVA with operator blocking (if operator column exists) ---
+    if "operator" in good.columns:
+        print(f"{thin}")
+        print("TWO-WAY ANOVA: gompertz_mu ~ treatment_type + operator (blocking)")
+        print(f"{thin}")
+        try:
+            import statsmodels.api as sm
+            from statsmodels.formula.api import ols
+
+            anova_df = good[["gompertz_mu", "treatment_type", "operator"]].dropna()
+            if len(anova_df["operator"].unique()) > 1:
+                model = ols("gompertz_mu ~ C(treatment_type) + C(operator)", data=anova_df).fit()
+                anova_table = sm.stats.anova_lm(model, typ=2)
+                print(anova_table.to_string())
+                print()
+
+                # Report variance attributable to each factor
+                ss_total = anova_table["sum_sq"].sum()
+                for factor in anova_table.index:
+                    if factor != "Residual":
+                        pct = 100 * anova_table.loc[factor, "sum_sq"] / ss_total
+                        print(f"  {factor}: {pct:.1f}% of variance")
+                pct_resid = 100 * anova_table.loc["Residual", "sum_sq"] / ss_total
+                print(f"  Residual: {pct_resid:.1f}% of variance")
+            else:
+                print("  Only 1 operator — cannot estimate operator effect")
+        except ImportError:
+            print("  statsmodels not installed — skipping two-way ANOVA")
+        except Exception as e:
+            print(f"  Two-way ANOVA failed: {e}")
+        print()
+
+    # --- Confounding check ---
+    if "operator" in good.columns:
+        print(f"{thin}")
+        print("CONFOUNDING CHECK: pesticide × operator distribution")
+        print(f"{thin}")
+        if "pesticide" in good.columns:
+            cross = pd.crosstab(good["pesticide"], good["operator"])
+            print(cross.to_string())
+            # Flag pesticides with only one operator
+            for pest in cross.index:
+                n_ops = (cross.loc[pest] > 0).sum()
+                if n_ops == 1:
+                    op = cross.columns[cross.loc[pest] > 0][0]
+                    print(f"  WARNING: {pest} only from {op} — confounded with operator effect")
+        print()
+
     # --- Pairwise: LB vs Pesticide+LB within each group ---
     print(f"{thin}")
     print("Pairwise Mann-Whitney U: LB_only vs Pesticide_plus_LB (gompertz_mu)")
     print("  Question: Does adding pesticide to LB inhibit growth?")
+    print(f"  Bonferroni correction applied for {len(good['group'].unique())} comparisons")
     print(f"{thin}")
+    n_comparisons = 0
+    pairwise_results = []
     for group_name in sorted(good["group"].unique()):
         sub = good[good["group"] == group_name]
         lb_vals = sub.loc[sub["treatment_type"] == "LB_only", "gompertz_mu"].dropna()
@@ -221,13 +304,19 @@ def run_statistical_tests(df: pd.DataFrame) -> None:
             u_stat, p_mw = stats.mannwhitneyu(
                 lb_vals, pest_lb_vals, alternative="two-sided"
             )
-            print(f"    U-statistic = {u_stat:.2f},  p-value = {p_mw:.4e}")
-            if p_mw < 0.05:
-                print("    --> Significant difference (p < 0.05)")
-            else:
-                print("    --> Not significant (p >= 0.05)")
+            n_comparisons += 1
+            pairwise_results.append((group_name, p_mw))
+            print(f"    U-statistic = {u_stat:.2f},  p-value = {p_mw:.4e} (uncorrected)")
         else:
             print("    --> Insufficient replicates for pairwise test")
+
+    # Apply Bonferroni correction
+    if n_comparisons > 0:
+        print(f"\n  Bonferroni-corrected pairwise results ({n_comparisons} comparisons):")
+        for group_name, p_raw in pairwise_results:
+            p_adj = min(p_raw * n_comparisons, 1.0)
+            sig = "SIGNIFICANT" if p_adj < 0.05 else "not significant"
+            print(f"    {group_name}: p_adj = {p_adj:.4e} [{sig}]")
     print()
 
     # --- One-way ANOVA on gompertz_lambda by treatment_type ---
@@ -291,6 +380,7 @@ PESTICIDE_COLORS = {
     "Imidacloprid":       "#984ea3",
     "Permethrin":         "#ff7f00",
     "Flupyradifurone":    "#a65628",
+    "Diazinon":           "#f781bf",
     "Control-LB":         "#999999",
     "Control-H2O":        "#666666",
 }
@@ -554,7 +644,7 @@ def export_r_csv(df: pd.DataFrame, outdir: Path) -> None:
 
     export_cols = [
         "strain", "treatment", "strain_id", "pesticide",
-        "has_nutrients", "treatment_type", "group",
+        "has_nutrients", "treatment_type", "group", "operator", "year",
         "is_good", "classification_reason",
         "delta_od", "max_od",
         "gompertz_a", "gompertz_a_err",

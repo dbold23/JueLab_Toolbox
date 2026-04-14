@@ -11,7 +11,6 @@ LB-LCY4,1.0,GOOD (high confidence),False
 LB-BIF6,1.0,GOOD (high confidence),False
 LB-BIF9,1.0,GOOD (high confidence),False
 LB-FLUPC8,1.0,GOOD (high confidence),False
-Bifenthrin-BIF6,1.0,GOOD (high confidence),False
 LAMBDACYHALOTHRINANDLB-LCY1,1.0,GOOD (high confidence),False
 MALATHIONANDLB-MAL8,1.0,GOOD (high confidence),False
 MALATHIONANDLB-MAL1,1.0,GOOD (high confidence),False
@@ -23,7 +22,7 @@ LB-MAL1,1.0,GOOD (high confidence),False
 LB-MAL5,1.0,GOOD (high confidence),False
 LB-MAL4,1.0,GOOD (high confidence),False
 LB-LCY1,1.0,GOOD (high confidence),False
-IMIDACLOPRID-IMID2,0.94925,GOOD (high confidence),False
+IMIDACLOPRID-IMID2,0.992125,GOOD (high confidence),False
 LAMBDACYHALOTHRINANDLB-LCY01,1.0,GOOD (high confidence),False
 LAMBDACYHALOTHRINANDLB-LCY2,1.0,GOOD (high confidence),False
 LB-IMID2,1.0,GOOD (high confidence),False
@@ -34,16 +33,35 @@ IMIDACLOPRIDANDLB-IMID2,1.0,GOOD (high confidence),False
 IMIDACLOPRIDANDLB-IMID3,1.0,GOOD (high confidence),False
 IMIDACLOPRIDANDLB-IMID5,1.0,GOOD (high confidence),False
 IMIDACLOPRIDANDLB-IMID8,1.0,GOOD (high confidence),False
-H2O-IMID2,0.470875,BAD,True
-PERMETHRIN-PERM4,0.48475,BAD,True
-PERMETHRIN-PERM7,0.6015,GOOD (moderate confidence),True
+H2O-IMID2,0.808375,GOOD (moderate confidence),False
+PERMETHRIN-PERM4,0.67975,GOOD (moderate confidence),True
+PERMETHRIN-PERM7,0.849125,GOOD (moderate confidence),False
 LAMBDACYHALOTHRINANDLB-LCY3,1.0,GOOD (high confidence),False
 PERMETHRINANDLB-PERM4,1.0,GOOD (high confidence),False
 PERMETHRINANDLB-CYPERM2,1.0,GOOD (high confidence),False
 PERMETHRINANDLB-PERM7,1.0,GOOD (high confidence),False
-PERMETHRINANDLB-CISPERM1,0.228375,BAD,False
+PERMETHRINANDLB-CISPERM1,0.3045,BAD,True
 LB-PERM4,1.0,GOOD (high confidence),False
 LB-PERM7,1.0,GOOD (high confidence),False
 LB-LCY3,1.0,GOOD (high confidence),False
 H2O-CYPERM2,0.0,BAD,False
-H2O-LCY3,0.0,BAD,False
+DIAZINONANDG-DIAZ8,0.740875,GOOD (moderate confidence),False
+IMIDACLOPRIDANDG-IMID2,0.883125,GOOD (moderate confidence),False
+IMIDACLOPRIDANDG-IMID6,0.7845,GOOD (moderate confidence),False
+DIAZINONANDLB-DIAZ18,1.0,GOOD (high confidence),False
+DIAZINONANDLB-DIAZ23,0.999,GOOD (high confidence),False
+DIAZINONANDLB-DIAZ26,1.0,GOOD (high confidence),False
+DIAZINONANDLB-DIAZ28,1.0,GOOD (high confidence),False
+DIAZINONANDLB-DIAZ8,0.913375,GOOD (high confidence),False
+MALATHIONANDLB-MAL2,1.0,GOOD (high confidence),False
+IMIDACLOPRIDANDLB-IMID1Y,0.961625,GOOD (high confidence),False
+IMIDACLOPRIDANDLB-IMID2,0.99925,GOOD (high confidence),False
+IMIDACLOPRIDANDLB-IMID3,1.0,GOOD (high confidence),False
+IMIDACLOPRIDANDLB-IMID5,1.0,GOOD (high confidence),False
+IMIDACLOPRIDANDLB-IMID6,0.99725,GOOD (high confidence),False
+IMIDACLOPRIDANDLB-IMID8,0.98825,GOOD (high confidence),False
+IMIDACLOPRIDANDLB-IMID9Y,1.0,GOOD (high confidence),False
+IMIDACLOPRIDANDLB-IMID2,1.0,GOOD (high confidence),False
+IMIDACLOPRIDANDLB-IMID5,1.0,GOOD (high confidence),False
+IMIDACLOPRIDANDLB-IMID6,1.0,GOOD (high confidence),False
+IMIDACLOPRIDANDLB-IMID8,1.0,GOOD (high confidence),False

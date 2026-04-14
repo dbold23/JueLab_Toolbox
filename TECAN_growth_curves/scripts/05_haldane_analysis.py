@@ -212,14 +212,20 @@ def identify_pesticide_strains(results_df):
     Returns:
         DataFrame filtered to pesticide+LB treatment strains
     """
-    pesticide_mask = results_df['strain'].str.contains('ANDLB', case=False, na=False)
+    pesticide_mask = (
+        results_df['strain'].str.contains('ANDLB', case=False, na=False) |
+        results_df['strain'].str.contains('ANDG', case=False, na=False)
+    )
     return results_df[pesticide_mask].copy()
 
 
 def extract_pesticide_name(strain):
-    """Extract pesticide name from strain like 'BifenthrinANDLB-BIF2'."""
-    if 'ANDLB' in strain.upper():
-        return strain.upper().split('ANDLB')[0]
+    """Extract pesticide name from strain like 'BifenthrinANDLB-BIF2' or 'DiazinnonANDG-DIAZ1'."""
+    s = strain.upper()
+    if 'ANDLB' in s:
+        return s.split('ANDLB')[0]
+    if 'ANDG' in s:
+        return s.split('ANDG')[0]
     return 'UNKNOWN'
 
 
@@ -241,6 +247,8 @@ def load_raw_data(data_dir, strain_name, group):
         'Group2': 'Group 2/Group_2_DATA',
         'Group3': 'Group 3/Group_3_DATA',
         'Group4': 'Group 4/Group4_DATA',
+        'Group5': 'Group5/Group5_DATA_processed',
+        'Group6': 'Group6/Group6_DATA_processed',
     }
 
     group_path = data_dir / group_dirs.get(group, group)
@@ -381,9 +389,9 @@ def plot_overview_dashboard(comparison_df, output_path):
 
     4-panel figure:
     1. Ki by pesticide (lower = more inhibitory)
-    2. Gompertz vs Haldane R² scatter
-    3. AIC comparison (which model is preferred)
-    4. Substrate depletion rate by pesticide
+    2. Ki/S0 normalized comparison (fair cross-pesticide)
+    3. Haldane R² by pesticide
+    4. Effective growth rate under inhibition
     """
     fig = plt.figure(figsize=(16, 12))
     gs = GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.3)
@@ -396,7 +404,8 @@ def plot_overview_dashboard(comparison_df, output_path):
         plt.close()
         return
 
-    df['pesticide'] = df['strain'].apply(extract_pesticide_name)
+    if 'pesticide' not in df.columns:
+        df['pesticide'] = df['strain'].apply(extract_pesticide_name)
 
     # Panel 1: Ki by pesticide (boxplot)
     ax1 = fig.add_subplot(gs[0, 0])
@@ -414,44 +423,44 @@ def plot_overview_dashboard(comparison_df, output_path):
     ax1.tick_params(axis='x', rotation=45)
     ax1.grid(True, alpha=0.3, axis='y')
 
-    # Panel 2: Gompertz vs Haldane R²
+    # Panel 2: Ki/S0 normalized (fair comparison across concentrations)
     ax2 = fig.add_subplot(gs[0, 1])
-    ax2.scatter(df['gompertz_r2'], df['haldane_r2'], s=40, alpha=0.7,
-                c=df['pesticide'].astype('category').cat.codes, cmap='Set1')
-    lims = [min(df['gompertz_r2'].min(), df['haldane_r2'].min()) - 0.02, 1.01]
-    ax2.plot(lims, lims, 'k--', alpha=0.3, label='Equal fit')
-    ax2.set_xlim(lims)
-    ax2.set_ylim(lims)
-    ax2.set_xlabel('Gompertz R²', fontsize=11)
-    ax2.set_ylabel('Haldane R²', fontsize=11)
-    ax2.set_title('Model Fit Quality Comparison', fontsize=12, fontweight='bold')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
+    if 'Ki_over_S0' in df.columns:
+        ki_s0_data = df.groupby('pesticide')['Ki_over_S0'].median().sort_values()
+        ax2.barh(ki_s0_data.index, ki_s0_data.values,
+                 color=plt.cm.RdYlGn(np.linspace(0.2, 0.8, len(ki_s0_data))),
+                 alpha=0.8, edgecolor='black', linewidth=0.5)
+        ax2.set_xlabel('Ki / S₀ (normalized)', fontsize=11)
+        ax2.set_title('Normalized Inhibition (Ki/S₀)\n(accounts for different concentrations)',
+                       fontsize=12, fontweight='bold')
+        # Annotate with S0 values
+        for pest in ki_s0_data.index:
+            s0 = df[df['pesticide'] == pest]['S0_mg_L'].iloc[0] if 'S0_mg_L' in df.columns else '?'
+            ax2.annotate(f'S₀={s0}', xy=(ki_s0_data[pest], pest),
+                        fontsize=8, va='center', ha='left', color='gray')
+    else:
+        ax2.text(0.5, 0.5, 'Ki/S0 not computed', ha='center', va='center', transform=ax2.transAxes)
+    ax2.grid(True, alpha=0.3, axis='x')
 
-    # Panel 3: AIC preference (bar chart)
+    # Panel 3: Haldane R² by pesticide
     ax3 = fig.add_subplot(gs[1, 0])
-    df['preferred_model'] = df.apply(
-        lambda r: 'Haldane' if r['haldane_aic'] < r['gompertz_aic'] else 'Gompertz', axis=1
-    )
-    pref_counts = df.groupby('pesticide')['preferred_model'].value_counts().unstack(fill_value=0)
-    if 'Haldane' not in pref_counts.columns:
-        pref_counts['Haldane'] = 0
-    if 'Gompertz' not in pref_counts.columns:
-        pref_counts['Gompertz'] = 0
-    pref_counts = pref_counts[['Gompertz', 'Haldane']]
-    pref_counts.plot(kind='bar', ax=ax3, color=['#4C72B0', '#DD8452'], width=0.7)
-    ax3.set_ylabel('Number of Strains', fontsize=11)
-    ax3.set_title('Preferred Model by AIC\n(per pesticide)', fontsize=12, fontweight='bold')
+    r2_data = [df[df['pesticide'] == p]['haldane_r2'].values for p in pesticides]
+    if r2_data:
+        bp3 = ax3.boxplot(r2_data, tick_labels=pesticides, patch_artist=True, vert=True)
+        for patch in bp3['boxes']:
+            patch.set_facecolor('#3498db')
+            patch.set_alpha(0.5)
+    ax3.set_ylabel('Haldane R²', fontsize=11)
+    ax3.set_title('Haldane Fit Quality by Pesticide', fontsize=12, fontweight='bold')
     ax3.tick_params(axis='x', rotation=45)
-    ax3.legend(title='Preferred')
     ax3.grid(True, alpha=0.3, axis='y')
 
     # Panel 4: Effective growth rate under inhibition
     ax4 = fig.add_subplot(gs[1, 1])
-    # mu_effective = mu_max * S0 / (Ks + S0 + S0^2/Ki)
+    s0_col = 'S0_mg_L' if 'S0_mg_L' in df.columns else 'haldane_S0'
     df['mu_effective'] = df.apply(
-        lambda r: r['haldane_mu_max'] * r['haldane_S0'] / (
-            r['haldane_Ks'] + r['haldane_S0'] + r['haldane_S0']**2 / r['haldane_Ki']
+        lambda r: r['haldane_mu_max'] * r[s0_col] / (
+            r['haldane_Ks'] + r[s0_col] + r[s0_col]**2 / r['haldane_Ki']
         ) if r['haldane_Ki'] > 0 else 0,
         axis=1
     )
@@ -464,7 +473,7 @@ def plot_overview_dashboard(comparison_df, output_path):
                    fontsize=12, fontweight='bold')
     ax4.grid(True, alpha=0.3, axis='x')
 
-    plt.suptitle('Haldane Feedback Inhibition Analysis', fontsize=16, fontweight='bold', y=1.02)
+    plt.suptitle('Haldane Substrate Inhibition Analysis', fontsize=16, fontweight='bold', y=1.02)
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     plt.close()
 
@@ -478,15 +487,21 @@ def main():
         description='Haldane feedback inhibition analysis for pesticide growth curves',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Analyzes pesticide treatment growth curves using the Haldane/Andrews substrate
-inhibition model. Compares mechanistic Haldane fits with phenomenological
-Gompertz fits using AIC.
+Fits the Haldane/Andrews substrate inhibition ODE to pesticide treatment
+growth curves. Provides mechanistic Ki (inhibition constant) estimates
+complementary to the Gompertz kinetic parameters from step 2.
+
+Gompertz and Haldane are complementary, not competing:
+  - Gompertz (truncated data): precise growth kinetics (mu, A, lambda)
+  - Haldane (full data): mechanistic substrate inhibition (Ki, Ks, mu_max)
+
+Uses real pesticide concentrations (mg/L) as S0 from config.yaml.
 
 Key outputs:
-    haldane_comparison.csv  - Per-strain model comparison
-    haldane_summary.csv     - Per-pesticide Ki rankings
+    haldane_comparison.csv  - Per-strain Haldane fits + Gompertz reference
+    haldane_summary.csv     - Per-pesticide Ki rankings (+ Ki/S0 normalized)
     haldane_overview.png    - Summary dashboard
-    plots/                  - Individual strain comparison plots
+    plots/                  - Individual strain fit plots
         """)
     parser.add_argument(
         '--results-dir', '-r',
@@ -504,8 +519,12 @@ Key outputs:
         help='Output directory (default: results/tables/Haldane_Analysis)'
     )
     parser.add_argument(
-        '--s0', type=float, default=1.0,
-        help='Initial substrate concentration in arbitrary units (default: 1.0)'
+        '--s0', type=float, default=None,
+        help='Override substrate concentration for all strains (default: use per-pesticide from config)'
+    )
+    parser.add_argument(
+        '--config', default=None,
+        help='Path to config.yaml'
     )
     parser.add_argument(
         '--all-strains', action='store_true',
@@ -565,10 +584,20 @@ Key outputs:
         print("No target strains found. Check pipeline results.")
         sys.exit(1)
 
+    # Load config for per-pesticide concentrations
+    import yaml
+    config_path = Path(args.config) if args.config else script_dir / 'config.yaml'
+    config = {}
+    if config_path.exists():
+        with open(config_path) as f:
+            config = yaml.safe_load(f) or {}
+    pesticide_conc = config.get('pesticide_concentrations', {})
+    default_S0 = config.get('haldane', {}).get('default_S0', 1.0)
+
     # Analyze each strain
     print(f"\n{'='*60}")
-    print(f"  HALDANE FEEDBACK INHIBITION ANALYSIS")
-    print(f"  S0 = {args.s0} (arbitrary units)")
+    print(f"  HALDANE SUBSTRATE INHIBITION ANALYSIS")
+    print(f"  Using per-pesticide S0 from config (mg/L)")
     print(f"{'='*60}\n")
 
     comparison_rows = []
@@ -581,7 +610,7 @@ Key outputs:
         if not args.quiet:
             print(f"  [{i+1}/{n_total}] {strain}...", end=' ')
 
-        # Load raw time-series data
+        # Load raw time-series data (full curve — Haldane needs substrate depletion phase)
         time, od = load_raw_data(data_dir, strain, group)
 
         if time is None:
@@ -599,7 +628,20 @@ Key outputs:
                 print("SKIPPED (too few points)")
             continue
 
-        # Get Gompertz parameters from pipeline results
+        # Determine S0 for this strain's pesticide
+        pesticide_name = extract_pesticide_name(strain)
+        if args.s0 is not None:
+            S0 = args.s0  # CLI override
+        else:
+            # Look up real concentration from config
+            S0 = pesticide_conc.get(pesticide_name, default_S0)
+            # Normalize pesticide name variants
+            for key, val in pesticide_conc.items():
+                if key.upper() == pesticide_name.upper():
+                    S0 = val
+                    break
+
+        # Get Gompertz parameters from pipeline (for reference, not comparison)
         gompertz_params = {
             'a': row.get('gompertz_a', 1.0),
             'mu': row.get('gompertz_mu', 0.15),
@@ -607,62 +649,44 @@ Key outputs:
             'r2': row.get('fit_r_squared', row.get('r_squared', 0)),
         }
 
-        # Compute Gompertz AIC on full (non-truncated) data for fair comparison
-        gomp_aic, gomp_bic, gomp_r2_full, gomp_rmse = gompertz_aic(
-            time, od, gompertz_params['a'], gompertz_params['mu'], gompertz_params['lambda']
-        )
-
-        # Fit Haldane model
+        # Fit Haldane model on full data with real S0
         haldane = fit_haldane(
-            time, od, S0=args.s0,
+            time, od, S0=S0,
             gompertz_params={'mu': gompertz_params['mu']}
         )
 
-        # Determine preferred model
-        if haldane['success']:
-            delta_aic = gomp_aic - haldane['aic']  # positive = Haldane preferred
-            preferred = 'Haldane' if delta_aic > 2 else ('Gompertz' if delta_aic < -2 else 'Equivalent')
-        else:
-            delta_aic = float('nan')
-            preferred = 'Gompertz'
-
-        # Collect results
+        # Collect results (no AIC comparison — models are complementary)
         comp_row = {
             'strain': strain,
             'group': group,
-            'pesticide': extract_pesticide_name(strain),
-            # Gompertz
+            'pesticide': pesticide_name,
+            'S0_mg_L': S0,
+            # Gompertz (from pipeline, on truncated data — different purpose)
             'gompertz_a': gompertz_params['a'],
             'gompertz_mu': gompertz_params['mu'],
             'gompertz_lambda': gompertz_params['lambda'],
-            'gompertz_r2': gomp_r2_full,
-            'gompertz_aic': gomp_aic,
-            'gompertz_bic': gomp_bic,
-            'gompertz_rmse': gomp_rmse,
-            # Haldane
+            'gompertz_r2': gompertz_params['r2'],
+            # Haldane (on full data — mechanistic substrate inhibition)
             'haldane_success': haldane['success'],
             'haldane_r2': haldane.get('r_squared', float('nan')),
-            'haldane_aic': haldane.get('aic', float('nan')),
-            'haldane_bic': haldane.get('bic', float('nan')),
             'haldane_rmse': haldane.get('rmse', float('nan')),
             'haldane_mu_max': haldane.get('mu_max', float('nan')),
             'haldane_Ks': haldane.get('Ks', float('nan')),
             'haldane_Ki': haldane.get('Ki', float('nan')),
             'haldane_X_max': haldane.get('X_max', float('nan')),
             'haldane_q': haldane.get('q', float('nan')),
-            'haldane_S0': haldane.get('S0', float('nan')),
-            # Comparison
-            'delta_aic': delta_aic,
-            'preferred_model': preferred,
+            'haldane_S0': S0,
+            # Normalized Ki for cross-pesticide comparison
+            'Ki_over_S0': haldane.get('Ki', float('nan')) / S0 if haldane.get('Ki') and S0 > 0 else float('nan'),
         }
         comparison_rows.append(comp_row)
 
         if not args.quiet:
             if haldane['success']:
-                print(f"Haldane R²={haldane['r_squared']:.4f} Ki={haldane['Ki']:.1f} "
-                      f"| Gompertz R²={gomp_r2_full:.4f} | {preferred} (ΔAIC={delta_aic:+.1f})")
+                ki = haldane['Ki']
+                print(f"Ki={ki:.1f} (Ki/S0={ki/S0:.2f}) R²={haldane['r_squared']:.3f} S0={S0:.0f} mg/L")
             else:
-                print(f"Haldane FAILED | Gompertz R²={gomp_r2_full:.4f}")
+                print(f"Haldane FAILED")
 
         # Generate comparison plot
         safe_name = strain.replace('/', '_').replace(' ', '_')
@@ -689,8 +713,8 @@ Key outputs:
             'haldane_mu_max': ['median', 'mean'],
             'haldane_Ks': ['median', 'mean'],
             'haldane_r2': ['median', 'mean'],
-            'gompertz_r2': ['median', 'mean'],
-            'preferred_model': lambda x: (x == 'Haldane').sum(),
+            'S0_mg_L': 'first',
+            'Ki_over_S0': ['median', 'mean'],
         }).reset_index()
 
         # Flatten column names
@@ -700,10 +724,10 @@ Key outputs:
             'mu_max_median', 'mu_max_mean',
             'Ks_median', 'Ks_mean',
             'haldane_r2_median', 'haldane_r2_mean',
-            'gompertz_r2_median', 'gompertz_r2_mean',
-            'n_haldane_preferred',
+            'S0_mg_L',
+            'Ki_over_S0_median', 'Ki_over_S0_mean',
         ]
-        summary = summary.sort_values('Ki_median')
+        summary = summary.sort_values('Ki_over_S0_median')
         summary.to_csv(output_dir / 'haldane_summary.csv', index=False)
         print(f"Saved summary to {output_dir / 'haldane_summary.csv'}")
 
@@ -713,29 +737,25 @@ Key outputs:
 
     # Print summary
     print(f"\n{'='*60}")
-    print(f"  HALDANE ANALYSIS SUMMARY")
+    print(f"  HALDANE SUBSTRATE INHIBITION SUMMARY")
     print(f"{'='*60}")
     print(f"  Total strains analyzed: {len(comparison_df)}")
     print(f"  Successful Haldane fits: {len(haldane_ok)}")
     if len(haldane_ok) > 0:
-        n_haldane_pref = (comparison_df['preferred_model'] == 'Haldane').sum()
-        n_gomp_pref = (comparison_df['preferred_model'] == 'Gompertz').sum()
-        n_equiv = (comparison_df['preferred_model'] == 'Equivalent').sum()
-        print(f"  Preferred model (by AIC):")
-        print(f"    Haldane:    {n_haldane_pref}")
-        print(f"    Gompertz:   {n_gomp_pref}")
-        print(f"    Equivalent: {n_equiv}")
-
-        print(f"\n  Inhibition Ranking (lower Ki = stronger inhibition):")
+        print(f"\n  Inhibition Ranking (Ki/S0 — lower = stronger inhibition):")
         for _, srow in summary.iterrows():
-            print(f"    {srow['pesticide']:<30s} Ki={srow['Ki_median']:.1f} "
+            print(f"    {srow['pesticide']:<25s} Ki={srow['Ki_median']:.1f}  "
+                  f"S0={srow['S0_mg_L']:.0f} mg/L  "
+                  f"Ki/S0={srow['Ki_over_S0_median']:.2f}  "
                   f"(n={int(srow['n_strains'])})")
 
         print(f"\n  Biological Interpretation:")
         most_inhibitory = summary.iloc[0]['pesticide']
         least_inhibitory = summary.iloc[-1]['pesticide']
-        print(f"    Most inhibitory pesticide:  {most_inhibitory} (lowest Ki)")
-        print(f"    Least inhibitory pesticide: {least_inhibitory} (highest Ki)")
+        print(f"    Most inhibitory:  {most_inhibitory} (lowest Ki/S0)")
+        print(f"    Least inhibitory: {least_inhibitory} (highest Ki/S0)")
+        print(f"\n  Note: Gompertz (truncated data) and Haldane (full data) are")
+        print(f"  complementary models, not competing. No AIC comparison.")
     print(f"{'='*60}")
 
     print(f"\nAll results saved to: {output_dir}")

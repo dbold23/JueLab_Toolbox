@@ -10,7 +10,6 @@ Falls back to rule-based classification if model files are missing.
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -75,7 +74,7 @@ def extract_metadata_features(strain_name: Optional[str]) -> Dict[str, float]:
     """Extract biological metadata from strain name.
 
     Parses naming conventions like 'H2O-MAL10', 'LB-CISPERM1', 'Bifenthrin-BIF3'.
-    Returns is_control (1/0) and numeric concentration.
+    Returns is_control (1/0) and pesticide concentration (mg/L) from known values.
     """
     if not strain_name:
         return {'is_control': float('nan'), 'concentration_numeric': float('nan')}
@@ -86,9 +85,24 @@ def extract_metadata_features(strain_name: Optional[str]) -> Dict[str, float]:
     prefix = name.split('-')[0] if '-' in name else name
     is_control = 1.0 if prefix in ('H2O', 'LB') else 0.0
 
-    # Extract trailing number as concentration
-    m = re.search(r'(\d+)\s*$', name)
-    concentration = float(m.group(1)) if m else float('nan')
+    # Pesticide concentration from known media prep values (mg/L).
+    # Controls have 0 pesticide. The trailing number in strain names
+    # (e.g., MAL10, BIF2) is the STRAIN ID, not a concentration.
+    concentration = 0.0
+    if not is_control:
+        _PESTICIDE_CONC = {
+            'BIFENTHRIN': 50.0,
+            'FLUPYRADIFURONE': 20.0,
+            'LAMBDACYHALOTHRIN': 50.0,
+            'MALATHION': 50.0,
+            'IMIDACLOPRID': 20.0,
+            'PERMETHRIN': 100.0,
+            'DIAZINON': 20.0,
+        }
+        for pest, conc in _PESTICIDE_CONC.items():
+            if pest in prefix:
+                concentration = conc
+                break
 
     return {'is_control': is_control, 'concentration_numeric': concentration}
 

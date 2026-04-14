@@ -1,0 +1,58 @@
+{
+  "summary": {
+    "n_ground_truth": 480,
+    "n_pipeline_results": 480,
+    "n_matched": 480,
+    "n_failures": 58
+  },
+  "classification": {
+    "accuracy": 0.8791666666666667,
+    "precision": 0.8826666666666667,
+    "recall": 0.9594202898550724,
+    "f1_score": 0.9194444444444444,
+    "confusion_matrix": {
+      "true_positives": 331,
+      "true_negatives": 91,
+      "false_positives": 44,
+      "false_negatives": 14
+    }
+  },
+  "parameter_recovery": {
+    "A": {
+      "mean_error": 0.015415451013455735,
+      "rmse": 0.021596299534730024,
+      "r_squared": 0.9958417048469704,
+      "bias": 0.015415451013455735,
+      "n_samples": 331
+    },
+    "mu": {
+      "mean_error": -0.007211386543148975,
+      "rmse": 0.032001347070186544,
+      "r_squared": 0.8936241485022814,
+      "bias": -0.007211386543148975,
+      "n_samples": 331
+    },
+    "lambda": {
+      "mean_error": -0.35238594306029924,
+      "rmse": 1.1236455547763364,
+      "r_squared": 0.9793523047990342,
+      "bias": -0.35238594306029924,
+      "n_samples": 331
+    }
+  },
+  "failure_analysis": {
+    "n_false_positives": 44,
+    "n_false_negatives": 14,
+    "failure_scenarios": {
+      "borderline_r2_bad": 15,
+      "borderline_noise": 13,
+      "contamination": 9,
+      "truncation_challenge": 7,
+      "high_noise": 6,
+      "logistic_generated": 4,
+      "sparse_data": 2,
+      "low_A": 1,
+      "erratic": 1
+    }
+  }
+}

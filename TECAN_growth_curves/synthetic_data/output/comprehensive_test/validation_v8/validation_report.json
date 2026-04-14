@@ -1,0 +1,64 @@
+{
+  "summary": {
+    "n_ground_truth": 480,
+    "n_pipeline_results": 480,
+    "n_matched": 480,
+    "n_failures": 67
+  },
+  "classification": {
+    "accuracy": 0.8604166666666667,
+    "precision": 0.9161676646706587,
+    "recall": 0.8869565217391304,
+    "f1_score": 0.9013254786450663,
+    "confusion_matrix": {
+      "true_positives": 306,
+      "true_negatives": 107,
+      "false_positives": 28,
+      "false_negatives": 39
+    }
+  },
+  "parameter_recovery": {
+    "A": {
+      "mean_error": 0.05046259074218214,
+      "rmse": 0.23270242814210862,
+      "r_squared": 0.4775932901552231,
+      "bias": 0.05046259074218214,
+      "n_samples": 306
+    },
+    "mu": {
+      "mean_error": -0.010076225785602475,
+      "rmse": 0.03574920881132643,
+      "r_squared": 0.8336057219364194,
+      "bias": -0.010076225785602475,
+      "n_samples": 306
+    },
+    "lambda": {
+      "mean_error": -0.47266791910230593,
+      "rmse": 1.2499021223342397,
+      "r_squared": 0.9760153843980027,
+      "bias": -0.47266791910230593,
+      "n_samples": 306
+    }
+  },
+  "failure_analysis": {
+    "n_false_positives": 28,
+    "n_false_negatives": 39,
+    "failure_scenarios": {
+      "borderline_r2_bad": 14,
+      "death_phase_severe": 14,
+      "borderline_noise": 10,
+      "fast_growth": 7,
+      "low_A": 5,
+      "sparse_data": 5,
+      "high_noise": 4,
+      "standard": 1,
+      "short_lag": 1,
+      "pesticide_lb_typical": 1,
+      "borderline_r2_good": 1,
+      "truncation_challenge": 1,
+      "logistic_generated": 1,
+      "richards_asymmetric": 1,
+      "borderline_delta_od": 1
+    }
+  }
+}
