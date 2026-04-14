@@ -570,6 +570,24 @@ Key outputs:
     all_results = pd.read_csv(results_csv)
     print(f"Loaded {len(all_results)} strains from pipeline results")
 
+    # Gate on usable_for — only strains with identifiable growth rate contribute
+    # to Haldane analysis (growth rate is the substrate-inhibition observable).
+    # Phase 0 synthetic validation showed refined μ is 13.8× more accurate than
+    # whole-curve μ, so gating here removes the noisiest curves that would
+    # otherwise dominate Ki estimation.
+    if 'usable_for' in all_results.columns:
+        before = len(all_results)
+        gate = all_results['usable_for'].fillna('').str.contains('growth_rate')
+        dropped = all_results.loc[~gate, 'strain'].tolist()
+        all_results = all_results[gate].copy()
+        if dropped:
+            print(f"  Gated by usable_for: kept {len(all_results)}/{before} "
+                  f"strains with identifiable growth rate")
+            print(f"  Dropped {len(dropped)} strains lacking 'growth_rate' in usable_for")
+    else:
+        print("  WARNING: usable_for column missing — older pipeline output; "
+              "skipping identifiability gate")
+
     # Identify pesticide treatment strains
     if args.all_strains:
         target_strains = all_results[all_results['is_good'] == True].copy()
@@ -641,11 +659,18 @@ Key outputs:
                     S0 = val
                     break
 
-        # Get Gompertz parameters from pipeline (for reference, not comparison)
+        # Get Gompertz parameters from pipeline for Haldane initialization.
+        # Prefer the unified *_final columns (refined where identifiable, else
+        # whole-curve fallback — see _select_final_params in step 01). If this
+        # is an older CSV without *_final, fall back to gompertz_* directly.
+        mu_init = row.get('mu_final', row.get('gompertz_mu', 0.15))
+        A_init = row.get('A_final', row.get('gompertz_a', 1.0))
+        lam_init = row.get('lam_final', row.get('gompertz_lambda', 3.0))
+        mu_source = row.get('mu_source', 'whole_curve_fallback')
         gompertz_params = {
-            'a': row.get('gompertz_a', 1.0),
-            'mu': row.get('gompertz_mu', 0.15),
-            'lambda': row.get('gompertz_lambda', 3.0),
+            'a': A_init,
+            'mu': mu_init,
+            'lambda': lam_init,
             'r2': row.get('fit_r_squared', row.get('r_squared', 0)),
         }
 
@@ -678,6 +703,7 @@ Key outputs:
             'haldane_S0': S0,
             # Normalized Ki for cross-pesticide comparison
             'Ki_over_S0': haldane.get('Ki', float('nan')) / S0 if haldane.get('Ki') and S0 > 0 else float('nan'),
+            'mu_source_used': mu_source,
         }
         comparison_rows.append(comp_row)
 
@@ -708,6 +734,10 @@ Key outputs:
     haldane_ok = comparison_df[comparison_df['haldane_success']].copy()
 
     if len(haldane_ok) > 0:
+        # Compute refined_fraction per pesticide (how many strains used
+        # refined μ vs whole-curve fallback). Audit of Phase A integration.
+        haldane_ok['_mu_refined_int'] = (haldane_ok['mu_source_used'] == 'refined').astype(int)
+
         summary = haldane_ok.groupby('pesticide').agg({
             'haldane_Ki': ['median', 'mean', 'std', 'count'],
             'haldane_mu_max': ['median', 'mean'],
@@ -715,6 +745,7 @@ Key outputs:
             'haldane_r2': ['median', 'mean'],
             'S0_mg_L': 'first',
             'Ki_over_S0': ['median', 'mean'],
+            '_mu_refined_int': 'mean',  # fraction of strains using refined μ
         }).reset_index()
 
         # Flatten column names
@@ -726,6 +757,7 @@ Key outputs:
             'haldane_r2_median', 'haldane_r2_mean',
             'S0_mg_L',
             'Ki_over_S0_median', 'Ki_over_S0_mean',
+            'refined_fraction',
         ]
         summary = summary.sort_values('Ki_over_S0_median')
         summary.to_csv(output_dir / 'haldane_summary.csv', index=False)

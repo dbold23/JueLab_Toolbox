@@ -49,12 +49,19 @@ class SyntheticGrowthCurveGenerator:
         full_test = generator.generate_comprehensive_test_set()
     """
 
-    def __init__(self, seed: Optional[int] = None):
+    def __init__(self, seed: Optional[int] = None,
+                 ppc_trace_path: Optional[str] = None,
+                 ppc_strain_names: Optional[List[str]] = None):
         """
         Initialize the generator.
 
         Args:
             seed: Random seed for reproducibility
+            ppc_trace_path: optional path to a PyMC Gompertz trace (.nc). When
+                provided, the 'posterior_predictive' scenario draws its
+                parameters from this trace instead of the default uniform
+                ranges. See posterior_predictive_sampler.py.
+            ppc_strain_names: optional strain-name ordering for the trace.
         """
         self.seed = seed
         self.rng = np.random.default_rng(seed)
@@ -62,6 +69,41 @@ class SyntheticGrowthCurveGenerator:
         # Default time parameters
         self.default_duration = 100.0
         self.default_resolution = 0.25
+
+        # Phase B.1: PPC sampler is loaded lazily on first use to keep the
+        # default import path free of arviz/PyMC dependencies.
+        self._ppc_trace_path = ppc_trace_path
+        self._ppc_strain_names = ppc_strain_names
+        self._ppc_sampler = None  # lazy
+
+    def _load_ppc_sampler(self):
+        """Lazy-load the posterior-predictive sampler.
+
+        Returns None (with a warning) if trace path is unset or arviz is
+        unavailable — the caller falls back to uniform scenario sampling.
+        """
+        if self._ppc_sampler is not None:
+            return self._ppc_sampler
+        if self._ppc_trace_path is None:
+            import warnings
+            warnings.warn(
+                "posterior_predictive scenario requested but no ppc_trace_path "
+                "was provided to SyntheticGrowthCurveGenerator. Falling back to "
+                "uniform parameter sampling.",
+                RuntimeWarning,
+            )
+            return None
+        try:
+            from posterior_predictive_sampler import PosteriorPredictiveSampler
+            sampler = PosteriorPredictiveSampler()
+            sampler.load(self._ppc_trace_path, strain_names=self._ppc_strain_names)
+            self._ppc_sampler = sampler
+            return sampler
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Failed to load PPC trace: {e}. Falling back to uniform.",
+                          RuntimeWarning)
+            return None
 
     def set_seed(self, seed: int):
         """Set random seed for reproducibility."""
@@ -444,11 +486,26 @@ class SyntheticGrowthCurveGenerator:
         scenario = get_scenario(scenario_name)
         sampler = ScenarioSampler(scenario, seed=seed)
 
+        # Phase B.1: lazy-load the PPC sampler for 'posterior_predictive' scenario.
+        # Falls back to uniform sampling if the trace is unavailable.
+        ppc_sampler = None
+        if getattr(scenario, 'pattern', None) == 'ppc':
+            ppc_sampler = self._load_ppc_sampler()
+
         curves = []
         for i in range(n_curves):
             params = sampler.sample_parameters()
 
             # Handle special patterns
+            if params.get('pattern') == 'ppc' and ppc_sampler is not None:
+                # Replace uniformly-sampled params with a posterior draw
+                rng = np.random.default_rng(seed + i if seed else None)
+                draw = ppc_sampler.sample_parameters(n=1, rng=rng).iloc[0]
+                params = {**params,
+                          'A': float(draw['A']),
+                          'mu': float(draw['mu']),
+                          'lambda_': float(draw['lam']),
+                          'pattern': None}  # route to standard generator below
             if params.get('pattern') == 'flat':
                 curve = self.generate_flat_curve(
                     initial_od=params['initial_od'],

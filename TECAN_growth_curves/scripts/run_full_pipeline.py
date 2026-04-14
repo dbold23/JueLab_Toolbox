@@ -320,6 +320,23 @@ def step3_combine(config, dry_run=False, **kwargs):
     total_bad = len(combined) - total_good
     print(f"\n  Combined: {len(combined)} curves ({total_good} good, {total_bad} bad)")
     print(f"  Saved: {out_path}")
+
+    # Phase A.5: schema assertion — downstream stages (03, 05, 06, classifier)
+    # rely on the unified *_final/*_source columns emitted by the post-Phase A.1
+    # version of 01_growth_curve_analysis.py. Fail fast if the schema is stale.
+    required_schema = {
+        'mu_final', 'mu_source', 'mu_final_err',
+        'A_final',  'A_source',  'A_final_err',
+        'lam_final', 'lam_source', 'lam_final_err',
+        'usable_for',
+    }
+    missing = required_schema - set(combined.columns)
+    if missing:
+        print(f"\n  ERROR: combined CSV missing expected refined-param columns: {sorted(missing)}")
+        print("         This means one or more per-group processing_results.csv files "
+              "were produced by an older (pre-Phase A.1) version of 01_growth_curve_analysis.py.")
+        print("         Re-run step 2 (Gompertz analysis) for all groups before proceeding.")
+        return False
     return True
 
 

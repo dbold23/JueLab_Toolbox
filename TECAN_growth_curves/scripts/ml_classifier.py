@@ -60,10 +60,36 @@ POSTFIT_DERIVED_FEATURES = [
     'err_product', 'points_per_hour',
 ]
 
+# Phase A.4: refined per-parameter Gompertz features + identifiability signals.
+# NaN-tolerant (HistGradientBoosting handles NaN natively) so older CSVs without
+# these columns degrade gracefully. Identifiability is encoded ordinally:
+# 1.0 = identifiable, 0.5 = weak, 0.0 = unidentifiable (see _ident_to_ord below).
+POSTFIT_REFINED_FEATURES = [
+    'mu_refined', 'A_refined', 'lam_refined',
+    'mu_refined_rel_err', 'A_refined_rel_err', 'lam_refined_rel_err',
+    'mu_identifiable_ord', 'A_identifiable_ord', 'lam_identifiable_ord',
+    'param_disagreement_hours',
+]
+
 ALL_POSTFIT_FEATURES = (
     POSTFIT_DIRECT_FEATURES + POSTFIT_SECONDARY_FEATURES + POSTFIT_DERIVED_FEATURES
+    + POSTFIT_REFINED_FEATURES
     + METADATA_FEATURES
 )
+
+
+def _ident_to_ord(flag):
+    """Ordinal encoding for identifiability: identifiable > weak > unidentifiable."""
+    if flag is None:
+        return float('nan')
+    s = str(flag).strip().lower()
+    if s == 'identifiable':
+        return 1.0
+    if s == 'weak':
+        return 0.5
+    if s == 'unidentifiable':
+        return 0.0
+    return float('nan')
 
 
 # ---------------------------------------------------------------------------
@@ -148,8 +174,17 @@ def extract_postfit_features(
     classification_metrics: Dict,
     truncation_time: Optional[float] = None,
     points_used: Optional[int] = None,
+    per_param_trunc=None,
 ) -> Dict[str, float]:
-    """Extract ML feature vector from fit results and classification metrics."""
+    """Extract ML feature vector from fit results and classification metrics.
+
+    When ``per_param_trunc`` is provided (a PerParamTruncation-shaped object
+    with ``mu_value`` / ``mu_rel_err`` / ``A_value`` / ``A_rel_err`` /
+    ``lam_value`` / ``lam_rel_err`` / ``disagreement_hours`` attributes, plus
+    identifiability flags passed via ``classification_metrics`` under keys
+    ``mu_identifiable`` etc.), refined-parameter features are populated.
+    Otherwise they are NaN (HistGradientBoosting tolerates NaN).
+    """
     features = {}
 
     # Direct features from fit result
@@ -173,6 +208,29 @@ def extract_postfit_features(
 
     features['truncation_time'] = truncation_time if truncation_time is not None else float('nan')
     features['points_used'] = float(points_used) if points_used is not None else float('nan')
+
+    # Phase A.4: refined per-parameter features
+    if per_param_trunc is not None:
+        features['mu_refined'] = float(getattr(per_param_trunc, 'mu_value', float('nan')))
+        features['A_refined'] = float(getattr(per_param_trunc, 'A_value', float('nan')))
+        features['lam_refined'] = float(getattr(per_param_trunc, 'lam_value', float('nan')))
+        features['mu_refined_rel_err'] = float(getattr(per_param_trunc, 'mu_rel_err', float('nan')))
+        features['A_refined_rel_err'] = float(getattr(per_param_trunc, 'A_rel_err', float('nan')))
+        features['lam_refined_rel_err'] = float(getattr(per_param_trunc, 'lam_rel_err', float('nan')))
+        features['param_disagreement_hours'] = float(getattr(per_param_trunc, 'disagreement_hours', float('nan')))
+    else:
+        for k in ['mu_refined', 'A_refined', 'lam_refined',
+                  'mu_refined_rel_err', 'A_refined_rel_err', 'lam_refined_rel_err',
+                  'param_disagreement_hours']:
+            features[k] = float('nan')
+
+    # Identifiability flags come through classification_metrics
+    features['mu_identifiable_ord'] = _ident_to_ord(
+        classification_metrics.get('mu_identifiable'))
+    features['A_identifiable_ord'] = _ident_to_ord(
+        classification_metrics.get('A_identifiable'))
+    features['lam_identifiable_ord'] = _ident_to_ord(
+        classification_metrics.get('lam_identifiable'))
 
     # Derived ratio features
     features.update(compute_derived_features(features))

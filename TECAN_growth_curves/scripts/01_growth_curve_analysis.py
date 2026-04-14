@@ -1340,6 +1340,70 @@ def find_per_param_truncation(
     )
 
 
+def _select_final_params(
+    gompertz_a: Optional[float],
+    gompertz_a_err: Optional[float],
+    gompertz_mu: Optional[float],
+    gompertz_mu_err: Optional[float],
+    gompertz_lam: Optional[float],
+    gompertz_lam_err: Optional[float],
+    pp: Optional['PerParamTruncation'],
+    mu_ident: Optional[str],
+    A_ident: Optional[str],
+    lam_ident: Optional[str],
+) -> Dict[str, Optional[float]]:
+    """
+    Choose the best (value, source, error) for A, μ, λ per curve.
+
+    Rule per parameter: use the refined per-parameter estimate when its
+    identifiability flag is 'identifiable'; otherwise fall back to the
+    whole-curve Gompertz fit. If the whole-curve fit is also unavailable,
+    mark the source as 'unusable' and return NaN.
+
+    Justified by Phase 0 synthetic validation: refined beats whole-curve
+    6.6×/13.8×/3.4× on RMSE for A/μ/λ. λ requires identifiability gating;
+    μ and A are effectively always identifiable in our data, but the gate
+    is applied uniformly for consistency.
+
+    Returns a dict with 9 keys: {mu,A,lam}_final, {mu,A,lam}_source,
+    {mu,A,lam}_final_err.
+    """
+    def _pick(refined_val, refined_rel_err, ident_flag,
+              whole_val, whole_err):
+        refined_ok = (pp is not None and refined_val is not None
+                      and np.isfinite(refined_val) and refined_val > 0
+                      and ident_flag == 'identifiable')
+        if refined_ok:
+            err = abs(refined_rel_err * refined_val) if refined_rel_err is not None else None
+            return float(refined_val), 'refined', err
+        if whole_val is not None and np.isfinite(whole_val):
+            return float(whole_val), 'whole_curve_fallback', whole_err
+        return np.nan, 'unusable', None
+
+    if pp is not None:
+        mu_f, mu_s, mu_e = _pick(pp.mu_value, pp.mu_rel_err, mu_ident,
+                                 gompertz_mu, gompertz_mu_err)
+        A_f,  A_s,  A_e  = _pick(pp.A_value,  pp.A_rel_err,  A_ident,
+                                 gompertz_a, gompertz_a_err)
+        lam_f, lam_s, lam_e = _pick(pp.lam_value, pp.lam_rel_err, lam_ident,
+                                    gompertz_lam, gompertz_lam_err)
+    else:
+        # No per-param refinement available — fall back directly to whole-curve
+        def _fallback(v, e):
+            if v is not None and np.isfinite(v):
+                return float(v), 'whole_curve_fallback', e
+            return np.nan, 'unusable', None
+        mu_f, mu_s, mu_e = _fallback(gompertz_mu, gompertz_mu_err)
+        A_f,  A_s,  A_e  = _fallback(gompertz_a, gompertz_a_err)
+        lam_f, lam_s, lam_e = _fallback(gompertz_lam, gompertz_lam_err)
+
+    return {
+        'mu_final': mu_f, 'mu_source': mu_s, 'mu_final_err': mu_e,
+        'A_final':  A_f,  'A_source':  A_s,  'A_final_err':  A_e,
+        'lam_final': lam_f, 'lam_source': lam_s, 'lam_final_err': lam_e,
+    }
+
+
 def _UNUSED_find_optimal_truncation_v1(
     time: np.ndarray,
     od600: np.ndarray,
@@ -3097,6 +3161,25 @@ def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str)
             if lam_id in ('identifiable', 'weak'):
                 usable.append('lag_time')
             row['usable_for'] = ','.join(usable) if usable else 'none'
+        else:
+            # No per-param refinement ran — mark identifiability unknown so
+            # downstream gates can still operate.
+            mu_id = A_id = lam_id = None
+
+        # Always emit the unified *_final / *_source / *_final_err columns.
+        # Prefers refined estimates when identifiable; falls back to whole-curve.
+        row.update(_select_final_params(
+            gompertz_a=row.get('gompertz_a'),
+            gompertz_a_err=row.get('gompertz_a_err'),
+            gompertz_mu=row.get('gompertz_mu'),
+            gompertz_mu_err=row.get('gompertz_mu_err'),
+            gompertz_lam=row.get('gompertz_lambda'),
+            gompertz_lam_err=row.get('gompertz_lambda_err'),
+            pp=pp,
+            mu_ident=mu_id if pp is not None else None,
+            A_ident=A_id if pp is not None else None,
+            lam_ident=lam_id if pp is not None else None,
+        ))
 
         rows.append(row)
 
