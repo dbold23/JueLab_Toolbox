@@ -5,6 +5,8 @@ verdicts.
 """
 from pathlib import Path
 
+import re
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -25,6 +27,9 @@ def group3_fast():
     return analyze_plate(pp, AnalysisSettings.from_config(use_adaptive=False))
 
 
+_NUM = re.compile(r"-?\d+(?:\.\d+)?(?:e[+-]?\d+)?|inf|nan")
+
+
 class TestGoldenRegression:
     def test_group1_adaptive_matches_cli_reference(self):
         """
@@ -39,12 +44,27 @@ class TestGoldenRegression:
         got = legacy_results_frame(res).sort_values("strain").reset_index(drop=True)
         assert list(got.strain) == list(ref.strain)
         assert list(got.is_good) == list(ref.is_good)
-        assert list(got.classification_reason) == list(ref.classification_reason)
+        # The gate names and their order must match exactly. The numbers inside
+        # the text are compared numerically: a degenerate (flat) curve gives a
+        # relative error of ~1e11 % whose last digits are floating-point noise.
+        for got_reason, ref_reason in zip(got.classification_reason, ref.classification_reason):
+            assert _NUM.sub("#", got_reason) == _NUM.sub("#", ref_reason)
+            got_nums = [float(x) for x in _NUM.findall(got_reason)]
+            ref_nums = [float(x) for x in _NUM.findall(ref_reason)]
+            np.testing.assert_allclose(got_nums, ref_nums, rtol=1e-4, err_msg=ref_reason)
         for col in ["gompertz_a", "gompertz_mu", "gompertz_lambda", "gompertz_a_err", "gompertz_mu_err",
                     "fit_r_squared", "fit_rmse", "truncation_time", "points_used", "delta_od", "max_od", "snr",
                     "baseline_std", "monotone_fraction", "residual_autocorr"]:
-            np.testing.assert_allclose(got[col].astype(float).values, ref[col].astype(float).values,
-                                       rtol=1e-6, atol=1e-9, equal_nan=True, err_msg=col)
+            got_v = got[col].astype(float).values
+            ref_v = ref[col].astype(float).values
+            if col.endswith("_err"):
+                # A standard error thousands of times larger than the estimate
+                # belongs to a degenerate (flat) fit; its digits are noise.
+                param = ref[col[:-4]].astype(float).values
+                degenerate = ref_v > 10 * np.abs(param)
+                assert np.array_equal(got_v > 10 * np.abs(param), degenerate), col
+                got_v, ref_v = got_v[~degenerate], ref_v[~degenerate]
+            np.testing.assert_allclose(got_v, ref_v, rtol=1e-6, atol=1e-9, equal_nan=True, err_msg=col)
 
 
 class TestPlateResults:
@@ -58,8 +78,51 @@ class TestPlateResults:
 
     def test_lb_controls_grow_and_pass(self, group3_fast):
         t = group3_fast.table.set_index("curve_id")
-        for cid in ["LB-IMID2", "LB-IMID5", "LB-LCY01"]:
-            assert t.loc[cid, "is_good"] and t.loc[cid, "gompertz_a"] > 1.0
+        # LB-IMID3 and LB-IMID8 grow fast and then drift upward for 80 h; the
+        # first-peak rule must cut them after the primary phase (the audited
+        # cross-validated cuts are 14 h and 16 h), not fit the drift.
+        for cid in ["LB-IMID2", "LB-IMID3", "LB-IMID5", "LB-IMID8", "LB-LCY01"]:
+            assert t.loc[cid, "is_good"], f"{cid}: {t.loc[cid, 'classification_reason']}"
+            assert t.loc[cid, "gompertz_a"] > 0.6
+            assert t.loc[cid, "truncation_time"] < 40
+        # LB-LCY2 is still rising when the run ends and its whole-run fit is poor.
+        assert not t.loc["LB-LCY2", "is_good"]
+
+
+class TestFirstPeakRule:
+    def _curve(self, drift_od: float):
+        t = np.arange(0, 60, 0.25)
+        a, mu, lam = 1.0, 0.25, 3.0
+        y = a * np.exp(-np.exp((mu * np.e / a) * (lam - t) + 1))
+        # A slow secondary rise after 14 h that levels off, as the LB-IMID3/8
+        # wells of Group 3 do: it starts at ~8 % of the peak rate and fades.
+        y = y + drift_od * (1 - np.exp(-np.clip(t - 14, 0, None) / 15))
+        return t, y + np.random.default_rng(1).normal(0, 0.004, len(t))
+
+    def test_primary_growth_is_cut_before_a_slow_drift(self):
+        t, y = self._curve(0.3)
+        cr = analyze_curve(t, y, "drift", AnalysisSettings.from_config(use_adaptive=False))
+        assert cr.is_good, cr.explanation()
+        assert 8 < cr.truncation.truncation_time < 20
+        assert abs(cr.fit.mu_opt - 0.25) / 0.25 < 0.1
+        assert abs(cr.fit.a_opt - 1.0) < 0.1
+
+    def test_ideal_sigmoid_is_cut_near_its_ceiling(self):
+        t, y = self._curve(0.0)
+        cr = analyze_curve(t, y, "ideal", AnalysisSettings.from_config(use_adaptive=False))
+        assert cr.is_good, cr.explanation()
+        od_at_cut = float(y[cr.truncation.truncation_index])
+        assert od_at_cut > 0.85                                  # ~90 % of A plus the buffer
+        assert abs(cr.fit.a_opt - 1.0) < 0.05
+
+    def test_slow_grower_is_not_cut_early(self):
+        t = np.arange(0, 60, 0.25)
+        a, mu, lam = 0.6, 0.03, 5.0                             # 0.03 OD/h: five times slower
+        y = a * np.exp(-np.exp((mu * np.e / a) * (lam - t) + 1)) + np.random.default_rng(2).normal(0, 0.003, len(t))
+        cr = analyze_curve(t, y, "slow", AnalysisSettings.from_config(use_adaptive=False))
+        assert cr.is_good, cr.explanation()
+        assert float(y[cr.truncation.truncation_index]) > 0.85 * a
+        assert abs(cr.fit.mu_opt - mu) / mu < 0.1
 
     def test_explanations_match_verdicts(self, group3_fast):
         for cid, cr in group3_fast.curves.items():

@@ -171,11 +171,13 @@ class TestCleanSummary:
         assert len(clean) == results.n_good - 1
 
 
+@pytest.fixture(scope="module")
+def long(plate):
+    _, _, processed, results = plate
+    return curves_long(processed, results)
+
+
 class TestCurvesLong:
-    @pytest.fixture(scope="class")
-    def long(self, plate):
-        _, _, processed, results = plate
-        return curves_long(processed, results)
 
     def test_shape_and_columns(self, long, plate):
         _, _, processed, _ = plate
@@ -257,11 +259,11 @@ class TestMethodsParagraph:
         text = methods_paragraph(results.settings, results)
         assert "Zwietering" in text and "1990" in text
         assert "0.95" in text and "20 %" in text and "0.15" in text
-        assert "first local maximum" in text
+        assert "primary growth" in text and "25 %" in text
         assert f"{results.n_good}" in text
 
     def test_reflects_changed_thresholds(self):
-        text = methods_paragraph(AnalysisSettings.from_config(min_r_squared=0.8, use_first_peak=False))
+        text = methods_paragraph(AnalysisSettings.interactive_defaults(min_r_squared=0.8, use_first_peak=False))
         assert "0.8" in text and "global maximum" in text
 
 
@@ -347,7 +349,7 @@ class TestCliReproduction:
         env = dict(os.environ, MPLBACKEND="Agg")
         proc = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "01_growth_curve_analysis.py"),
-             str(out / "processed"), "-o", str(cli_out), "--no-plots", "-q"],
+             str(out / "processed"), "--config", str(out / "config.yaml"), "-o", str(cli_out), "--no-plots", "-q"],
             cwd=str(ROOT), env=env, capture_output=True, text=True, timeout=600, check=False)
         assert proc.returncode == 0, proc.stderr[-2000:]
 
