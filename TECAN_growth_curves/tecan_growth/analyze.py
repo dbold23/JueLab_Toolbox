@@ -332,6 +332,8 @@ def reclassify(cr: CurveResult, settings: AnalysisSettings) -> CurveResult:
         cls = gca.classify_by_fit_quality(
             L.fit, settings.fit_quality_thresholds(),
             time=cr.time_h, od600=cr.od, is_incomplete=L.is_incomplete,
+            fit_window=(int(L.truncation.start_index), int(L.truncation.truncation_index))
+            if L.truncation is not None else None,
         )
         if "delta_od" not in cls.metrics:
             cls.metrics["delta_od"] = np.max(cr.od) - np.mean(cr.od[:5])
