@@ -525,8 +525,8 @@ python 09_train_classifier.py --compare
 python 01_growth_curve_analysis.py DATA_DIR -o OUTPUT_DIR --ml-classify
 ```
 
-**Training data:** 480 synthetic + 85 real audited curves (7 "unsure" excluded).
-**Held-out test (30%):** 95.9% accuracy, 94.3% specificity, 96.6% recall.
+**Training data:** 480 synthetic curves. The 85 audited real curves (7 "unsure" excluded) are an external test set and are never trained on.
+**Held-out test (30%) and real-data metrics:** written to `models/feature_config.json` by the training run.
 
 ### `ml_classifier.py` - ML Classifier Runtime Module
 

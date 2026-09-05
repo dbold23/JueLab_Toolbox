@@ -31,7 +31,13 @@ results/tables/Advanced_Analysis/gp_truncation/plots/
 results/tables/Advanced_Analysis/truncation_comparison/overlay_plots/
 results/tables/Advanced_Analysis/truncation_comparison/bad_strain_overlay_plots/
 synthetic_data/output/**/plots/
+# ML training features (rebuilt by scripts/09_train_classifier.py)
+synthetic_data/output/comprehensive_test/training_features/
 
 # App runtime
 .streamlit/secrets.toml
 app/.cache/
+
+# App run folders and saved keys (export page); keep them out of the repository
+runs/
+keys/

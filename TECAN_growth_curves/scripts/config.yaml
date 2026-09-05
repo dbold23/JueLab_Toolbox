@@ -26,7 +26,11 @@ truncation:
   buffer_points: 3             # Points to keep after max for fit stability
   min_points_for_fit: 20       # Minimum points after truncation
   use_first_peak: true         # Truncate at first local max (vs global max)
-  use_adaptive: false          # Adaptive R-squared-optimizing truncation
+  # Adaptive (Monte-Carlo cross-validated) truncation. This is what the
+  # published analysis used, so run_full_pipeline.py / 01_growth_curve_analysis.py
+  # default to it; override per run with --no-adaptive. The lab interface keeps
+  # first-peak truncation as its default because adaptive costs ~1-3 min a plate.
+  use_adaptive: true
   # Incomplete curve detection (prevents FNs when experiment ended early)
   incomplete_curve_tail_fraction: 0.15  # Fraction of tail to check for rising
   incomplete_curve_slope_threshold: 0.005  # dOD/dt threshold for "still rising"
@@ -66,21 +70,34 @@ paths:
   scripts: scripts
 
 # Group definitions
+#   data_dir    : processed {MEDIA}_DATA.csv files read by 01_growth_curve_analysis.py
+#   raw_values  : raw plate-reader kinetic table (xlsx export or values CSV)
+#   raw_key     : well -> media/strain key (Cell, Media, Strain)
+# Step 0 of run_full_pipeline.py rebuilds data_dir from raw_values + raw_key
+# whenever data_dir is missing (or --force-preprocess is given).
 groups:
   Group1:
     data_dir: data/raw/Group1/Group_1_DATA
+    raw_values: data/raw/Group1/GrowthRate_ Group1_Values.csv
+    raw_key: data/raw/Group1/GROUP1_KEY_V2.csv
     output_dir: results/tables/Group1_Results
     pesticides: [Bifenthrin, Flupyradifurone, LambdaCyhalothrin]
   Group2:
     data_dir: data/raw/Group 2/Group_2_DATA
+    raw_values: data/raw/Group 2/GrowthRate_GROUP2_DATA.csv
+    raw_key: data/raw/Group 2/GrowthRate_GROUP2_KEY.csv
     output_dir: results/tables/Group2_Results
     pesticides: [Malathion, LambdaCyhalothrin]
   Group3:
     data_dir: data/raw/Group 3/Group_3_DATA
+    raw_values: data/raw/Group 3/GROUP3_VALUES.csv
+    raw_key: data/raw/Group 3/GROUP3_KEY.csv
     output_dir: results/tables/Group3_Results
     pesticides: [Imidacloprid, LambdaCyhalothrin]
   Group4:
     data_dir: data/raw/Group 4/Group4_DATA
+    raw_values: data/raw/Group 4/G4_VALUES.csv
+    raw_key: data/raw/Group 4/G4_KEY.csv
     output_dir: results/tables/Group4_Results
     pesticides: [Permethrin, LambdaCyhalothrin]
 

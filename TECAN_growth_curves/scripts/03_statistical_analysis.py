@@ -335,7 +335,7 @@ def figure1_boxplots(good: pd.DataFrame, outdir: Path) -> None:
         bp = ax.boxplot(
             data_to_plot,
             patch_artist=True,
-            labels=labels,
+            tick_labels=labels,
             widths=0.6,
         )
         for patch, color in zip(bp["boxes"], colors):

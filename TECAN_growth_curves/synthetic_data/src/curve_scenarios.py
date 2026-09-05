@@ -49,6 +49,13 @@ class ScenarioConfig:
     # Special patterns
     pattern: Optional[str] = None  # 'flat', 'random_walk', 'diauxic', etc.
 
+    # Instrument artefact flag (evaporation drift, bubble spikes, ...).
+    # Descriptive only: the generator produces these artefacts through
+    # `pattern` / `noise_level` / parameter ranges, so nothing consumes this
+    # value yet. It is carried through ScenarioSampler.sample_parameters() so
+    # that downstream consumers can tell artefact scenarios apart.
+    instrument_noise: bool = False
+
     # Model to use for generation
     model: str = 'gompertz'
 
@@ -623,6 +630,7 @@ class ScenarioSampler:
             'time_resolution': s.time_resolution,
             'include_death_phase': s.include_death_phase,
             'pattern': s.pattern,
+            'instrument_noise': s.instrument_noise,
             'expected_class': s.expected_class,
             'scenario_name': s.name,
         }
