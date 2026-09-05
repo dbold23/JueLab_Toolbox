@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
+import yaml
 import pandas as pd
 
 from . import __version__, legacy
@@ -510,6 +511,12 @@ def run_manifest(run: PlateRun, key: PlateKey, processed: ProcessedPlate, result
         },
         "settings": settings.to_dict(),
         "settings_changed_from_defaults": settings.describe_changes(),
+        "reproduce": {
+            "description": "Run from inside the run folder to redo the analysis with the command-line "
+                           "pipeline on the exported processed/ CSVs and the thresholds in config.yaml.",
+            "command": "python <repo>/scripts/01_growth_curve_analysis.py processed --config config.yaml "
+                       "-o cli_results --no-plots" + (" --ml-classify" if settings.use_ml else ""),
+        },
         "classifier": {
             "mode": "rules + ML second opinion" if results.ml_used else "rules",
             "ml_used": bool(results.ml_used),
@@ -541,7 +548,7 @@ def methods_paragraph(settings: AnalysisSettings, results: Optional[PlateResults
     """
     truncation = ("a Monte-Carlo cross-validated search for the window that predicts held-out points best"
                   if settings.use_adaptive else
-                  ("the first local maximum of the smoothed curve" if settings.use_first_peak
+                  ("the end of primary growth, where the smoothed growth rate falls through 25 % of its maximum" if settings.use_first_peak
                    else "the global maximum of the smoothed curve"))
     blanks = {"per_media": "the mean of the blank (media-only) wells of the same media",
               "global": "the mean of all blank wells on the plate",
@@ -572,7 +579,7 @@ def methods_paragraph(settings: AnalysisSettings, results: Optional[PlateResults
         f"excellent (R2 < {settings.excellent_r2_threshold:g}) additionally had to show a signal-to-noise "
         f"ratio of at least {settings.min_snr:g}, a growth increment at least "
         f"{settings.min_delta_od_ci:g} above twice the baseline noise, rising steps over at least "
-        f"{settings.min_monotone_fraction:.0%} of the growth phase, and residual lag-1 autocorrelation below "
+        f"{settings.min_monotone_fraction:.0%} of the growth phase, and residual autocorrelation (at a lag of about one hour) below "
         f"{settings.max_residual_autocorr:g}. Curves whose signal-to-noise ratio was below "
         f"{settings.pre_fit_snr_threshold:g} and whose total growth was below "
         f"{settings.pre_fit_delta_od_override:g} OD were rejected before fitting."
@@ -644,6 +651,11 @@ def write_run_folder(out_dir, run: PlateRun, key: PlateKey, processed: Processed
     key.to_dataframe().to_csv(out / "key.csv", index=False)
     written.append(out / "key.csv")
     written.extend(_write_processed_csvs(processed, out / "processed"))
+
+    # The thresholds in config.yaml's shape, so the command-line pipeline can
+    # redo exactly this analysis from the exported processed/ folder.
+    (out / "config.yaml").write_text(yaml.safe_dump(results.settings.to_config(), sort_keys=False))
+    written.append(out / "config.yaml")
 
     manifest = run_manifest(run, key, processed, results, overrides, input_sha256)
     (out / "run_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

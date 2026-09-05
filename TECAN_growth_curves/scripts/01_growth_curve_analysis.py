@@ -490,6 +490,11 @@ def detect_incomplete_curve(
     return is_incomplete, metadata
 
 
+#: Fraction of a curve's maximum growth rate below which primary growth is
+#: considered over (see find_first_local_maximum).
+PEAK_RATE_FRACTION = 0.25
+
+
 def find_first_local_maximum(
     od600: np.ndarray,
     smoothed_od: np.ndarray,
@@ -524,13 +529,21 @@ def find_first_local_maximum(
     # Derivative of the smoothed data. With `time` given it is in OD per hour
     # and the plateau test is relative to the curve's own fastest rate, so the
     # rule does not depend on how often the reader sampled or how fast the
-    # strain grows. Without `time` the legacy per-sample thresholds apply.
+    # strain grows. The peak is where the rate crosses PEAK_RATE_FRACTION of
+    # the maximum rate on the way down: the mean rate over the previous five
+    # steps was above it and the mean over the next `plateau_window` steps is
+    # at or below it. On an ideal Gompertz curve that crossing sits at ~90 %
+    # of A. Calibrated against the human-audited adaptive verdicts of the four
+    # project plates (validation_audit.csv): 25 % agrees on 83/85 conditions
+    # with a median cut 3 h from the cross-validated one; 10 % left curves
+    # with a slow secondary drift uncut and agreed on only 75/85. Without
+    # `time` the legacy per-sample thresholds apply.
     if time is not None and len(time) == len(smoothed_od):
         dt = np.maximum(np.diff(np.asarray(time, dtype=float)), 1e-6)
         derivative = np.diff(smoothed_od) / dt
         max_rate = float(np.max(derivative)) if len(derivative) else 0.0
-        rising_threshold = 0.20 * max_rate
-        flat_threshold = 0.10 * max_rate
+        rising_threshold = PEAK_RATE_FRACTION * max_rate
+        flat_threshold = PEAK_RATE_FRACTION * max_rate
     else:
         derivative = np.diff(smoothed_od)
         rising_threshold = 0.001
@@ -3120,6 +3133,7 @@ def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str)
 def main():
     """Main entry point for command line usage."""
     import argparse
+    import sys
 
     parser = argparse.ArgumentParser(
         description='Process bacterial growth curves: classify, truncate at max, and fit Gompertz model.'
@@ -3133,35 +3147,48 @@ def main():
         default='./output',
         help='Output directory for results (default: ./output)'
     )
+    # Threshold options default to None so that "not given on the command line"
+    # can be told apart from "given the same value as the config file". The
+    # resolution order below is: CLI value > config.yaml value > module default.
+    parser.add_argument(
+        '--config',
+        default=None,
+        help='Path to config.yaml (default: the config.yaml next to this script)'
+    )
     parser.add_argument(
         '--min-delta-od',
         type=float,
-        default=0.3,
-        help='Minimum OD600 change for good classification (default: 0.3)'
+        default=None,
+        help=f"Minimum OD600 change for good classification "
+             f"(default: od_thresholds.min_delta_od, else {CLASSIFICATION_THRESHOLDS['min_delta_od']})"
     )
     parser.add_argument(
         '--min-max-od',
         type=float,
-        default=0.5,
-        help='Minimum peak OD600 for good classification (default: 0.5)'
+        default=None,
+        help=f"Minimum peak OD600 for good classification "
+             f"(default: od_thresholds.min_max_od, else {CLASSIFICATION_THRESHOLDS['min_max_od']})"
     )
     parser.add_argument(
         '--min-snr',
         type=float,
-        default=5.0,
-        help='Minimum signal-to-noise ratio (default: 5.0)'
+        default=None,
+        help=f"Minimum signal-to-noise ratio "
+             f"(default: od_thresholds.min_snr, else {CLASSIFICATION_THRESHOLDS['min_snr']})"
     )
     parser.add_argument(
         '--smoothing-window',
         type=int,
-        default=5,
-        help='Rolling average window for peak detection (default: 5)'
+        default=None,
+        help=f"Rolling average window for peak detection "
+             f"(default: truncation.smoothing_window, else {TRUNCATION_PARAMS['smoothing_window']})"
     )
     parser.add_argument(
         '--buffer-points',
         type=int,
-        default=3,
-        help='Points to keep after max for fit stability (default: 3)'
+        default=None,
+        help=f"Points to keep after max for fit stability "
+             f"(default: truncation.buffer_points, else {TRUNCATION_PARAMS['buffer_points']})"
     )
     parser.add_argument(
         '-q', '--quiet',
@@ -3170,13 +3197,30 @@ def main():
     )
     parser.add_argument(
         '--global-max',
+        dest='global_max',
         action='store_true',
-        help='Truncate at global maximum instead of first local maximum (default: first peak)'
+        default=None,
+        help='Truncate at global maximum instead of first local maximum '
+             '(default: truncation.use_first_peak, else first peak)'
+    )
+    parser.add_argument(
+        '--first-peak',
+        dest='global_max',
+        action='store_false',
+        help='Truncate at the first local maximum (overrides truncation.use_first_peak: false)'
     )
     parser.add_argument(
         '--adaptive',
+        dest='adaptive',
         action='store_true',
+        default=None,
         help='Use adaptive truncation that optimizes for best R² (overrides --global-max)'
+    )
+    parser.add_argument(
+        '--no-adaptive',
+        dest='adaptive',
+        action='store_false',
+        help='Disable adaptive truncation even if truncation.use_adaptive is true in config.yaml'
     )
     parser.add_argument(
         '--od-based',
@@ -3186,14 +3230,16 @@ def main():
     parser.add_argument(
         '--min-r2',
         type=float,
-        default=0.95,
-        help='Minimum R² for good fit classification (default: 0.95)'
+        default=None,
+        help=f"Minimum R² for good fit classification "
+             f"(default: classification.min_r_squared, else {FIT_QUALITY_THRESHOLDS['min_r_squared']})"
     )
     parser.add_argument(
         '--max-param-error',
         type=float,
-        default=20.0,
-        help='Maximum parameter error %% for good fit (default: 20.0)'
+        default=None,
+        help=f"Maximum parameter error %% for good fit "
+             f"(default: classification.max_param_error_pct, else {FIT_QUALITY_THRESHOLDS['max_param_error_pct']})"
     )
     parser.add_argument(
         '--no-plots',
@@ -3208,34 +3254,52 @@ def main():
 
     args = parser.parse_args()
 
-    # Load config.yaml for ML classifier settings
+    # Load config.yaml (thresholds, quality gates, truncation, ML settings)
     config = {}
-    config_path = Path(__file__).parent / 'config.yaml'
+    if args.config is not None:
+        config_path = Path(args.config)
+        if not config_path.exists():
+            print(f"ERROR: config file not found: {config_path}", file=sys.stderr)
+            sys.exit(2)
+    else:
+        config_path = Path(__file__).parent / 'config.yaml'
     if config_path.exists():
         import yaml
         with open(config_path) as f:
             config = yaml.safe_load(f) or {}
 
-    # Merge config.yaml values with CLI args (CLI overrides config)
-    cfg_class = config.get('classification', {})
-    cfg_gates = config.get('quality_gates', {})
-    cfg_trunc = config.get('truncation', {})
-    cfg_od = config.get('od_thresholds', {})
+    cfg_class = config.get('classification') or {}
+    cfg_gates = config.get('quality_gates') or {}
+    cfg_trunc = config.get('truncation') or {}
+    cfg_od = config.get('od_thresholds') or {}
+
+    def resolve(cli_value, cfg_section, cfg_key, module_default):
+        """CLI value if given, else the config.yaml value, else the module default."""
+        if cli_value is not None:
+            return cli_value
+        value = cfg_section.get(cfg_key)
+        return module_default if value is None else value
 
     # Build threshold dict for OD-based classification
     thresholds = {
-        'min_delta_od': args.min_delta_od,
-        'min_max_od': args.min_max_od,
-        'min_snr': args.min_snr,
-        'max_initial_od': cfg_od.get('max_initial_od', 0.15),
+        'min_delta_od': resolve(args.min_delta_od, cfg_od, 'min_delta_od',
+                                CLASSIFICATION_THRESHOLDS['min_delta_od']),
+        'min_max_od': resolve(args.min_max_od, cfg_od, 'min_max_od',
+                              CLASSIFICATION_THRESHOLDS['min_max_od']),
+        'min_snr': resolve(args.min_snr, cfg_od, 'min_snr',
+                           CLASSIFICATION_THRESHOLDS['min_snr']),
+        'max_initial_od': cfg_od.get('max_initial_od', CLASSIFICATION_THRESHOLDS['max_initial_od']),
     }
 
     # Build threshold dict for fit-based classification
     # Includes secondary quality gates from config.yaml
     fit_thresholds = {
-        'min_r_squared': args.min_r2,
-        'max_param_error_pct': args.max_param_error,
-        'min_points_for_fit': cfg_class.get('min_points_for_fit', 15),
+        'min_r_squared': resolve(args.min_r2, cfg_class, 'min_r_squared',
+                                 FIT_QUALITY_THRESHOLDS['min_r_squared']),
+        'max_param_error_pct': resolve(args.max_param_error, cfg_class, 'max_param_error_pct',
+                                       FIT_QUALITY_THRESHOLDS['max_param_error_pct']),
+        'min_points_for_fit': cfg_class.get('min_points_for_fit',
+                                            FIT_QUALITY_THRESHOLDS['min_points_for_fit']),
         # Secondary quality gates (from config.yaml quality_gates section)
         'min_snr': cfg_gates.get('min_snr', 5.0),
         'min_delta_od_ci': cfg_gates.get('min_delta_od_ci', 0.1),
@@ -3247,24 +3311,38 @@ def main():
         'max_residual_autocorr': cfg_gates.get('max_residual_autocorr', 0.7),
     }
 
+    # Truncation: --global-max/--first-peak and --adaptive/--no-adaptive win over
+    # config.yaml; without either, config.yaml wins over the module defaults
+    # (first peak, no adaptive).
+    if args.global_max is None:
+        use_first_peak = bool(cfg_trunc.get('use_first_peak', True))
+    else:
+        use_first_peak = not args.global_max
+    use_adaptive = bool(resolve(args.adaptive, cfg_trunc, 'use_adaptive', False))
+
     truncation_params = {
-        'smoothing_window': args.smoothing_window,
-        'buffer_points': args.buffer_points,
-        'min_points_for_fit': cfg_trunc.get('min_points_for_fit', 20),
-        'use_first_peak': not args.global_max,  # Default: use first peak
-        'use_adaptive': args.adaptive,  # Adaptive overrides other truncation methods
+        'smoothing_window': resolve(args.smoothing_window, cfg_trunc, 'smoothing_window',
+                                    TRUNCATION_PARAMS['smoothing_window']),
+        'buffer_points': resolve(args.buffer_points, cfg_trunc, 'buffer_points',
+                                 TRUNCATION_PARAMS['buffer_points']),
+        'min_points_for_fit': cfg_trunc.get('min_points_for_fit',
+                                            TRUNCATION_PARAMS['min_points_for_fit']),
+        'use_first_peak': use_first_peak,
+        'use_adaptive': use_adaptive,  # Adaptive overrides other truncation methods
     }
 
     # Run pipeline
     use_fit_based = not args.od_based
     if use_fit_based:
         print("Using FIT-BASED classification (R², parameter errors)")
+        print(f"  min R²: {fit_thresholds['min_r_squared']}, "
+              f"max parameter error: {fit_thresholds['max_param_error_pct']}%")
     else:
         print("Using OD-THRESHOLD classification (delta_od, max_od, snr)")
 
-    if args.adaptive:
+    if use_adaptive:
         print("Using ADAPTIVE truncation (optimizes R²)")
-    elif args.global_max:
+    elif not use_first_peak:
         print("Using GLOBAL MAX truncation")
     else:
         print("Using FIRST PEAK truncation")

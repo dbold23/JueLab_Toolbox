@@ -130,7 +130,68 @@ class AnalysisSettings:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
-    def describe_changes(self) -> Dict[str, Any]:
-        """Settings that differ from the repository defaults (for run manifests)."""
-        base = AnalysisSettings.from_config()
-        return {k: v for k, v in self.to_dict().items() if base.to_dict().get(k) != v and k != "extra"}
+    def to_config(self, base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        These settings in the shape of ``scripts/config.yaml``, so a run can be
+        reproduced from the command line with ``--config``. Sections the
+        settings do not cover (paths, groups, haldane, advanced, the model
+        file locations under ``ml_classifier``) are copied from ``base``
+        (default: the repository's config.yaml).
+        """
+        import copy
+        cfg = copy.deepcopy(base if base is not None else load_config())
+        cfg["classification"] = {**(cfg.get("classification") or {}),
+                                 "min_r_squared": self.min_r_squared,
+                                 "max_param_error_pct": self.max_param_error_pct,
+                                 "min_points_for_fit": self.min_points_for_fit}
+        cfg["quality_gates"] = {**(cfg.get("quality_gates") or {}),
+                                "min_snr": self.min_snr,
+                                "min_delta_od_ci": self.min_delta_od_ci,
+                                "min_absolute_delta_od": self.min_absolute_delta_od,
+                                "pre_fit_snr_threshold": self.pre_fit_snr_threshold,
+                                "pre_fit_delta_od_override": self.pre_fit_delta_od_override,
+                                "excellent_r2_threshold": self.excellent_r2_threshold,
+                                "min_monotone_fraction": self.min_monotone_fraction,
+                                "max_residual_autocorr": self.max_residual_autocorr}
+        cfg["truncation"] = {**(cfg.get("truncation") or {}),
+                             "smoothing_window": self.smoothing_window,
+                             "buffer_points": self.buffer_points,
+                             "min_points_for_fit": self.min_points_after_truncation,
+                             "use_first_peak": self.use_first_peak,
+                             "use_adaptive": self.use_adaptive}
+        trunc_mccv = dict((cfg["truncation"].get("mccv") or {}))
+        trunc_mccv["try_multi_model"] = self.try_multi_model
+        cfg["truncation"]["mccv"] = trunc_mccv
+        ml = dict(cfg.get("ml_classifier") or {})
+        ml["enabled"] = self.use_ml
+        ml["prefit_gate"] = {**(ml.get("prefit_gate") or {}), "reject_threshold": self.prefit_reject_threshold}
+        ml["postfit_classifier"] = {**(ml.get("postfit_classifier") or {}),
+                                    "good_threshold": self.postfit_good_threshold,
+                                    "bad_threshold": self.postfit_bad_threshold}
+        cfg["ml_classifier"] = ml
+        cfg["preprocessing"] = {"clip_negative": self.clip_negative, "blank_mode": self.blank_mode}
+        return cfg
+
+    def config_roundtrip(self) -> "AnalysisSettings":
+        """``from_config(self.to_config())``: what the CLI would read back."""
+        return AnalysisSettings.from_config(self.to_config(), clip_negative=self.clip_negative,
+                                            blank_mode=self.blank_mode)
+
+    @classmethod
+    def interactive_defaults(cls, **overrides) -> "AnalysisSettings":
+        """
+        What the lab interface starts with: config.yaml's thresholds with the
+        fast first-peak window rule. config.yaml may ask the batch pipeline for
+        the cross-validated (adaptive) rule, which costs one to three minutes
+        per plate and is offered in the interface as an option instead.
+        """
+        overrides.setdefault("use_adaptive", False)
+        return cls.from_config(**overrides)
+
+    def describe_changes(self, reference: Optional["AnalysisSettings"] = None) -> Dict[str, Any]:
+        """
+        Settings that differ from ``reference`` (default: the interactive
+        defaults), for run manifests and the methods paragraph.
+        """
+        base = (reference or AnalysisSettings.interactive_defaults()).to_dict()
+        return {k: v for k, v in self.to_dict().items() if base.get(k) != v and k != "extra"}

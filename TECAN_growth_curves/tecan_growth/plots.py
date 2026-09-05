@@ -306,7 +306,7 @@ def plate_grid(
         title=dict(text=titles[mode]),
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="left", x=0),
-        margin=dict(l=34, r=26, t=54, b=70),
+        margin=dict(l=48, r=26, t=54, b=70),
     )
     fig.update_xaxes(range=[0.4, 12.6], tickvals=_COLS, ticktext=[str(c) for c in _COLS],
                      side="top", showgrid=False, showline=False, ticks="", zeroline=False)
@@ -814,7 +814,7 @@ def residual_plot(cr: CurveResult, height: Optional[int] = None, width: Optional
     if autocorr is not None and np.isfinite(autocorr):
         passed = float(autocorr) <= limit
         fig.add_annotation(x=0.0, xref="paper", y=1.06, yref="paper", xanchor="left", yanchor="bottom",
-                           text=f"lag-1 autocorrelation {float(autocorr):.2f} "
+                           text=f"autocorrelation at 1 h lag {float(autocorr):.2f} "
                                 f"({'within' if passed else 'above'} the limit of {limit:g})",
                            showarrow=False, font=dict(size=11, color=PALETTE["text"]),
                            bgcolor=_rgba(PALETTE["good"] if passed else PALETTE["warning"], 0.18),  # type: ignore[arg-type]

@@ -109,7 +109,7 @@ def render_sidebar() -> None:
                         key="set_use_ml", on_change=_on_change("use_ml", "set_use_ml"), disabled=dis or not models,
                         help="Adds a P(good) column from the trained classifier. Rules stay the call of record.")
             if st.button("Reset to defaults", key="reset_defaults", disabled=dis):
-                s["settings"] = AnalysisSettings.from_config()
+                s["settings"] = AnalysisSettings.interactive_defaults()
                 for k in list(st.session_state.keys()):
                     if k.startswith("set_") or k == "trunc_choice":
                         del st.session_state[k]

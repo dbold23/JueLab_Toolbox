@@ -218,7 +218,7 @@ def build_gates(result, settings: AnalysisSettings, od: np.ndarray) -> List[Gate
                           applies=not excellent, note="bypassed for excellent fits" if excellent else ""))
         if ac is not None:
             applies_ac = (not excellent) and (not result.is_incomplete)
-            gates.append(Gate("residual_autocorr", "Residual lag-1 autocorrelation", ac, th["max_residual_autocorr"], "<=",
+            gates.append(Gate("residual_autocorr", "Residual autocorrelation (1 h lag)", ac, th["max_residual_autocorr"], "<=",
                               ac <= th["max_residual_autocorr"], applies=applies_ac,
                               note="bypassed for excellent fits or incomplete curves" if not applies_ac else ""))
     if "p_good" in m and m.get("ml_classification") is not None:

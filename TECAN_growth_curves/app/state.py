@@ -46,7 +46,8 @@ TRUNCATION_CHOICES = {
 def S() -> Any:
     """Shortcut for ``st.session_state`` with defaults installed."""
     s = st.session_state
-    s.setdefault("settings", AnalysisSettings.from_config())
+    # The interactive default is the fast window rule; config.yaml (batch mode) may ask for adaptive.
+    s.setdefault("settings", AnalysisSettings.interactive_defaults())
     s.setdefault("overrides", {})
     s.setdefault("flips", [])
     s.setdefault("selected_curve", None)
