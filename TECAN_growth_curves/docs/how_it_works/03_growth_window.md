@@ -25,11 +25,11 @@ the curve where primary growth ends.
    about 90 % of the ceiling *A*. If no such point exists the global maximum
    is used.
 
-   The 25 % was calibrated against the human-audited verdicts of this
-   project's four plates: it agrees with the audited call on 83 of 85
-   conditions and cuts within a median of 3 h of the cross-validated
-   search. A stricter 10 % left curves with a slow secondary drift uncut and
-   agreed on only 75 of 85.
+   The 25 % was calibrated on this project's four plates, against the
+   verdicts of the committed results tables corrected by the visual audit
+   (85 conditions): it agrees on 83 of them and cuts within a median of 3 h
+   of the cross-validated search. A stricter 10 % left curves with a slow
+   secondary drift uncut and agreed on only 75 of 85.
 4. The true maximum of the raw data within ±{smoothing_window} points of that
    spot is found, and **{buffer_points} buffer points** past it are kept so
    the plateau is represented.

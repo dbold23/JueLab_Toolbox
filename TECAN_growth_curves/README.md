@@ -144,12 +144,16 @@ Each plate holds LB and water controls plus pesticide alone and pesticide
 Two checks, both re-runnable, both committed with their outputs.
 
 **Against the lab's own judgement.** The four included plates were audited
-by eye (`results/tables/validation_audit.csv`, 85 conditions with a
-confident call). The interactive default rule (first peak) agrees with the
-audited call on 83 of the 85; the two exceptions are an LB control the
-audit had marked BAD after a whole-run fit, which the first-peak window
-fits cleanly, and a water control the audit accepted that the pre-fit gate
-rejects.
+by eye (`results/tables/validation_audit.csv`: 85 conditions with a
+confident call, recorded against the verdicts of an earlier version of
+the pipeline). The interactive default rule (first peak) reproduces 74 of
+those 85 calls. Eight of the eleven differences are wells that rose by
+only 0.05 to 0.13 OD, mostly water controls, which that earlier version
+accepted and the present minimum-growth gate (0.15 OD) rejects; the other
+three are curves whose fit is below the R² line. Against the verdicts the
+committed results tables carried before this work (a later version, with
+that gate), the rule agrees on 83 of 85, and it was calibrated on that
+comparison: the 25 % peak-rate threshold gave 83, a stricter 10 % gave 75.
 
 **Against curves with known answers.** `make step-9` runs the pipeline on
 480 synthetic curves from 32 scenarios (`synthetic_data/`). With the

@@ -221,7 +221,7 @@ Step 9: Synthetic validation       → accuracy / recall / F1 metrics
   │  (07_compare_truncation_methods.py / 08_validate_truncation.py)    │
   │  • Compare 5 methods + consensus via per-strain Gompertz R²        │
   │  • Overlay plots: raw data + 6 Gompertz curves per strain          │
-  │  • Bad strain rescue: re-truncate failed strains, recover 17/22    │
+  │  • Bad strain rescue: refit BAD strains, keep only gate-passing     │
   │  • Interactive validator: human review of method selections         │
   └────────────────────────────────┬────────────────────────────────────┘
                                    │
@@ -236,8 +236,8 @@ Step 9: Synthetic validation       → accuracy / recall / F1 metrics
   ┌─────────────────────────────────────────────────────────────────────┐
   │  STEP 9: SYNTHETIC VALIDATION  (synthetic_data/)                   │
   │  • 480 synthetic ground-truth curves across 32 scenarios           │
-  │  • Accuracy 99.6%, Precision 100%, Recall 99.4%, F1 99.7%         │
-  │  • Manual audit of real data: 91.3% agreement                      │
+  │  • First-peak rule: accuracy 87.3%, precision 90.1%, recall 92.5% │
+  │  • Visual audit of real data: 74/85 confident calls reproduced     │
   └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1156,7 +1156,7 @@ When invoked with `--include-bad`, the script attempts to rescue strains that we
 | MALATHION-MAL1 | Group2 | First Peak | 0.999 | Low R²: 0.919 |
 | MALATHION-MAL8 | Group2 | First Peak | 0.999 | Low R²: -0.323; High A error |
 
-**17 of 22 candidate bad strains were rescued** -- their poor original fits were caused by suboptimal truncation, not by lack of growth.
+A strain now counts as rescued only when the refit passes every quality gate of the main pipeline (R², parameter errors, growth, noise and residual gates), not merely when its R² improves. The table above predates that rule; the current rescues are listed in `results/tables/Advanced_Analysis/truncation_comparison/rescued_strains.csv`.
 
 ### 10.5 Interactive truncation validator
 
@@ -1314,10 +1314,12 @@ The pipeline was run on all 480 synthetic curves and compared against ground tru
 
 | Metric | Value | Interpretation |
 |--------|-------|----------------|
-| **Accuracy** | 99.6% | Correct classifications / total |
-| **Precision** | 100% | True GOOD / (True GOOD + False GOOD) |
-| **Recall (Sensitivity)** | 99.4% | True GOOD / All actually GOOD |
-| **F1 Score** | 99.7% | Harmonic mean of precision and recall |
+| **Accuracy** | 87.3% | Correct classifications / total |
+| **Precision** | 90.1% | True GOOD / (True GOOD + False GOOD) |
+| **Recall (Sensitivity)** | 92.5% | True GOOD / All actually GOOD |
+| **F1 Score** | 91.3% | Harmonic mean of precision and recall |
+
+These are the numbers of the interactive default rule (first-peak truncation, `make step-9` with `--no-adaptive`); `synthetic_data/output/comprehensive_test/VALIDATION_SUMMARY.md` breaks them down by scenario. The misses concentrate in scenarios whose BAD label is defined by the R² of a whole-run fit (the pipeline fits the growth window and accepts them), in logistic-shaped curves the Gompertz gates flag as a shape mismatch, and in hourly-sampled curves that fall under the 20-point window minimum.
 
 ### 11.6 Parameter recovery accuracy
 
@@ -1364,15 +1366,9 @@ Raw OD data
 - **Pre-fit features:** Extracted from actual raw OD data files (not CSV proxies) to avoid train/inference mismatch
 - **Deployment:** After holdout evaluation, final model retrained on all 565 curves
 
-### Held-Out Test Results (170 curves, never seen during training)
+### Results (synthetic training set, real audited curves held out)
 
-| Metric | Value |
-|--------|-------|
-| Accuracy | 95.9% |
-| Precision | 95.8% |
-| Recall | 97.4% |
-| F1 Score | 97.0% |
-| Specificity | 94.3% |
+5-fold cross-validation on the 480 synthetic curves (features built with first-peak truncation): post-fit classifier accuracy 96.2 %, precision 97.5 %, recall 97.4 %, specificity 92.5 %; pre-fit gate accuracy 94.1 %. On the 85 audited real curves, which are never trained on (67 of them reach the post-fit stage): precision 96.4 %, recall 96.4 %, specificity 83.3 %. The exact numbers of the committed model are in `models/feature_config.json`; the previously quoted 95.9 % / 94.3 % came from a model that had been trained on part of the real audit set.
 
 **Probability distribution:** Strongly bimodal — all predictions are p<0.05 or p>0.95. No borderline cases in current dataset.
 
@@ -1642,12 +1638,12 @@ The `.github/workflows/test.yml` file configures automatic testing on GitHub:
 | 1 | Bifenthrin, Flupyradifurone, Lambda-Cyhalothrin | 24 | 12 | 12 |
 | 2 | Malathion, Lambda-Cyhalothrin | 24 | 11 | 13 |
 | 3 | Imidacloprid, Lambda-Cyhalothrin | 24 | 12 | 12 |
-| 4 | Permethrin, Lambda-Cyhalothrin | 20 | 9 | 11 |
-| **Total** | | **92** | **44 (48%)** | **48 (52%)** |
+| 4 | Permethrin, Lambda-Cyhalothrin | 20 | 10 | 10 |
+| **Total** | | **92** | **45 (49%)** | **47 (51%)** |
 
-Manual visual audit: **91.3%** of classifications validated correct (84/92).
+These are the committed tables, produced with adaptive (cross-validated) truncation and rule-based classification. The visual audit (`validation_audit.csv`) was recorded against an earlier version of the pipeline; of its 85 confident calls the current adaptive run reproduces 73 and the interactive first-peak rule 74. Almost every difference is a well that rose by 0.05 to 0.13 OD, which that earlier version accepted and the present 0.15 OD minimum-growth gate rejects.
 
-### 15.2 Growth parameter distributions (44 GOOD curves)
+### 15.2 Growth parameter distributions (GOOD curves; see growth_rate_summary_for_collaboration.csv for the current values)
 
 | Parameter | Min | Max | Mean | Std |
 |-----------|-----|-----|------|-----|
@@ -1658,35 +1654,38 @@ Manual visual audit: **91.3%** of classifications validated correct (84/92).
 
 ### 15.3 Haldane analysis (21 pesticide+LB strains)
 
-- **Haldane preferred over Gompertz by AICc:** 16/21 (76%)
-- All 6 pesticides show measurable Ki (inhibition constant)
-- Confirms substrate inhibition kinetics are present in pesticide bioremediators
+- **Haldane preferred over Gompertz by AICc:** 7/22, all in strains whose comparison window is the whole 95-100 h run, where a single Gompertz cannot describe the decline phase (Malathion + LB: Gompertz R² < 0 on the full window against 0.998 on its own growth window)
+- **Ki identified:** 0/22. With S0 fixed and the profile-likelihood test, no strain constrains Ki; the previously reported Ki values (all ~10) were the optimiser's starting value, which it could not move from.
+- The data therefore do not support a substrate-inhibition claim; the model comparison is kept as a documented negative result.
 
 ### 15.4 Truncation method comparison
 
-- **Adaptive R² best overall:** mean R² 0.9959
-- **17/22 bad strains rescued** by alternative truncation methods
+- Methods are now ranked by median R² with failure counts alongside; see `method_summary.csv`
+- A BAD strain counts as rescued only when its refit passes every quality gate; see `rescued_strains.csv`
 
 ### 15.5 Bad strain rescue
 
-17 of 22 candidate bad strains were rescued by alternative truncation methods.
+See `results/tables/Advanced_Analysis/truncation_comparison/rescued_strains.csv` for the current list; the earlier figure of 17 of 22 counted any R² improvement as a rescue, including water controls.
 
 ### 15.6 Pipeline validation
 
 | Validation type | Metric | Value |
 |----------------|--------|-------|
-| **Synthetic validation** (480 curves) | Accuracy | 99.6% |
-| | Precision | 100% |
-| | Recall | 99.4% |
-| | F1 Score | 99.7% |
-| **ML Classifier** (170 held-out curves) | Accuracy | 95.9% |
-| | Precision | 95.8% |
+| **Synthetic validation** (480 curves, first-peak rule) | Accuracy | 87.3% |
+| | Precision | 90.1% |
+| | Recall | 92.5% |
+| | F1 Score | 91.3% |
+| **ML Classifier** (5-fold CV on 480 synthetic curves) | Accuracy | 96.2% |
+| | Precision | 97.5% |
 | | Recall | 97.4% |
-| | F1 Score | 97.0% |
-| | Specificity | 94.3% |
-| **Manual audit** (92 real curves) | Agreement | 91.3% |
+| | Specificity | 92.5% |
+| **ML Classifier** (85 audited real curves, held out; 67 fitted) | Precision | 96.4% |
+| | Recall | 96.4% |
+| | Specificity | 83.3% |
+| **Visual audit** (85 confident calls, earlier pipeline version) | Reproduced by first-peak rule | 74 |
+| | Reproduced by adaptive rule | 73 |
 
-The ML classifier uses a two-stage HistGradientBoosting architecture trained on 395 curves (70/30 stratified split from 565 total: 480 synthetic + 85 real audited). Probability distribution is bimodal — all predictions are p<0.05 or p>0.95 with no borderline cases. Pre-fit gate rejects 40/53 BAD curves (75%) with 0 false rejects, saving expensive Gompertz fitting.
+The ML classifier uses a two-stage HistGradientBoosting architecture trained on the 480 synthetic curves only; the 85 audited real curves are an external test set. It is off by default (`ml_classifier.enabled: false`) and, in the lab interface, only ever a second opinion next to the rule-based call.
 
 ### 15.7 Test suite
 

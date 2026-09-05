@@ -1,5 +1,4 @@
 strain,p_good,label,is_borderline
-FlupyradifuroneANDLB-FLUPC8,1.0,GOOD (high confidence),False
 BifenthrinANDLB-BIF2,1.0,GOOD (high confidence),False
 BifenthrinANDLB-BiF7,1.0,GOOD (high confidence),False
 BifenthrinANDLB-BIF6,1.0,GOOD (high confidence),False
@@ -11,39 +10,37 @@ LB-LCY4,1.0,GOOD (high confidence),False
 LB-BIF6,1.0,GOOD (high confidence),False
 LB-BIF9,1.0,GOOD (high confidence),False
 LB-FLUPC8,1.0,GOOD (high confidence),False
-Bifenthrin-BIF6,1.0,GOOD (high confidence),False
+FlupyradifuroneANDLB-FLUPC8,1.0,GOOD (high confidence),False
 LAMBDACYHALOTHRINANDLB-LCY1,1.0,GOOD (high confidence),False
-MALATHIONANDLB-MAL8,1.0,GOOD (high confidence),False
-MALATHIONANDLB-MAL1,1.0,GOOD (high confidence),False
-MALATHIONANDLB-MAL5,1.0,GOOD (high confidence),False
-MALATHIONANDLB-MAL4,1.0,GOOD (high confidence),False
-LB-MAL8,1.0,GOOD (high confidence),False
-LB-MAL10,1.0,GOOD (high confidence),False
+MALATHIONANDLB-MAL8,0.0,BAD,False
+MALATHIONANDLB-MAL1,0.0,BAD,False
+MALATHIONANDLB-MAL5,0.0,BAD,False
+MALATHIONANDLB-MAL4,0.0,BAD,False
+LB-MAL8,0.0,BAD,False
+LB-MAL10,0.0,BAD,False
 LB-MAL1,1.0,GOOD (high confidence),False
-LB-MAL5,1.0,GOOD (high confidence),False
-LB-MAL4,1.0,GOOD (high confidence),False
+LB-MAL5,0.014,BAD,False
+LB-MAL4,0.0,BAD,False
 LB-LCY1,1.0,GOOD (high confidence),False
-IMIDACLOPRID-IMID2,1.0,GOOD (high confidence),False
 LAMBDACYHALOTHRINANDLB-LCY01,1.0,GOOD (high confidence),False
-LAMBDACYHALOTHRINANDLB-LCY2,1.0,GOOD (high confidence),False
-LB-IMID2,1.0,GOOD (high confidence),False
-LB-IMID3,1.0,GOOD (high confidence),False
-LB-IMID8,1.0,GOOD (high confidence),False
-LB-LCY01,1.0,GOOD (high confidence),False
+LAMBDACYHALOTHRINANDLB-LCY2,0.011,BAD,False
+IMIDACLOPRID-IMID2,1.0,GOOD (high confidence),False
 IMIDACLOPRIDANDLB-IMID2,1.0,GOOD (high confidence),False
 IMIDACLOPRIDANDLB-IMID3,1.0,GOOD (high confidence),False
 IMIDACLOPRIDANDLB-IMID5,1.0,GOOD (high confidence),False
 IMIDACLOPRIDANDLB-IMID8,1.0,GOOD (high confidence),False
+LB-IMID2,1.0,GOOD (high confidence),False
+LB-IMID3,1.0,GOOD (high confidence),False
+LB-IMID8,1.0,GOOD (high confidence),False
+LB-LCY01,1.0,GOOD (high confidence),False
 H2O-IMID2,1.0,GOOD (high confidence),False
 PERMETHRIN-PERM4,1.0,GOOD (high confidence),False
 PERMETHRIN-PERM7,1.0,GOOD (high confidence),False
-LAMBDACYHALOTHRINANDLB-LCY3,1.0,GOOD (high confidence),False
 PERMETHRINANDLB-PERM4,1.0,GOOD (high confidence),False
 PERMETHRINANDLB-CYPERM2,1.0,GOOD (high confidence),False
 PERMETHRINANDLB-PERM7,1.0,GOOD (high confidence),False
 PERMETHRINANDLB-CISPERM1,1.0,GOOD (high confidence),False
-LB-PERM4,1.0,GOOD (high confidence),False
-LB-PERM7,1.0,GOOD (high confidence),False
+LAMBDACYHALOTHRINANDLB-LCY3,0.994,GOOD (high confidence),False
+LB-PERM4,0.0,BAD,False
+LB-PERM7,0.0,BAD,False
 LB-LCY3,1.0,GOOD (high confidence),False
-H2O-CYPERM2,0.0,BAD,False
-H2O-LCY3,0.0,BAD,False
