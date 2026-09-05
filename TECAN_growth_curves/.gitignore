@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+.claude/
+
+# Trained models (regenerate with: make train-classifier)
+models/*.joblib
+
+# Bayesian MCMC traces (large; regenerate with: make advanced)
+*.nc
+
+# Regenerable per-strain diagnostic plots (regenerate with: make full-pipeline)
+results/tables/*_Results/plots/
+results/tables/Haldane_Analysis/plots/
+results/tables/Advanced_Analysis/ensemble_truncation/plots/
+results/tables/Advanced_Analysis/gp_truncation/plots/
+results/tables/Advanced_Analysis/truncation_comparison/overlay_plots/
+results/tables/Advanced_Analysis/truncation_comparison/bad_strain_overlay_plots/
+synthetic_data/output/**/plots/
+
+# App runtime
+.streamlit/secrets.toml
+app/.cache/

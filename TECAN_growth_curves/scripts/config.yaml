@@ -1,0 +1,178 @@
+# =============================================================================
+# TECAN Growth Curve Pipeline Configuration
+# BIO380SP25 - Pesticide Bioremediating Bacteria Research Project
+# =============================================================================
+
+# Gompertz fit-quality classification thresholds
+classification:
+  min_r_squared: 0.95          # Minimum R-squared for GOOD classification
+  max_param_error_pct: 20.0    # Maximum relative parameter error (%)
+  min_points_for_fit: 15       # Minimum data points to attempt fitting
+
+# Secondary quality gates (applied after Gompertz fit)
+quality_gates:
+  min_snr: 5.0                 # Minimum signal-to-noise ratio
+  min_delta_od_ci: 0.1         # Minimum delta-OD confidence interval lower bound
+  min_absolute_delta_od: 0.15  # Absolute minimum delta-OD for growth detection
+  pre_fit_snr_threshold: 3.0   # Pre-fit SNR threshold (skip fitting below this)
+  pre_fit_delta_od_override: 0.5  # If delta-OD > this, bypass low pre-fit SNR
+  excellent_r2_threshold: 0.98 # R-squared above which noise-based gates are bypassed
+  min_monotone_fraction: 0.55  # Minimum fraction of increasing consecutive points
+  max_residual_autocorr: 0.7   # Maximum lag-1 residual autocorrelation
+
+# Truncation parameters
+truncation:
+  smoothing_window: 5          # Rolling average window for peak detection
+  buffer_points: 3             # Points to keep after max for fit stability
+  min_points_for_fit: 20       # Minimum points after truncation
+  use_first_peak: true         # Truncate at first local max (vs global max)
+  use_adaptive: false          # Adaptive R-squared-optimizing truncation
+  # Incomplete curve detection (prevents FNs when experiment ended early)
+  incomplete_curve_tail_fraction: 0.15  # Fraction of tail to check for rising
+  incomplete_curve_slope_threshold: 0.005  # dOD/dt threshold for "still rising"
+  # Monte Carlo Cross-Validated truncation (used when use_adaptive: true)
+  mccv:
+    n_coarse_candidates: 50          # Coarse scan points across full range
+    n_cv_folds: 20                   # Random 80/20 splits per candidate
+    cv_holdout_fraction: 0.2         # Fraction held out per fold
+    n_fine_tune_top: 3               # Top candidates to fine-tune
+    fine_tune_window: 10             # Points ± around top candidates
+    try_multi_model: false           # Also try logistic/baranyi/richards
+    min_points: 30                   # Minimum data points for MCCV fitting
+
+# OD-threshold classification (legacy, use --od-based flag)
+od_thresholds:
+  min_delta_od: 0.3            # Minimum OD change for good classification
+  min_max_od: 0.5              # Minimum peak OD
+  min_snr: 5.0                 # Minimum signal-to-noise ratio
+  max_initial_od: 0.15         # Maximum starting OD (contamination check)
+
+# Haldane model settings
+haldane:
+  default_S0: 1.0              # Default substrate concentration (arbitrary units)
+  parameter_bounds:
+    mu_max: [0.001, 5.0]
+    Ks: [0.001, 10.0]
+    Ki: [0.1, 1000.0]
+    X_max: [0.05, 5.0]
+    q: [0.001, 10.0]
+    X0: [0.000001, 0.5]
+    S0: [0.01, 100.0]
+
+# Data directories (relative to TECAN_growth_curves/)
+paths:
+  raw_data: data/raw
+  results: results/tables
+  scripts: scripts
+
+# Group definitions
+groups:
+  Group1:
+    data_dir: data/raw/Group1/Group_1_DATA
+    output_dir: results/tables/Group1_Results
+    pesticides: [Bifenthrin, Flupyradifurone, LambdaCyhalothrin]
+  Group2:
+    data_dir: data/raw/Group 2/Group_2_DATA
+    output_dir: results/tables/Group2_Results
+    pesticides: [Malathion, LambdaCyhalothrin]
+  Group3:
+    data_dir: data/raw/Group 3/Group_3_DATA
+    output_dir: results/tables/Group3_Results
+    pesticides: [Imidacloprid, LambdaCyhalothrin]
+  Group4:
+    data_dir: data/raw/Group 4/Group4_DATA
+    output_dir: results/tables/Group4_Results
+    pesticides: [Permethrin, LambdaCyhalothrin]
+
+# =============================================================================
+# Advanced Statistical Methods (06_advanced_fitting.py)
+# =============================================================================
+
+advanced:
+  # GP-based truncation
+  gp:
+    kernel_length_scale: 2.0       # RBF initial length scale (hours)
+    kernel_noise: 0.01             # WhiteKernel noise level
+    derivative_threshold: 0.01     # dmu/dt threshold (fraction of max if normalized)
+    normalize_derivative: true     # Normalize threshold relative to max derivative
+    stationary_fallback_fraction: 0.05  # Fallback: stationary onset at 5% of max deriv
+    n_restarts: 5                  # kernel optimization restarts
+    min_length_scale: 0.5          # prevent overfitting on sparse data
+
+  # Bayesian sampling
+  bayesian:
+    gompertz:
+      draws: 2000
+      tune: 1000
+      chains: 4
+      target_accept: 0.90
+    haldane:
+      draws: 5000
+      tune: 3000
+      chains: 4
+      sampler: DEMetropolisZ       # gradient-free (ODE model)
+
+  # Bayesian priors
+  priors:
+    # Gompertz hyperpriors (based on observed data ranges)
+    mu_A: [1.3, 0.5]              # Normal(mu, sigma) for max OD
+    mu_mu: [0.25, 0.15]           # Normal(mu, sigma) for growth rate
+    mu_lam: [2.0, 2.0]            # Normal(mu, sigma) for lag time
+    sigma_obs: 0.05               # HalfNormal sigma for observation noise
+    # Haldane hyperpriors
+    mu_log_Ki: [2.0, 1.0]         # Normal(mu, sigma) for log(Ki) population mean
+    sigma_log_Ki: 1.0             # HalfNormal sigma for between-pesticide Ki variance
+
+  # Bootstrap settings
+  bootstrap:
+    n_resamples: 1000
+    ci_level: 0.95
+
+  # Bayesian classification thresholds
+  classification:
+    p_good_high: 0.90             # high confidence GOOD
+    p_good_low: 0.50              # moderate confidence GOOD
+    borderline_range: [0.30, 0.70]
+
+  # Convergence diagnostics
+  convergence:
+    max_rhat: 1.05
+    min_ess_bulk: 400
+    min_ess_tail: 200
+
+  # Ensemble truncation
+  ensemble:
+    enabled: true                        # Use ensemble truncation by default
+    consensus_method: weighted_median    # weighted_median | median | weighted_mean
+    max_disagreement_hours: 4.0          # Flag if methods disagree > this
+    min_methods_required: 3              # Flag if fewer methods succeed
+    mad_outlier_threshold: 3.0           # MAD multiplier for outlier detection
+    methods:
+      first_peak: true
+      stationary_phase: true
+      adaptive_r2: true
+      gp_derivative: true
+      changepoint: true
+    changepoint:
+      model: rbf                         # ruptures cost model
+      penalty: null                      # null = auto: 3*log(n)
+      min_size: null                     # null = auto: max(10, n//10)
+
+  # Output
+  output_dir: results/tables/Advanced_Analysis
+
+# =============================================================================
+# ML Classifier (09_train_classifier.py, ml_classifier.py)
+# =============================================================================
+
+ml_classifier:
+  enabled: false                                   # Use ML classifier (requires trained models)
+  prefit_gate:
+    model_path: models/prefit_gate.joblib           # Pre-fit gate model
+    reject_threshold: 0.05                          # P(good) <= this → skip fitting (conservative)
+  postfit_classifier:
+    model_path: models/postfit_classifier.joblib    # Post-fit classifier model
+    good_threshold: 0.7                             # P(good) >= this → GOOD
+    bad_threshold: 0.3                              # P(good) <= this → BAD
+  feature_config_path: models/feature_config.json
+  fallback_to_rules: true                           # Fall back to rule-based if models missing

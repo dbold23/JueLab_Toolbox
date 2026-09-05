@@ -1,0 +1,4 @@
+strain,p_good,label,is_borderline
+H2O-IMID2,0.470875,BAD,True
+PERMETHRIN-PERM4,0.48475,BAD,True
+PERMETHRIN-PERM7,0.6015,GOOD (moderate confidence),True
