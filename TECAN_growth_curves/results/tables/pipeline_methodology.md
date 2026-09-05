@@ -181,11 +181,11 @@ only **Good** fits and uses human-readable column names:
 
 | Group | Pesticide(s) | Strains | Total Curves | Good | Bad |
 |-------|-------------|---------|--------------|------|-----|
-| Group1 | Bifenthrin, Flupyradifurone, LambdaCyhalothrin | BIF2, BIF6, BIF9, BiF7, FLUPC8, LCY4 | 24 | 13 | 11 |
+| Group1 | Bifenthrin, Flupyradifurone, LambdaCyhalothrin | BIF2, BIF6, BIF9, BiF7, FLUPC8, LCY4 | 24 | 12 | 12 |
 | Group2 | LAMBDACYHALOTHRIN, MALATHION | LCY1, MAL1, MAL10, MAL4, MAL5, MAL8 | 24 | 11 | 13 |
 | Group3 | IMIDACLOPRID, LAMBDACYHALOTHRIN | IMID2, IMID3, IMID5, IMID8, LCY01, LCY2 | 24 | 12 | 12 |
-| Group4 | LAMBDACYHALOTHRIN, PERMETHRIN | CISPERM1, CYPERM2, LCY3, PERM4, PERM7 | 20 | 12 | 8 |
-| **Total** | | | **92** | **48** | **44** |
+| Group4 | LAMBDACYHALOTHRIN, PERMETHRIN | CISPERM1, CYPERM2, LCY3, PERM4, PERM7 | 20 | 10 | 10 |
+| **Total** | | | **92** | **45** | **47** |
 
 ### Treatment Conditions per Strain
 

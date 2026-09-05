@@ -383,8 +383,8 @@ When you run the pipeline, you should see approximately:
 | Group 1 | 24 | 12 | 12 |
 | Group 2 | 24 | 11 | 13 |
 | Group 3 | 24 | 12 | 12 |
-| Group 4 | 20 | 9 | 11 |
-| **Total** | **92** | **44** | **48** |
+| Group 4 | 20 | 10 | 10 |
+| **Total** | **92** | **45** | **47** |
 
 **Key findings:**
 - LB controls show excellent growth (R² > 0.97)
@@ -394,34 +394,33 @@ When you run the pipeline, you should see approximately:
 
 ### Validation Metrics
 
-**Rule-based (480 synthetic curves):**
+**Rule-based (480 synthetic curves, first-peak rule):**
 
 | Metric | Value |
 |--------|-------|
-| Accuracy | 99.6% |
-| Precision | 100% |
-| Recall | 99.4% |
-| F1 Score | 99.7% |
+| Accuracy | 87.3% |
+| Precision | 90.1% |
+| Recall | 92.5% |
+| F1 Score | 91.3% |
 
-**ML Classifier (held-out 30% test, 170 curves -- synthetic + real mixed):**
+**ML Classifier (5-fold CV on the 480 synthetic curves; the 85 audited real curves are an external test set):**
 
-| Metric | Value |
-|--------|-------|
-| Accuracy | 95.9% |
-| Precision | 97.4% |
-| Recall | 96.6% |
-| F1 Score | 97.0% |
-| Specificity | 94.3% |
+| Metric | Synthetic CV | Real audit set (67 fitted) |
+|--------|-------|-------|
+| Accuracy | 96.2% | 94.0% |
+| Precision | 97.5% | 96.4% |
+| Recall | 97.4% | 96.4% |
+| Specificity | 92.5% | 83.3% |
 
-25/32 test scenarios achieve 100% accuracy. Manual audit of 92 real curves: 91.3% validated correct.
+26 of 32 synthetic scenarios are classified 100% correctly; the misses are listed in `synthetic_data/output/comprehensive_test/VALIDATION_SUMMARY.md`. Of the 85 confident calls in the visual audit (recorded against an earlier pipeline version), the first-peak rule reproduces 74 and the adaptive rule 73; almost every difference is a well with a 0.05-0.13 OD rise that the present 0.15 OD growth gate rejects.
 
-### Truncation Method Comparison (44 good strains)
+### Truncation Method Comparison
 
-The weighted-median consensus achieves the highest mean R². All top-5 methods perform within 0.002 of each other. Candidate bad strains may be rescued by alternative truncation methods.
+Methods are ranked by median R² across the GOOD strains, with failure counts alongside, in `results/tables/Advanced_Analysis/truncation_comparison/method_summary.csv`. A BAD strain counts as rescued only when its refit passes every quality gate of the main pipeline.
 
 ### Haldane Analysis Results
 
-The Haldane model was preferred over Gompertz for **16/21** (76%) pesticide+LB strains by AIC, confirming substrate inhibition kinetics are present. All 6 pesticides tested (Bifenthrin, Flupyradifurone, Imidacloprid, Lambda-Cyhalothrin, Malathion, Permethrin) show measurable inhibition constants (Ki).
+With S0 held fixed and a profile-likelihood identifiability test, **no strain (0/22) constrains Ki**; the Ki values reported before (all close to 10) were the optimiser's starting point. Haldane is preferred by AICc for 7/22 strains, all of them compared on the whole 95-100 h run where a single Gompertz cannot describe the decline phase. The data do not support a substrate-inhibition claim.
 
 ---
 
