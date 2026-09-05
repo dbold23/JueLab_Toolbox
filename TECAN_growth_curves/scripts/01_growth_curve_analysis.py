@@ -210,7 +210,8 @@ def classify_by_fit_quality(
     thresholds: Optional[Dict[str, float]] = None,
     time: Optional[np.ndarray] = None,
     od600: Optional[np.ndarray] = None,
-    is_incomplete: bool = False
+    is_incomplete: bool = False,
+    fit_window: Optional[Tuple[int, int]] = None,
 ) -> ClassificationResult:
     """
     Classify a growth curve based on Gompertz fit quality.
@@ -243,15 +244,26 @@ def classify_by_fit_quality(
     if thresholds is None:
         thresholds = FIT_QUALITY_THRESHOLDS
 
+    def _err_pct(err: float, value: float) -> float:
+        # A standard error of exactly zero means the optimiser pinned the
+        # parameter to a bound (the covariance is meaningless there); a
+        # non-finite one means the covariance could not be estimated. Both
+        # are "unknown", not "perfect", so they must fail the error gate.
+        if value is None or not np.isfinite(value) or value <= 0:
+            return float('inf')
+        if err is None or not np.isfinite(err) or err <= 0:
+            return float('inf')
+        return float(err / value * 100)
+
     metrics = {
         'r_squared': fit_result.r_squared,
         'rmse': fit_result.rmse,
         'a_opt': fit_result.a_opt,
         'mu_opt': fit_result.mu_opt,
         'lambda_opt': fit_result.lambda_opt,
-        'a_err_pct': (fit_result.a_err / fit_result.a_opt * 100) if fit_result.a_opt > 0 else float('inf'),
-        'mu_err_pct': (fit_result.mu_err / fit_result.mu_opt * 100) if fit_result.mu_opt > 0 else float('inf'),
-        'lambda_err_pct': (fit_result.lambda_err / fit_result.lambda_opt * 100) if fit_result.lambda_opt > 0 else float('inf'),
+        'a_err_pct': _err_pct(fit_result.a_err, fit_result.a_opt),
+        'mu_err_pct': _err_pct(fit_result.mu_err, fit_result.mu_opt),
+        'lambda_err_pct': _err_pct(fit_result.lambda_err, fit_result.lambda_opt),
     }
 
     reasons = []
@@ -270,9 +282,10 @@ def classify_by_fit_quality(
 
     # Check parameter errors (only A and mu - lambda can be tricky near zero)
     max_err = thresholds['max_param_error_pct']
-    if metrics['a_err_pct'] > max_err:
+    # 'not (x <= max)' so that NaN/inf (unknown error) fails rather than passes
+    if not (metrics['a_err_pct'] <= max_err):
         reasons.append(f"High A error: {metrics['a_err_pct']:.1f}% > {max_err}%")
-    if metrics['mu_err_pct'] > max_err:
+    if not (metrics['mu_err_pct'] <= max_err):
         reasons.append(f"High mu error: {metrics['mu_err_pct']:.1f}% > {max_err}%")
 
     # =====================================================================
@@ -288,7 +301,14 @@ def classify_by_fit_quality(
         n_baseline = min(10, len(od600) // 5)
         baseline = od600[:n_baseline]
         baseline_mean = float(np.mean(baseline))
-        baseline_std = float(np.std(baseline)) if float(np.std(baseline)) > 1e-8 else 1e-8
+        # Noise floor: blank subtraction clips values at zero, so a baseline can
+        # be exactly flat. A floor of ~0.002 OD (the reader's own resolution)
+        # keeps SNR meaningful instead of ~1e8; the old 1e-8 floor made the
+        # SNR, delta-OD-CI and flatness gates impossible to fail.
+        noise_floor = float(thresholds.get('noise_floor_od', 0.002))
+        baseline_std_raw = float(np.std(baseline))
+        baseline_clipped = baseline_std_raw <= 1e-8
+        baseline_std = max(baseline_std_raw, noise_floor)
         max_od = float(np.max(od600))
         delta_od = max_od - baseline_mean
 
@@ -322,14 +342,25 @@ def classify_by_fit_quality(
             reasons.append(f"Growth amplitude below noise: A={fit_result.a_opt:.3f} < 3*noise={3*baseline_std:.3f}")
 
         # Monotonicity check: real growth curves have sustained upward trends.
-        # Compute fraction of consecutive smoothed points that increase over
-        # the first 60% of data (lag + exponential phase). Pure noise is ~50%.
+        # Fraction of consecutive smoothed points that rise inside the growth
+        # window that was fitted (when known), otherwise over the first 60% of
+        # the run. Pure noise is ~50%. Judging a 100 h run on its plateau and
+        # decline phases would penalise perfectly good curves.
         smoothed_check = pd.Series(od600).rolling(
             window=5, center=True, min_periods=1
         ).mean().values
-        check_end = max(10, int(len(smoothed_check) * 0.6))
-        diffs = np.diff(smoothed_check[:check_end])
-        monotone_frac = float(np.sum(diffs > 0) / max(len(diffs), 1))
+        if fit_window is not None:
+            w0 = max(0, int(fit_window[0]))
+            w1 = min(len(smoothed_check) - 1, int(fit_window[1]))
+            segment = smoothed_check[w0:w1 + 1]
+            if len(segment) < 10:
+                segment = smoothed_check[:max(10, int(len(smoothed_check) * 0.6))]
+        else:
+            check_end = max(10, int(len(smoothed_check) * 0.6))
+            segment = smoothed_check[:check_end]
+        diffs = np.diff(segment)
+        # ties (>= 0) only arise from values clipped to zero; they are not declines
+        monotone_frac = float(np.sum(diffs >= 0) / max(len(diffs), 1))
         min_monotone = thresholds.get('min_monotone_fraction', 0.55)
         if monotone_frac < min_monotone and not fit_is_excellent:
             reasons.append(
@@ -338,18 +369,29 @@ def classify_by_fit_quality(
 
         # Residual autocorrelation check: structured residuals indicate the
         # Gompertz model is fitting noise rather than real sigmoid growth.
+        # The lag is a fixed span of time (1 h by default), not one sample:
+        # at one sample the statistic mostly measures how densely the run
+        # was sampled and trips on nearly every 15-minute curve.
         if fit_result.success and len(fit_result.residuals) > 10:
             resid = fit_result.residuals
             n_res = len(resid)
+            lag_h = float(thresholds.get('autocorr_lag_hours', 1.0))
+            if time is not None and len(time) > 1:
+                dt = float(np.median(np.diff(np.asarray(time, dtype=float))))
+                lag = int(round(lag_h / dt)) if dt > 0 else 1
+            else:
+                lag = 1
+            lag = int(min(max(lag, 1), max(1, n_res // 4)))
             resid_mean = np.mean(resid)
             c0 = np.sum((resid - resid_mean) ** 2) / n_res
             if c0 > 1e-12:
                 c1 = np.sum(
-                    (resid[:-1] - resid_mean) * (resid[1:] - resid_mean)
+                    (resid[:-lag] - resid_mean) * (resid[lag:] - resid_mean)
                 ) / n_res
                 lag1_autocorr = c1 / c0
             else:
                 lag1_autocorr = 0.0
+            metrics['residual_autocorr_lag'] = lag
             max_autocorr = thresholds.get('max_residual_autocorr', 0.7)
             if lag1_autocorr > max_autocorr and not fit_is_excellent and not is_incomplete:
                 reasons.append(
@@ -360,6 +402,7 @@ def classify_by_fit_quality(
         metrics['snr'] = snr
         metrics['delta_od'] = delta_od
         metrics['baseline_std'] = baseline_std
+        metrics['baseline_clipped'] = baseline_clipped
         metrics['monotone_fraction'] = monotone_frac
         metrics['delta_od_ci_lower'] = delta_od_ci_lower
 
@@ -451,7 +494,8 @@ def find_first_local_maximum(
     od600: np.ndarray,
     smoothed_od: np.ndarray,
     min_growth_threshold: float = 0.1,
-    plateau_window: int = 10
+    plateau_window: int = 10,
+    time: Optional[np.ndarray] = None,
 ) -> int:
     """
     Find the FIRST local maximum after exponential growth phase.
@@ -477,8 +521,20 @@ def find_first_local_maximum(
     int
         Index of the first local maximum
     """
-    # Calculate derivative of smoothed data
-    derivative = np.diff(smoothed_od)
+    # Derivative of the smoothed data. With `time` given it is in OD per hour
+    # and the plateau test is relative to the curve's own fastest rate, so the
+    # rule does not depend on how often the reader sampled or how fast the
+    # strain grows. Without `time` the legacy per-sample thresholds apply.
+    if time is not None and len(time) == len(smoothed_od):
+        dt = np.maximum(np.diff(np.asarray(time, dtype=float)), 1e-6)
+        derivative = np.diff(smoothed_od) / dt
+        max_rate = float(np.max(derivative)) if len(derivative) else 0.0
+        rising_threshold = 0.20 * max_rate
+        flat_threshold = 0.10 * max_rate
+    else:
+        derivative = np.diff(smoothed_od)
+        rising_threshold = 0.001
+        flat_threshold = 0.005
 
     # Find where growth has meaningfully started (above threshold)
     # This avoids detecting noise in the lag phase as a "peak"
@@ -508,7 +564,7 @@ def find_first_local_maximum(
         upcoming_trend = np.mean(derivative[i:i+plateau_window])
 
         # Detect peak: was growing, now flattening/declining
-        if recent_growth > 0.001 and upcoming_trend <= 0.005:
+        if recent_growth > rising_threshold and upcoming_trend <= flat_threshold:
             # Verify this is a meaningful peak (not just noise)
             # The OD at this point should be at least 50% of max OD
             if smoothed_od[i] > 0.5 * np.max(smoothed_od):
@@ -950,11 +1006,21 @@ def find_optimal_truncation_v2(
     """
     n_points = len(time)
 
+    # Too few points for any scan: use everything (the smoothing below needs >= 5)
+    if n_points < max(5, min_points):
+        return TruncationLandscape(
+            best_start_idx=0, best_end_idx=n_points - 1,
+            best_end_time=float(time[-1]), best_cv_score=0.0,
+            best_model='gompertz', candidates=[], confidence=0.0,
+            bio_estimate_idx=n_points - 1
+        )
+
     # Find growth start
     if trim_noisy_start:
         start_idx, _ = find_growth_start(time, od600)
     else:
         start_idx = 0
+    observed_max_od = float(np.max(od600))
 
     # Early exit for flat / no-growth curves (skip expensive MCCV)
     signal_range = float(np.max(od600) - np.min(od600))
@@ -1133,18 +1199,36 @@ def find_optimal_truncation_v2(
     # ---- Find best and compute confidence ----
     all_candidates = sorted(evaluated.values(),
                             key=lambda c: (-c.cv_score, c.end_idx))
-    best = all_candidates[0]
 
-    # Confidence: how peaked is the landscape?
+    # Guard against the shortest-window collapse: a steep 30-point segment of
+    # the exponential phase can score a near-perfect hold-out R^2 while its
+    # fitted A extrapolates far above anything that was measured. Candidates
+    # whose A exceeds the observed maximum OD by more than `max_a_overshoot`
+    # describe a curve that does not exist in the data, so they are dropped
+    # when any other candidate remains. Among the candidates whose scores are
+    # statistically indistinguishable from the best (within `score_tol`), the
+    # window ending closest to the biological plateau estimate wins, so the
+    # cut lands at the end of primary growth rather than at whichever segment
+    # happened to score a hair higher.
+    max_a_overshoot = 1.15
+    score_tol = 0.002
+    plausible = [c for c in all_candidates
+                 if not c.params or c.params.get('a', 0.0) <= max_a_overshoot * observed_max_od]
+    if plausible:
+        top = plausible[0].cv_score
+        near = [c for c in plausible if c.cv_score >= top - score_tol]
+        best = min(near, key=lambda c: (abs(c.end_idx - bio_idx), -c.cv_score))
+    else:
+        best = all_candidates[0]
+
+    # Confidence: how peaked is the landscape? Zero when nothing fits at all;
+    # otherwise the fraction of candidates that are clearly worse than the best.
     scores = np.array([c.cv_score for c in all_candidates if c.cv_score > -0.5])
-    if len(scores) >= 3:
-        best_score = scores[0]
-        score_range = best_score - np.min(scores)
-        if score_range > 1e-6:
-            near_best = np.sum(scores >= 0.95 * best_score) / len(scores)
-            confidence = float(np.clip(1.0 - near_best / 0.5, 0.0, 1.0))
-        else:
-            confidence = 0.0
+    if best.cv_score <= 0 or len(scores) == 0:
+        confidence = 0.0
+    elif len(scores) >= 3:
+        near_best = float(np.sum(scores >= best.cv_score - score_tol) / len(scores))
+        confidence = float(np.clip(1.0 - near_best, 0.0, 1.0))
     else:
         confidence = 0.5
 
@@ -1444,10 +1528,10 @@ def truncate_at_max(
         landscape = find_optimal_truncation_v2(time, od600)
         start_idx = landscape.best_start_idx
         truncation_idx = landscape.best_end_idx
-        actual_max_idx = np.argmax(od600[start_idx:truncation_idx]) + start_idx if truncation_idx > start_idx else start_idx
+        actual_max_idx = np.argmax(od600[start_idx:truncation_idx + 1]) + start_idx if truncation_idx >= start_idx else start_idx
     elif use_first_peak:
         # Find FIRST local maximum (scientifically appropriate for Gompertz)
-        max_idx_smoothed = find_first_local_maximum(od600, smoothed_od)
+        max_idx_smoothed = find_first_local_maximum(od600, smoothed_od, time=time)
 
         # Find actual maximum within a small window around the detected peak
         search_start = max(0, max_idx_smoothed - smoothing_window)
@@ -1678,7 +1762,9 @@ def richards_model(t: np.ndarray, A: float, k: float, t_mid: float, nu: float) -
         Shape parameter (asymmetry)
     """
     if abs(nu) < 1e-6:
-        return gompertz_model(t, A, k * A / np.e, t_mid - A / (k * np.e))
+        # nu -> 0 limit of the Richards curve is the Gompertz curve with
+        # mu = k*A/e and lag = t_mid - 1/k
+        return gompertz_model(t, A, k * A / np.e, t_mid - 1.0 / k)
     with np.errstate(over='ignore', invalid='ignore'):
         base = np.clip(1 + nu * np.exp(-k * (t - t_mid)), 1e-10, None)
         y = A * np.power(base, -1.0 / nu)
@@ -1708,19 +1794,32 @@ def fit_gompertz(
         Contains optimized parameters, errors, and fit quality metrics
     """
     try:
-        # Initial parameter estimates
-        a_init = np.max(od600)
+        time = np.asarray(time, dtype=float)
+        od600 = np.asarray(od600, dtype=float)
+        # ---- input validation: fail with a clear message, never with a stack trace
+        if len(time) != len(od600) or len(od600) < 4:
+            raise ValueError(f"need at least 4 points, got {len(od600)}")
+        if not (np.all(np.isfinite(time)) and np.all(np.isfinite(od600))):
+            raise ValueError("time and OD must be finite (remove NaN/inf first)")
+        if np.any(np.diff(time) <= 0):
+            raise ValueError("time must be strictly increasing (sort and drop duplicate time stamps)")
+        if np.max(od600) <= 0 or (np.max(od600) - np.min(od600)) < 1e-6:
+            raise ValueError("no measurable growth (flat or non-positive curve)")
+
+        # Initial parameter estimates (kept inside the bounds below)
+        a_init = max(float(np.max(od600)), 0.02)
 
         # Estimate mu from maximum growth region
         diff = np.diff(od600)
-        dt = np.maximum(np.diff(time), 1e-6)
+        dt = np.diff(time)
         growth_rates = diff / dt
-        mu_init = np.max(growth_rates) if len(growth_rates) > 0 else 0.1
+        mu_init = float(np.max(growth_rates)) if len(growth_rates) > 0 else 0.1
         mu_init = max(mu_init, 0.01)  # Ensure positive
 
         # Estimate lambda (lag phase) - find where growth accelerates
-        max_growth_idx = np.argmax(growth_rates)
-        lambda_init = time[max_growth_idx] if max_growth_idx > 0 else time[0]
+        max_growth_idx = int(np.argmax(growth_rates))
+        lambda_init = float(time[max_growth_idx]) if max_growth_idx > 0 else float(time[0])
+        lambda_init = float(np.clip(lambda_init, 0.0, time[-1]))
 
         p0 = [a_init, mu_init, lambda_init]
 
@@ -1742,8 +1841,18 @@ def fit_gompertz(
 
         a_opt, mu_opt, lambda_opt = popt
 
-        # Calculate standard errors from covariance matrix
-        perr = np.sqrt(np.diag(pcov))
+        # Standard errors from the covariance matrix. A parameter that ended on
+        # a bound has no valid covariance (the Jacobian column vanishes and the
+        # reported error is exactly 0), so its error is marked unknown (inf)
+        # and the classification's error gate rejects it.
+        with np.errstate(invalid='ignore'):
+            perr = np.sqrt(np.diag(pcov))
+        lower, upper = bounds
+        for k in range(3):
+            span = max(abs(upper[k] - lower[k]), 1e-12)
+            at_bound = (abs(popt[k] - lower[k]) <= 1e-6 * span) or (abs(popt[k] - upper[k]) <= 1e-6 * span)
+            if at_bound or not np.isfinite(perr[k]) or perr[k] <= 0:
+                perr[k] = float('inf')
         a_err, mu_err, lambda_err = perr
 
         # Calculate fit quality metrics
@@ -1894,43 +2003,40 @@ def try_alternative_models(
             if r2 > best_r2:
                 perr = np.sqrt(np.diag(pcov))
 
-                # Map params to Gompertz-equivalent fields for FitResult
-                # Each model parameterizes growth rate differently;
-                # convert to Gompertz mu = max absolute growth rate
-                # (dy/dt at inflection) so parameters are comparable.
+                # Map the fitted curve onto Gompertz-style quantities in a way
+                # that is the same for every model: mu is the steepest slope of
+                # the fitted curve (OD/h), lambda is where that tangent line
+                # crosses OD = 0 (the classic geometric lag), A is the model's
+                # plateau. Errors are propagated by the relative error of the
+                # model's own rate/plateau parameters.
+                t_dense = np.linspace(float(time[0]), float(time[-1]), 2001)
+                y_dense = model_func(t_dense, *popt)
+                slope = np.gradient(y_dense, t_dense)
+                i_star = int(np.argmax(slope))
+                mu_opt = float(slope[i_star])
+                t_star, y_star = float(t_dense[i_star]), float(y_dense[i_star])
+                lambda_opt = float(t_star - y_star / mu_opt) if mu_opt > 0 else float('nan')
                 if model_name == 'logistic':
-                    # Logistic: y = A/(1+exp(-k*(t-t_mid)))
-                    # Max slope = A*k/4 at t=t_mid
-                    # Gompertz mu = A*mu_e/A*(e) => mu = max_slope
-                    A_raw, k_raw, tmid_raw = popt[0], popt[1], popt[2]
+                    A_raw, k_raw = popt[0], popt[1]
                     a_opt = A_raw
-                    mu_opt = A_raw * k_raw / 4.0  # max absolute growth rate
-                    lambda_opt = tmid_raw - 2.0 / max(k_raw, 1e-6)  # approx lag
                     a_err = perr[0]
-                    mu_err = perr[1] * A_raw / 4.0  # scale error
+                    rel_rate = perr[1] / abs(k_raw) if k_raw else float('inf')
                     lambda_err = perr[2]
                 elif model_name == 'baranyi':
-                    # Baranyi: mu_max = max specific growth rate (1/t units)
-                    # Gompertz mu = A * mu_max / e (max absolute rate)
-                    y0_raw, ymax_raw, mumax_raw, h0_raw = popt
+                    ymax_raw, mumax_raw = popt[1], popt[2]
                     a_opt = ymax_raw
-                    mu_opt = ymax_raw * mumax_raw / np.e  # convert to Gompertz mu
-                    lambda_opt = h0_raw / max(mumax_raw, 1e-6)  # h0/mu_max ≈ lag
                     a_err = perr[1]
-                    mu_err = perr[2] * ymax_raw / np.e  # scale error
-                    lambda_err = perr[3]
+                    rel_rate = perr[2] / abs(mumax_raw) if mumax_raw else float('inf')
+                    lambda_err = perr[3] / max(abs(mumax_raw), 1e-6)
                 elif model_name == 'richards':
-                    # Richards: y = A*(1+nu*exp(-k*(t-t_mid)))^(-1/nu)
-                    # Max slope = A*k*nu^(1/(1+nu))/(1+nu)
-                    A_raw, k_raw, tmid_raw, nu_raw = popt
+                    A_raw, k_raw = popt[0], popt[1]
                     a_opt = A_raw
-                    mu_opt = A_raw * k_raw * nu_raw**(1.0/(1.0+nu_raw)) / (1.0+nu_raw)
-                    lambda_opt = tmid_raw - np.log(1.0 + nu_raw) / max(k_raw, 1e-6)
                     a_err = perr[0]
-                    mu_err = perr[1] * A_raw * nu_raw**(1.0/(1.0+nu_raw)) / (1.0+nu_raw)
+                    rel_rate = perr[1] / abs(k_raw) if k_raw else float('inf')
                     lambda_err = perr[2]
                 else:
                     continue
+                mu_err = float(abs(mu_opt) * rel_rate)
 
                 mae = float(np.mean(np.abs(residuals)))
                 mse = float(np.mean(residuals ** 2))
@@ -2597,7 +2703,8 @@ def analyze_curve(
         rule_classification = classify_by_fit_quality(
             fit, fit_quality_thresholds,
             time=time_clean, od600=od600_clean,
-            is_incomplete=is_incomplete
+            is_incomplete=is_incomplete,
+            fit_window=(int(truncation.start_index), int(truncation.truncation_index)),
         )
         # Ensure OD metrics are present for ML feature extraction
         if 'delta_od' not in rule_classification.metrics:
@@ -2632,7 +2739,8 @@ def analyze_curve(
         classification = classify_by_fit_quality(
             fit, fit_quality_thresholds,
             time=time_clean, od600=od600_clean,
-            is_incomplete=is_incomplete
+            is_incomplete=is_incomplete,
+            fit_window=(int(truncation.start_index), int(truncation.truncation_index)),
         )
         if 'delta_od' not in classification.metrics:
             classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
@@ -2759,14 +2867,27 @@ def process_growth_curves(
         # results do not depend on the CSV parser's rounding)
         df = pd.read_csv(csv_file, float_precision="round_trip")
 
-        # Extract time column
-        time_cols = [c for c in df.columns if 'TIME' in c.upper()]
+        # Refuse raw plate exports (Cycle Nr., A1..H12 columns): they must be
+        # blank-corrected and averaged first (02_preprocess / the interface).
+        import re as _re
+        well_like = [c for c in df.columns if _re.match(r'^[A-Ha-h]\s*0?(1[0-2]|[1-9])$', str(c).strip())]
+        if any(str(c).strip().lower().startswith('cycle') for c in df.columns) or len(well_like) >= 8:
+            print(f"  Warning: {csv_file.name} looks like a raw plate export "
+                  f"({len(well_like)} well columns); preprocess it first. Skipping")
+            continue
+
+        # Extract time column (name starts with 'time', case-insensitive)
+        time_cols = [c for c in df.columns if _re.match(r'^\s*time\b', str(c), _re.IGNORECASE)]
         if not time_cols:
             print(f"  Warning: No TIME column found in {csv_file.name}, skipping")
             continue
 
         time_col = time_cols[0]
-        time = df[time_col].values
+        time = df[time_col].values.astype(float)
+        if len(time) and np.nanmax(time) > 1000:
+            print(f"  Warning: {time_col} in {csv_file.name} looks like seconds (max {np.nanmax(time):.0f}); "
+                  "converting to hours")
+            time = time / 3600.0
 
         # Process each strain column
         strain_cols = [c for c in df.columns if c != time_col]
