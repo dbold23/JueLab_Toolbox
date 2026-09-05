@@ -1,169 +1,167 @@
 # TECAN Growth Curve Analysis Pipeline
 
-**BIO380SP25 — Pesticide Bioremediating Bacteria**
+Turn a TECAN Spark plate-reader export into growth parameters you can
+trust, with a point-and-click interface for the bench and a scripted
+pipeline for the paper.
 
-Automated pipeline for fitting growth models to TECAN plate reader data, classifying curve quality with ML-assisted classification, quantifying pesticide substrate inhibition via Haldane kinetics, performing advanced Bayesian and GP-based statistical analysis, and comparing truncation methods to rescue misclassified strains.
+For every strain × media condition on a 96-well plate the software
+subtracts the media blank, averages the replicates, finds where primary
+growth ends, fits the modified Gompertz model, and decides whether the fit
+can be believed. It reports the maximum OD (**A**), the maximum growth rate
+(**μ**), the lag time (**λ**) and the doubling time, with standard errors
+and the reason behind every GOOD or BAD call.
 
-## Quick Start
+![Pipeline](docs/images/pipeline.svg)
+
+## Start in 60 seconds
 
 ```bash
-pip install -r scripts/requirements.txt
-
-# Recommended: run the full 10-step pipeline
-make full-pipeline    # Complete end-to-end (10 steps)
-make core-pipeline    # Core only (skip GP/Ensemble)
-make dry-run          # Preview without running
-make step-2           # Run individual step
+git clone https://github.com/dbold23/TECAN-Growth-Curve-Analysis-Pipeline.git
+cd TECAN-Growth-Curve-Analysis-Pipeline
+make install          # pip install -r requirements.txt (Python 3.10 to 3.12)
+make app              # opens the lab interface in your browser
 ```
 
-## Pipeline Flow
+Press **Try the example plate** on the Home page. The plate loads with its
+key, the grid shows what is in every well, and **Run analysis** gives a
+verdict for all 24 conditions in a few seconds.
 
-The pipeline is orchestrated by `scripts/run_full_pipeline.py` and executes 10 steps in order:
+For your own plate: drop the SparkControl `.xlsx` (or the `Values` CSV) and
+a key file with `Cell, Media, Strain` columns. The bench-side checklist is
+in [docs/LAB_PROTOCOL.md](docs/LAB_PROTOCOL.md).
 
-```
-Step 0: Preprocess raw data       (Group 1 only, if needed)
-Step 1: Train ML classifier       (auto-skips if models/ exist)
-Step 2: Gompertz curve analysis    (per group, --adaptive, with ML)
-Step 3: Combine group results      (-> all_groups_results.csv)
-Step 4: Haldane inhibition         (ODE + AICc comparison)
-Step 5: Advanced fitting           (GP, Bootstrap, Ensemble)
-Step 6: Statistical analysis       (ANOVA, pairwise, figures)
-Step 7: Truncation comparison      (5-method ranking + rescue)
-Step 8: Export for collaboration    (clean CSV + methodology)
-Step 9: Synthetic validation       (480 curves -> accuracy metrics)
-```
+## The interface
 
-## What This Does
+| Page | What you do there |
+|---|---|
+| **Home** | Load the export and the key, fix the key in place, see the plate layout, run the analysis |
+| **Plate QC** | Δ OD heat map of every well, temperature trace, verdict grid: is the plate itself sound? |
+| **Curves** | One card per condition, BAD first. Fit, residuals, the gate that failed, "Show the math". Drag the window and refit, exclude a replicate, overrule a verdict with a note |
+| **Compare** | μ, A, λ and doubling time of every GOOD condition, relative to each strain's LB control; ANOVA and Kruskal-Wallis |
+| **Export** | Results CSV, report-ready summary, long-format curves, methods paragraph, and a zip bundle with a manifest that can be reloaded |
+| **How it works** | The manual, with the thresholds of the current settings filled into the text |
 
-1. **Gompertz Growth Model** — Fits `y(t) = A * exp(-exp((mu*e/A)*(lambda-t)+1))` to each strain's OD600 curve. Extracts maximum growth (A), growth rate (mu), and lag time (lambda).
+<table>
+<tr>
+<td><img src="docs/images/screenshots/home.png" alt="Home: plate layout and key editor"></td>
+<td><img src="docs/images/screenshots/plate_qc.png" alt="Plate QC: delta OD heat map"></td>
+</tr>
+<tr>
+<td><img src="docs/images/screenshots/curves.png" alt="Curves: fit, residuals and gates"></td>
+<td><img src="docs/images/screenshots/compare.png" alt="Compare: parameters relative to the LB control"></td>
+</tr>
+</table>
 
-2. **Two-Stage ML Classification** — Rule-based gates (R² >= 0.95, parameter error < 20%, secondary noise/SNR gates) plus an ML classifier (HistGradientBoosting) that adds biological metadata features (is-control, concentration) for three-class output: GOOD / BORDERLINE / BAD.
+Every threshold is a slider in the sidebar. Gates that do not need a refit
+re-evaluate instantly; a change to the window rule marks the run stale
+and offers a re-run. Every manual override is stored with a note and a
+timestamp and travels with the export.
 
-3. **Haldane Feedback Inhibition** — Fits a mechanistic ODE model (`mu(S) = mu_max * S / (Ks + S + S²/Ki)`) to pesticide+LB strains. Compares with Gompertz via AIC to test whether substrate inhibition kinetics explain growth better than a purely phenomenological model.
+## The science in brief
 
-4. **GP-Based Truncation** — Fits a Gaussian Process (RBF + WhiteKernel) to each curve and identifies growth phases from the GP derivative, replacing heuristic peak-finding.
+![Gompertz parameters](docs/images/gompertz_parameters.svg)
 
-5. **Ensemble Truncation** — Combines 5 independent truncation methods (First Peak, Stationary Phase, Adaptive R², GP Derivative, Changepoint) via weighted-median consensus.
+1. **Preprocess.** Time in hours; per media, `OD = max(mean(replicates) − mean(blanks), 0)`.
+2. **Find the growth window.** A 5-point rolling mean locates the first
+   peak: where the growth rate falls through 25 % of the curve's fastest
+   rate, above half the maximum OD. Three points past it are kept. A curve
+   still rising in its last 15 % is kept whole. Alternatives: global
+   maximum, or a Monte-Carlo cross-validated search (the rule used for the
+   published tables, about 100× slower and fully deterministic). The 25 %
+   was calibrated on the human-audited verdicts of the four included plates
+   (83 of 85 agree).
+3. **Fit** `y(t) = A·exp(−exp((μe/A)(λ − t) + 1))` (Zwietering et al. 1990)
+   by non-linear least squares with data-driven starting values and
+   bounds; standard errors from the covariance matrix; doubling time
+   `ln2·A/(μe)` at the inflection point.
+4. **Gate.** Fit converged; R² ≥ 0.95; A and μ errors ≤ 20 %; total rise
+   ≥ 0.15 OD; A above 3× the baseline noise. Unless the fit is excellent
+   (R² ≥ 0.98): signal-to-noise ≥ 5, rise significant against 2σ,
+   monotone fraction ≥ 0.55 inside the window, residual autocorrelation
+   at a 1 h lag ≤ 0.7.
 
-6. **Bayesian Hierarchical Models** — Fits Gompertz (NUTS) and Haldane (DEMetropolisZ) models with partial pooling by pesticide group, producing full posterior distributions on all parameters.
+![Verdict tree](docs/images/verdict_tree.svg)
 
-7. **Bootstrap Uncertainty** — Residual resampling on NLS Gompertz fits (1000 resamples) to produce 95% CIs and P(good) classification confidence.
+The full explanation, with worked figures and the limits of what the
+numbers mean, is in [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
 
-8. **Truncation Method Comparison** — Fits Gompertz at each of 5 truncation points per strain, ranks methods by R², and generates per-strain overlay plots. Rescues bad strains where suboptimal truncation was the cause of poor fits.
+![Gallery](docs/images/gallery.png)
 
-9. **Interactive Truncation Validator** — matplotlib-based tool for human review of automated truncation method selections, with resumable annotations.
+## Batch mode from the command line
 
-10. **ML Classifier** — Two-stage HistGradientBoosting classifier trained on 480 synthetic + 85 real audited curves with proper 70/30 held-out validation. Pre-fit gate rejects obvious junk before expensive fitting; post-fit classifier uses 24 features including biological metadata (is-control, concentration).
+The same code runs the published multi-group pipeline:
 
-## Key Results
-
-### Pipeline (92 strains across 4 groups)
-
-| Group | Pesticides | Total | Good | Bad |
-|-------|-----------|-------|------|-----|
-| Group 1 | Bifenthrin, Flupyradifurone, Lambda-Cyhalothrin | 24 | 12 | 12 |
-| Group 2 | Malathion, Lambda-Cyhalothrin | 24 | 11 | 13 |
-| Group 3 | Imidacloprid, Lambda-Cyhalothrin | 24 | 12 | 12 |
-| Group 4 | Permethrin, Lambda-Cyhalothrin | 20 | 9 | 11 |
-| **Total** | | **92** | **44** | **48** |
-
-Manual visual audit: **91.3%** of classifications validated correct (84/92).
-
-### Truncation Method Comparison (57 good strains)
-
-| Rank | Method | Mean R² | % Good (R²≥0.95) |
-|:---:|--------|:-------:|:-----------------:|
-| 1 | Adaptive R² | 0.9959 | 100% |
-| 2 | Consensus | 0.9942 | 100% |
-| 3 | Stationary Phase | 0.9911 | 100% |
-| 4 | First Peak | 0.8355 | 93% |
-
-**Bad strain rescue:** 17 of 22 candidate strains rescued by alternative truncation.
-
-### Haldane Analysis (21 pesticide+LB strains) (uses S0=1.0 until real substrate [] known)
-
-- Haldane model preferred over Gompertz for **16/21 strains (76%)** by AIC
-- All 6 pesticides show measurable inhibition constants (Ki)
-- Confirms substrate inhibition kinetics are present in pesticide treatment conditions
-
-### Rule-Based Validation (480 synthetic curves)
-
-| Metric | Value |
-|--------|-------|
-| Accuracy | 99.6% |
-| Precision | 100% |
-| Recall | 99.4% |
-| F1 Score | 99.7% |
-
-Only 2 failures out of 480 synthetic curves.
-
-### ML Classifier (held-out 30% test set, 170 curves never seen during training)
-
-| Metric | Value |
-|--------|-------|
-| Accuracy | 95.9% |
-| Precision | 97.4% |
-| Recall | 96.6% |
-| F1 Score | 97.0% |
-| Specificity | 94.3% |
-
-Pre-fit gate at threshold 0.20 rejects 40/170 with 0 false rejects.
-
-### Advanced Analysis
-
-| Method | What it adds |
-|--------|-------------|
-| GP Truncation | Data-driven phase detection (no heuristic parameters) |
-| Ensemble Truncation | 5-method consensus via weighted median |
-| Bootstrap CIs | 95% confidence intervals on A, mu, lambda for all 57 good strains |
-| Bayesian Gompertz | Full posteriors with partial pooling by pesticide group (NUTS) |
-| Bayesian Haldane | Hierarchical Ki posteriors by pesticide (DEMetropolisZ) |
-| Bayesian Classification | P(good) probability replacing hard GOOD/BAD threshold |
-| Model Comparison | WAIC/LOO replacing AIC for Gompertz vs Haldane selection |
-| ML Classifier | Two-stage HistGBT with metadata features (is-control, concentration) |
-
-## Folder Structure
-
-```
-TECAN_growth_curves/
-├── scripts/
-│   ├── 01_growth_curve_analysis.py      # Gompertz pipeline
-│   ├── 02_preprocess_raw_plate_data.py  # 96-well data preprocessor
-│   ├── 03_mle_model_fitting.py          # Multi-model MLE fitting
-│   ├── 05_haldane_analysis.py           # Haldane inhibition analysis
-│   ├── 06_advanced_fitting.py           # Advanced stats (GP, Bayesian, Bootstrap, Ensemble)
-│   ├── 07_compare_truncation_methods.py # Truncation method comparison & bad strain rescue
-│   ├── 08_validate_truncation.py        # Interactive truncation method validator
-│   ├── 09_train_classifier.py           # ML classifier training (70/30 split)
-│   ├── run_full_pipeline.py             # Master orchestrator (10-step pipeline)
-│   ├── ml_classifier.py                 # ML classifier runtime module
-│   ├── validate_results_interactive.py  # Interactive curve auditor
-│   ├── run_all_groups.sh                # Batch runner
-│   ├── config.yaml                      # All thresholds in one place
-│   └── requirements.txt                 # Python deps + pymc, arviz, scikit-learn
-├── data/raw/                            # Raw TECAN plate reader data (Groups 1-4)
-├── results/tables/
-│   ├── all_groups_results.csv           # Consolidated Gompertz results
-│   ├── validation_audit.csv             # Manual audit annotations
-│   ├── Group{1-4}_Results/              # Per-group results + diagnostic plots
-│   ├── Haldane_Analysis/                # Ki values, AIC comparisons, plots
-│   └── Advanced_Analysis/               # GP, Bayesian, Bootstrap, Comparison results
-│       ├── ensemble_truncation/         # Ensemble truncation results
-│       └── truncation_comparison/       # Method comparison study
-│           ├── method_comparison.csv    # Per-strain × per-method fit results
-│           ├── method_summary.csv       # Aggregate method rankings
-│           ├── rescued_strains.csv      # Bad strains rescued by better truncation
-│           └── overlay_plots/           # Per-strain method overlay plots
-├── models/                              # Trained ML classifiers (joblib, gitignored)
-│   └── feature_config.json              # Feature names + training metrics (committed)
-├── synthetic_data/                      # 480-curve validation suite
-├── tests/                               # pytest suite (118 tests)
-├── Makefile                             # make install / test / full-pipeline (20+ targets)
-└── .github/workflows/test.yml           # CI (Python 3.10-3.12)
+```bash
+python scripts/run_full_pipeline.py --dry-run             # list the steps
+python scripts/run_full_pipeline.py --steps 0,2,3 --no-ml # preprocess, fit every group, combine
+python scripts/run_full_pipeline.py                       # everything in scripts/config.yaml
 ```
 
-## Detailed Documentation
+| Step | Script | What it does |
+|---|---|---|
+| 0 | `02_preprocess_raw_plate_data.py` | Raw export + key → one CSV per media (same code as the app) |
+| 1 | `09_train_classifier.py` | Train the optional ML second opinion on synthetic curves (the audited real curves are held out as a test set) |
+| 2 | `01_growth_curve_analysis.py` | Window, Gompertz fit, gates, diagnostic plots, per group |
+| 3 | `03_statistical_analysis.py` | Combine groups, doubling times, ANOVA, figures |
+| 4 | `05_haldane_analysis.py` | Haldane substrate-inhibition ODE vs Gompertz by AICc |
+| 5 | `06_advanced_fitting.py` | Gaussian-process truncation, bootstrap CIs, ensemble, Bayesian models |
+| 6 | `03_mle_model_fitting.py` | Multi-model maximum likelihood (Gompertz, Baranyi, logistic, Richards) |
+| 7 | `07_compare_truncation_methods.py` | Rank five window rules per strain; rescue BAD strains |
+| 8 | `04_export_for_collaboration.py` | Clean summary table and methodology text |
+| 9 | synthetic validation | Run the pipeline on generated curves with known answers |
 
-See [PIPELINE_METHODOLOGY.md](PIPELINE_METHODOLOGY.md) for comprehensive methodology documentation covering all 10 pipeline stages, mathematical formulations, algorithm details, and results.
+Steps 4 to 6 need `requirements-advanced.txt` (PyMC, ArviZ). Thresholds,
+group folders and file names live in `scripts/config.yaml`; the app and
+the scripts read the same file.
 
-See [scripts/README.md](scripts/README.md) for full usage, all CLI options, model equations, classification methods, truncation strategies, output column descriptions, and troubleshooting.
+## What is in the repository
+
+```
+app/                 Streamlit interface (Home.py, views/, sidebar.py, state.py)
+tecan_growth/        The library: io, plate key, preprocess, settings, analyze, plots, export, manual
+scripts/             Numbered pipeline steps, run_full_pipeline.py, config.yaml, make_docs_figures.py
+data/raw/            Four plates (Groups 1-4) as SparkControl exports, keys and processed CSVs
+results/tables/      Committed outputs of the batch pipeline for the four groups
+synthetic_data/      Generator and validation suite of curves with known parameters
+tests/               pytest suite: readers, preprocessing, numerics, golden regression, app, docs
+docs/                HOW_IT_WORKS.md, LAB_PROTOCOL.md, DESIGN_SPEC.md, how_it_works/, images/
+```
+
+### Included data
+
+| Plate | Pesticides | Conditions | Export format |
+|---|---|---|---|
+| Group 1 | Bifenthrin, Flupyradifurone, Lambda-cyhalothrin | 24 | Values CSV + key CSV |
+| Group 2 | Malathion, Lambda-cyhalothrin | 24 | xlsx with key sheet |
+| Group 3 | Imidacloprid, Lambda-cyhalothrin | 24 | xlsx with key sheet (the app's example) |
+| Group 4 | Permethrin, Lambda-cyhalothrin | 20 | xlsx with key sheet |
+
+Each plate holds LB and water controls plus pesticide alone and pesticide
++ LB for each strain, in triplicate with blanks per media.
+
+## Testing
+
+```bash
+make test                       # the whole suite
+python -m pytest tests -q -k "not app"   # skip the browser-level checks
+```
+
+The suite checks that the readers reproduce every committed processed CSV
+bit for bit, that the library gives the same numbers as the command-line
+script, that the adaptive window search is deterministic, that the manual
+renders with every placeholder resolved, and that the app starts and runs
+the example plate without an exception. CI runs it on Python 3.10, 3.11
+and 3.12 on every push.
+
+## Citing
+
+The growth model is the modified Gompertz equation of Zwietering, M. H.,
+Jongenburger, I., Rombouts, F. M., & van 't Riet, K. (1990). *Modeling of
+the bacterial growth curve.* Applied and Environmental Microbiology, 56(6),
+1875–1881. Every export contains a `methods.md` paragraph with the
+thresholds that were actually used and a `run_manifest.json` with the
+commit, package versions and input checksums.
+
+Developed for BIO380 (Pesticide-Bioremediating Bacteria), CSU Monterey Bay.
+Detailed background on the batch pipeline: [PIPELINE_METHODOLOGY.md](PIPELINE_METHODOLOGY.md)
+and [scripts/README.md](scripts/README.md).

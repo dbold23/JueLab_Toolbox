@@ -3,9 +3,9 @@
 # BIO380SP25 - Pesticide Bioremediating Bacteria Research Project
 #
 # PIPELINE ORDER (run 'make full-pipeline' for everything):
-#   Step 0: Preprocess raw data       (Group 1 only, if needed)
+#   Step 0: Preprocess raw data       (every group whose *_DATA.csv is missing)
 #   Step 1: Train ML classifier       (auto-skips if models/ exists)
-#   Step 2: Gompertz curve analysis    (per group, --adaptive, with ML)
+#   Step 2: Gompertz curve analysis    (per group; truncation + ML from config.yaml)
 #   Step 3: Combine group results      (→ all_groups_results.csv)
 #   Step 4: Haldane inhibition         (ODE model + AICc comparison)
 #   Step 5: Advanced fitting           (GP, Bootstrap, Ensemble)
@@ -21,7 +21,7 @@ SCRIPTS = scripts
 RESULTS = results/tables
 SYNTH = synthetic_data
 
-.PHONY: help install app app-check test test-quick \
+.PHONY: help install app app-check docs figures test test-quick \
         full-pipeline core-pipeline dry-run \
         step-0 step-1 step-2 step-3 step-4 step-5 step-6 step-7 step-8 step-9 \
         run-advanced run-advanced-gp run-advanced-bootstrap \
@@ -47,6 +47,12 @@ app: ## Open the lab interface in your browser (streamlit run app/Home.py)
 
 app-check: ## Start the interface headless and confirm it serves, then stop it
 	$(PYTHON) -m pytest tests/test_app_smoke.py -q
+
+docs: ## Re-render docs/HOW_IT_WORKS.md from docs/how_it_works/*.md with the default thresholds
+	$(PYTHON) -m tecan_growth.manual
+
+figures: ## Redraw the manual's diagrams and gallery into docs/images/
+	$(PYTHON) $(SCRIPTS)/make_docs_figures.py
 
 # ─── Full Pipeline ───────────────────────────────────────────────────────────
 
@@ -113,7 +119,7 @@ run-compare-bad: ## Compare methods + rescue bad strains
 
 # ─── ML Classifier ───────────────────────────────────────────────────────────
 
-train-classifier: ## Train ML classifier on synthetic + audit data
+train-classifier: ## Train ML classifier on synthetic curves (audited real curves held out)
 	$(PYTHON) $(SCRIPTS)/09_train_classifier.py --compare
 
 # ─── Validation & Testing ────────────────────────────────────────────────────
