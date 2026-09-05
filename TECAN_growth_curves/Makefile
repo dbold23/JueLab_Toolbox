@@ -21,7 +21,7 @@ SCRIPTS = scripts
 RESULTS = results/tables
 SYNTH = synthetic_data
 
-.PHONY: help install test test-quick \
+.PHONY: help install app app-check test test-quick \
         full-pipeline core-pipeline dry-run \
         step-0 step-1 step-2 step-3 step-4 step-5 step-6 step-7 step-8 step-9 \
         run-advanced run-advanced-gp run-advanced-bootstrap \
@@ -39,6 +39,14 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "    \033[36m%-25s\033[0m %s\n", $$1, $$2}'
 	@echo ""
+
+# ─── Lab interface ───────────────────────────────────────────────────────────
+
+app: ## Open the lab interface in your browser (streamlit run app/Home.py)
+	$(PYTHON) -m streamlit run app/Home.py
+
+app-check: ## Start the interface headless and confirm it serves, then stop it
+	$(PYTHON) -m pytest tests/test_app_smoke.py -q
 
 # ─── Full Pipeline ───────────────────────────────────────────────────────────
 
@@ -110,8 +118,8 @@ train-classifier: ## Train ML classifier on synthetic + audit data
 
 # ─── Validation & Testing ────────────────────────────────────────────────────
 
-install: ## Install Python dependencies
-	$(PYTHON) -m pip install -r $(SCRIPTS)/requirements.txt
+install: ## Install Python dependencies (core + interface + tests)
+	$(PYTHON) -m pip install -r requirements.txt
 
 test: ## Run test suite
 	$(PYTHON) -m pytest tests/ -v --tb=short
