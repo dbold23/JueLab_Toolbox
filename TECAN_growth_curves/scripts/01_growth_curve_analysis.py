@@ -1649,6 +1649,11 @@ def truncation_from_indices(
     )
 
 
+#: A growth window whose peak comes earlier than this (hours after the first
+#: reading) is rejected as a start-of-run artefact (see validate_truncation).
+MIN_HOURS_TO_PEAK = 1.0
+
+
 def validate_truncation(result: TruncationResult, min_points: int = 20) -> Tuple[bool, str]:
     """
     Validate that truncation result is usable.
@@ -1668,12 +1673,12 @@ def validate_truncation(result: TruncationResult, min_points: int = 20) -> Tuple
     if len(result.od_truncated) < min_points:
         return False, f"Too few points after truncation: {len(result.od_truncated)} < {min_points}"
 
-    # Check if max is too early (might indicate contamination or error)
-    total_duration = result.time_original[-1] - result.time_original[0]
-    time_to_max_ratio = result.truncation_time / total_duration if total_duration > 0 else 0
-
-    if time_to_max_ratio < 0.05:  # Max within first 5% of experiment
-        return False, f"Maximum too early in experiment: {time_to_max_ratio:.1%} of total duration"
+    # A peak in the first hour is a spike or a contaminated well, not growth.
+    # This used to be 5 % of the run, which rejected legitimate fast growers
+    # (peak at 4-5 h) whenever the reader was left running for 100 h.
+    time_to_max = float(result.truncation_time - result.time_original[0])
+    if time_to_max < MIN_HOURS_TO_PEAK:
+        return False, f"Maximum too early in experiment: {time_to_max:.2f} h < {MIN_HOURS_TO_PEAK:g} h"
 
     return True, "Truncation valid"
 

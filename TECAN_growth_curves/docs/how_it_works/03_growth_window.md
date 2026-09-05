@@ -63,7 +63,9 @@ because a curve without a plateau cannot be expected to fit like one.
 
 A window is unusable, and the condition is reported as **not fitted**, when it
 holds fewer than **{min_points_after_truncation}** points or when the peak lies
-within the first 5 % of the run (a spike at the start, not growth).
+within the first hour of the run (a spike at the start, not growth). With
+readings every 15 minutes the point minimum is reached after five hours of
+growth; with hourly readings, lower it in the sidebar.
 
 ### Overriding the cut by hand
 

@@ -115,6 +115,24 @@ class TestFirstPeakRule:
         assert od_at_cut > 0.85                                  # ~90 % of A plus the buffer
         assert abs(cr.fit.a_opt - 1.0) < 0.05
 
+    def test_fast_grower_in_a_long_run_is_fitted(self):
+        # mu = 0.6 OD/h with a 0.8 h lag peaks at ~4 h; in a 99 h run that is 4 %
+        # of the run, which the old "first 5 % of the run" rule rejected.
+        t = np.arange(0, 99, 0.25)
+        a, mu, lam = 1.3, 0.6, 0.8
+        y = a * np.exp(-np.exp((mu * np.e / a) * (lam - t) + 1)) + np.random.default_rng(3).normal(0, 0.004, len(t))
+        cr = analyze_curve(t, y, "fast", AnalysisSettings.interactive_defaults())
+        assert cr.legacy.stage == "classified", cr.explanation()
+        assert cr.is_good, cr.explanation()
+        assert abs(cr.fit.mu_opt - mu) / mu < 0.1
+
+    def test_spike_at_the_start_is_not_a_growth_window(self):
+        t = np.arange(0, 24, 0.25)
+        y = np.full(len(t), 0.02) + np.random.default_rng(4).normal(0, 0.003, len(t))
+        y[1:4] = [0.6, 0.9, 0.5]                                # a bubble in the first hour
+        cr = analyze_curve(t, y, "spike", AnalysisSettings.interactive_defaults())
+        assert not cr.is_good
+
     def test_slow_grower_is_not_cut_early(self):
         t = np.arange(0, 60, 0.25)
         a, mu, lam = 0.6, 0.03, 5.0                             # 0.03 OD/h: five times slower
