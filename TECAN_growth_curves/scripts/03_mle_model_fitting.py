@@ -11,13 +11,13 @@ Extends the existing Gompertz-only pipeline with:
 
 Usage:
     # Run on Group 2 MLE test data
-    python 03_mle_model_fitting.py "DATA/Group 2/GROUP2_MLE_TEST_DATA" -o OUTPUT/MLE_Results
+    python 03_mle_model_fitting.py "data/raw/Group 2/Group_2_DATA" -o results/tables/MLE_Results
 
     # Run on all groups output with model comparison
     python 03_mle_model_fitting.py "DATA/Group 2/Group_2_DATA" -o OUTPUT/MLE_Group2
 
     # Include feedback inhibition model
-    python 03_mle_model_fitting.py "DATA/Group 2/GROUP2_MLE_TEST_DATA" -o OUTPUT/MLE_Results --haldane
+    python 03_mle_model_fitting.py "data/raw/Group 2/Group_2_DATA" -o results/tables/MLE_Results --haldane
 
 BIO380SP25 - Pesticide Bioremediating Bacteria Research Project
 """
@@ -793,9 +793,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python 03_mle_model_fitting.py "DATA/Group 2/GROUP2_MLE_TEST_DATA" -o OUTPUT/MLE_Results
+    python 03_mle_model_fitting.py "data/raw/Group 2/Group_2_DATA" -o results/tables/MLE_Results
     python 03_mle_model_fitting.py "DATA/Group 2/Group_2_DATA" -o OUTPUT/MLE_Group2 --hetero
-    python 03_mle_model_fitting.py "DATA/Group 2/GROUP2_MLE_TEST_DATA" -o OUTPUT/MLE_Results --haldane
+    python 03_mle_model_fitting.py "data/raw/Group 2/Group_2_DATA" -o results/tables/MLE_Results --haldane
         """
     )
 
