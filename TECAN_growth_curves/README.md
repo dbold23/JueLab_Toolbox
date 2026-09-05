@@ -139,6 +139,32 @@ docs/                HOW_IT_WORKS.md, LAB_PROTOCOL.md, DESIGN_SPEC.md, how_it_wo
 Each plate holds LB and water controls plus pesticide alone and pesticide
 + LB for each strain, in triplicate with blanks per media.
 
+## How well does it work?
+
+Two checks, both re-runnable, both committed with their outputs.
+
+**Against the lab's own judgement.** The four included plates were audited
+by eye (`results/tables/validation_audit.csv`, 85 conditions with a
+confident call). The interactive default rule (first peak) agrees with the
+audited call on 83 of the 85; the two exceptions are an LB control the
+audit had marked BAD after a whole-run fit, which the first-peak window
+fits cleanly, and a water control the audit accepted that the pre-fit gate
+rejects.
+
+**Against curves with known answers.** `make step-9` runs the pipeline on
+480 synthetic curves from 32 scenarios (`synthetic_data/`). With the
+first-peak rule the verdict is right for 87 % of them, with 90 % precision
+and 93 % recall, and the recovered parameters track the truth with
+R² of 0.98 (A), 0.91 (μ) and 0.98 (λ). Every miss is concentrated in five
+scenarios, and the summary in
+`synthetic_data/output/comprehensive_test/VALIDATION_SUMMARY.md` lists
+them. Three of those scenarios define "BAD" by the R² of a fit to the
+whole 99-hour trace, whereas the pipeline fits the growth window, where
+R² is 0.96 to 0.99, so it accepts them; the other two are logistic-shaped
+curves the Gompertz model flags as a shape mismatch, and hourly-sampled
+curves that leave fewer than the 20 points the default window minimum
+asks for. Lower that minimum in the sidebar for hourly data.
+
 ## Testing
 
 ```bash

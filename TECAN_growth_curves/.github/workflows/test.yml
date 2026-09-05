@@ -49,4 +49,5 @@ jobs:
 
       - name: App import check
         run: |
-          if [ -f app/Home.py ]; then python -c "import ast,sys; [ast.parse(open(p).read()) for p in sys.argv[1:]]" app/Home.py app/pages/*.py; fi
+          python -c "import ast,sys; [ast.parse(open(p).read()) for p in sys.argv[1:]]" app/*.py app/views/*.py
+          python -m tecan_growth.manual --check
