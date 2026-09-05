@@ -21,7 +21,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -86,7 +86,9 @@ class ProcessedPlate:
         for media in dict.fromkeys(self.conditions.media):
             safe = re.sub(r"[^A-Za-z0-9._-]+", "_", media)
             p = out_dir / f"{safe}_DATA.csv"
-            self.wide(media).to_csv(p, index=False)
+            # 17 significant digits round-trip every float exactly, so a re-run of
+            # the CLI on these files lands on the same fitted parameters.
+            self.wide(media).to_csv(p, index=False, float_format="%.17g")
             paths.append(p)
         return paths
 
@@ -223,4 +225,87 @@ def preprocess_plate(
         time_h=time_h, curves=curves, replicates=replicates, blanks=blanks, conditions=conditions, qc=qc,
         settings={"clip_negative": clip_negative, "blank_mode": blank_mode, "replicate_stat": replicate_stat},
         run_summary=run.summary(),
+    )
+
+
+def exclude_wells(processed: ProcessedPlate, curve_id: str, wells: Sequence[str]) -> ProcessedPlate:
+    """
+    Drop replicate wells from one curve and re-average what is left.
+
+    Use it when a well is obviously wrong -- a bubble, a scratch, a
+    contaminated replicate -- and should not pull the average around. Only the
+    named curve changes; every other curve, the blanks and the raw data are
+    untouched, and the original ``processed`` object is left as it was.
+
+    Parameters
+    ----------
+    processed : ProcessedPlate
+        The plate as returned by :func:`preprocess_plate`.
+    curve_id : str
+        Which curve to change, e.g. ``'LB-IMID2'``.
+    wells : sequence of str
+        Wells to leave out of the average, e.g. ``['A6']``. Wells that are not
+        part of the curve are ignored.
+
+    Returns
+    -------
+    ProcessedPlate
+        A copy with that curve re-averaged, an added QC note and the exclusion
+        recorded in ``settings['excluded_wells']``.
+
+    Raises
+    ------
+    KeyError
+        If the curve id is not on the plate.
+    ValueError
+        If every replicate of the curve would be excluded.
+    """
+    cond = processed.conditions
+    if curve_id not in set(cond.curve_id):
+        raise KeyError(curve_id)
+    row_idx = cond.index[cond.curve_id == curve_id][0]
+    current = list(cond.at[row_idx, "wells"])
+    drop = [w for w in wells if w in current]
+    keep = [w for w in current if w not in drop]
+    if not keep:
+        raise ValueError(f"{curve_id}: at least one replicate well must remain (asked to drop {', '.join(current)})")
+    if not drop:
+        return processed
+
+    combine = np.nanmedian if processed.settings.get("replicate_stat") == "median" else np.nanmean
+    clip_negative = bool(processed.settings.get("clip_negative", True))
+
+    reps = processed.replicates
+    mine = reps[reps.curve_id == curve_id]
+    raw = np.column_stack([mine[mine.well == w].od_raw.to_numpy(dtype=float) for w in keep])
+
+    curves = processed.curves.copy()
+    mask = curves.curve_id == curve_id
+    blank_vec = curves.loc[mask, "blank_mean"].to_numpy(dtype=float)
+    raw_mean = combine(raw, axis=1)
+    od = raw_mean - blank_vec
+    if clip_negative:
+        od = np.maximum(od, 0.0)
+    curves.loc[mask, "od"] = od
+    curves.loc[mask, "od_raw_mean"] = raw_mean
+    curves.loc[mask, "od_sd"] = np.nanstd(raw, axis=1, ddof=1) if raw.shape[1] > 1 else np.nan
+    curves.loc[mask, "n_replicates"] = len(keep)
+
+    replicates = reps[~((reps.curve_id == curve_id) & (reps.well.isin(drop)))].reset_index(drop=True)
+
+    conditions = processed.conditions.copy()
+    conditions.at[row_idx, "wells"] = keep
+    conditions.at[row_idx, "n_replicates"] = len(keep)
+
+    qc = list(processed.qc)
+    qc.append(f"{curve_id}: well(s) {', '.join(drop)} excluded by hand; averaged over {', '.join(keep)}"
+              + (" (no replicates left to compare)" if len(keep) < 2 else ""))
+    settings = dict(processed.settings)
+    excluded = {k: list(v) for k, v in dict(settings.get("excluded_wells", {})).items()}
+    excluded[curve_id] = sorted(set(excluded.get(curve_id, [])) | set(drop))
+    settings["excluded_wells"] = excluded
+
+    return ProcessedPlate(
+        time_h=processed.time_h, curves=curves, replicates=replicates, blanks=processed.blanks.copy(),
+        conditions=conditions, qc=qc, settings=settings, run_summary=dict(processed.run_summary),
     )
