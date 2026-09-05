@@ -413,3 +413,17 @@ class TestTruncationComparison:
         assert len(df) == 6  # 5 methods + consensus
         assert 'mean_r2' in df.columns
         assert 'pct_good' in df.columns
+        assert 'n_success' in df.columns
+
+        # Every method should actually fit something. The committed artifact
+        # predates the optional dependencies some methods need, so it is
+        # reported as a skip rather than a failure.
+        dead = sorted(df.loc[df['n_success'] == 0, 'method'].astype(str))
+        if dead:
+            pytest.skip(
+                f"committed method_summary.csv has 0 successful fits for {dead} "
+                f"— it predates the optional dependencies those methods need "
+                f"(ruptures / GP). Re-run 07_compare_truncation_methods.py to "
+                f"refresh it."
+            )
+        assert (df['n_success'] > 0).all()

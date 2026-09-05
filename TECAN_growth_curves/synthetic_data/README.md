@@ -11,7 +11,7 @@ This module generates realistic synthetic OD600 growth curves covering every pos
 - **Multiple Growth Models**: Gompertz, Baranyi, Logistic, and Richards models
 - **Death Phase Modeling**: Exponential decay after stationary phase
 - **Realistic Noise**: OD-dependent, instrument-based, and RMSE-targeted noise
-- **Comprehensive Scenarios**: ~400 curves covering 27 different scenarios
+- **Comprehensive Scenarios**: ~480 curves covering 37 different scenarios
 - **Pipeline Validation**: Automated comparison of expected vs actual classifications
 - **TECAN-Compatible Output**: Generates CSV files matching the expected pipeline format
 
@@ -155,42 +155,63 @@ y_death(t) = y_plateau × exp(-k_death × (t - t_death))
 
 ### Good Growth Scenarios (Expected: GOOD classification)
 
+9 scenarios, defined in `src/curve_scenarios.py` (`GOOD_GROWTH_SCENARIOS`).
+
 | Scenario | A Range | μ Range | λ Range | Description |
 |----------|---------|---------|---------|-------------|
-| standard | 0.8-1.5 | 0.1-0.3 | 2-8 | Typical bacterial growth |
-| high_A | 1.5-2.0 | 0.15-0.35 | 1-5 | High maximum density |
-| low_A | 0.1-0.3 | 0.05-0.15 | 3-10 | Low but valid growth |
-| fast_growth | 1.0-1.5 | 0.4-0.75 | 0.5-2 | Rapid exponential phase |
-| slow_growth | 0.8-1.2 | 0.02-0.08 | 5-15 | Slow growth rate |
-| short_lag | 1.0-1.5 | 0.15-0.25 | 0.1-1 | Minimal lag phase |
-| long_lag | 1.0-1.4 | 0.1-0.2 | 20-50 | Extended lag phase |
+| standard | 0.8-1.5 | 0.1-0.3 | 2-8 | Typical good growth curve (LB media) |
+| high_A | 1.5-2 | 0.15-0.35 | 1-5 | Very high final OD (dense culture) |
+| low_A | 0.15-0.35 | 0.05-0.15 | 3-10 | Low but valid growth (still above thresholds) |
+| fast_growth | 1-1.5 | 0.4-0.75 | 0.5-2 | Rapid exponential phase (high mu) |
+| slow_growth | 0.8-1.2 | 0.02-0.08 | 5-15 | Slow exponential phase (low mu) |
+| short_lag | 1-1.5 | 0.15-0.25 | 0.1-1 | Very short lag phase (pre-adapted cells) |
+| long_lag | 1-1.4 | 0.1-0.2 | 20-50 | Extended lag phase (stressed cells) |
+| very_clean | 1-1.5 | 0.15-0.25 | 2-6 | Very clean data with minimal noise (R² > 0.99) |
+| pesticide_lb_typical | 1.2-1.7 | 0.12-0.22 | 2-5 | Typical pesticide+LB growth (slightly lower A) |
 
 ### Bad Curve Scenarios (Expected: BAD classification)
 
+8 scenarios, defined in `src/curve_scenarios.py` (`BAD_CURVE_SCENARIOS`).
+
 | Scenario | Description |
 |----------|-------------|
-| flat_no_growth | H2O control, OD ≈ 0 |
-| contamination | High initial OD (>0.15) |
-| minimal_growth | ΔOD < 0.05 |
-| high_noise | Valid growth but R² < 0.90 |
-| erratic | Random non-biological pattern |
-| declining | Only decreasing OD |
-| sparse_data | Insufficient data points |
-| truncated_early | Experiment ended too soon |
+| flat_no_growth | H2O control - no growth at all |
+| minimal_growth | Barely detectable growth (delta OD < 0.1) |
+| contamination | High initial OD indicating contamination |
+| high_noise | Valid growth pattern but excessive noise (R² < 0.90) |
+| borderline_noise | Growth with borderline noise (R² ~0.90-0.94) |
+| erratic | Non-biological erratic pattern |
+| pesticide_only | Pesticide without nutrients - no growth |
+| fit_failure | Curve that causes fit convergence failure |
 
 ### Edge Case Scenarios (Challenging cases)
 
-| Scenario | Description |
-|----------|-------------|
-| borderline_r2 | R² near 0.95 threshold |
-| truncation_challenge | Multiple local maxima (diauxic-like) |
-| death_phase | Clear decline after plateau |
-| diauxic_growth | Two distinct growth phases |
-| very_short/long_experiment | 20h or 120h duration |
-| baranyi/logistic/richards_generated | Cross-model fitting tests |
-| high_initial_od_valid | Higher OD but valid growth |
-| parameter_boundary | Parameters at detection limits |
-| realistic_noise_patterns | Instrument noise simulation |
+20 scenarios, defined in `src/curve_scenarios.py` (`EDGE_CASE_SCENARIOS`).
+Edge cases carry their own expected class -- most of them are curves the
+pipeline is expected to handle correctly and classify GOOD.
+
+| Scenario | Expected | Description |
+|----------|----------|-------------|
+| borderline_r2_good | GOOD | R² just above 0.95 threshold (should be GOOD) |
+| borderline_r2_bad | BAD | R² just below 0.95 threshold (should be BAD) |
+| truncation_challenge | GOOD | Multiple local maxima (diauxic-like growth) |
+| death_phase_moderate | GOOD | Clear death phase with moderate decline |
+| death_phase_severe | GOOD | Severe death phase with rapid decline |
+| short_experiment | GOOD | Very short experiment (20 hours) |
+| long_experiment | GOOD | Extended experiment (150 hours) |
+| sparse_data | GOOD | Sparse time resolution (1 hour intervals) |
+| dense_data | GOOD | Dense time resolution (5 min intervals) |
+| baranyi_generated | GOOD | Baranyi model data fitted with Gompertz |
+| logistic_generated | GOOD | Logistic model data fitted with Gompertz |
+| richards_asymmetric | GOOD | Highly asymmetric Richards curve |
+| outlier_contaminated | GOOD | Good curve with occasional outlier spikes |
+| drift_positive | GOOD | Good curve with positive baseline drift |
+| borderline_delta_od | GOOD | Delta OD just above minimum threshold |
+| haldane_mild_inhibition | GOOD | Haldane model with mild substrate inhibition (Ki >> Ks) |
+| haldane_strong_inhibition | GOOD | Haldane model with strong substrate inhibition (Ki ~ Ks) |
+| haldane_total_inhibition | BAD | Haldane with very high substrate causing total inhibition (no growth) |
+| evaporation_drift | BAD | Flat curve with upward drift mimicking edge-well evaporation (false positive risk) |
+| bubble_spike | GOOD | Growth curve with a single large bubble artifact (outlier spike) |
 
 ## Noise Models
 

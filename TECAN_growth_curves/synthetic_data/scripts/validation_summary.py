@@ -23,6 +23,16 @@ from pathlib import Path
 
 import pandas as pd
 
+# Scenario definitions are the single source of truth for which scenarios exist
+# and which class each one is expected to land in.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from src.curve_scenarios import (  # noqa: E402
+    ALL_SCENARIOS,
+    BAD_CURVE_SCENARIOS,
+    EDGE_CASE_SCENARIOS,
+    GOOD_GROWTH_SCENARIOS,
+)
+
 # ---------------------------------------------------------------------------
 # Default paths (relative to project root)
 # ---------------------------------------------------------------------------
@@ -51,7 +61,6 @@ SCENARIO_DESCRIPTIONS = {
     "flat_no_growth": "Flat OD traces with no growth. Pipeline should classify as BAD.",
     "erratic": "Randomly fluctuating OD with no biological growth pattern.",
     "fit_failure": "Curves deliberately designed to defeat Gompertz fitting (e.g. non-sigmoidal shapes).",
-    "death_phase_severe": "Severe decline after stationary phase. Tests whether large post-peak drops are flagged.",
     "contamination": "Sudden OD spikes simulating contamination events.",
     "pesticide_only": "Flat or declining curves representing pesticide-inhibited wells (no growth).",
     "minimal_growth": "Tiny delta-OD near the detection threshold. Should be classified BAD.",
@@ -61,7 +70,8 @@ SCENARIO_DESCRIPTIONS = {
     "borderline_r2_good": "R-squared hovering just above the GOOD threshold.",
     "borderline_r2_bad": "R-squared hovering just below the GOOD threshold.",
     "borderline_delta_od": "Delta-OD just above the minimum threshold for GOOD classification.",
-    "death_phase_moderate": "Moderate post-peak decline. Ambiguous -- could be GOOD or BAD depending on pipeline settings.",
+    "death_phase_moderate": "Moderate post-peak decline. The pipeline should truncate before the death phase and still fit.",
+    "death_phase_severe": "Severe post-peak decline. Truncation has to cut the death phase away for the fit to succeed.",
     "drift_positive": "Slow upward baseline drift without real growth.",
     "outlier_contaminated": "Good growth curves with a few large outlier points injected.",
     "truncation_challenge": "Experiment ended before stationary phase was fully reached.",
@@ -74,24 +84,26 @@ SCENARIO_DESCRIPTIONS = {
     "pesticide_lb_typical": "Typical LB-media pesticide experiment curves: real but modest growth.",
 }
 
-# Categorise scenarios into groups for the report
+# Categorise scenarios into groups for the report. Derived from the scenario
+# definitions so the report cannot drift from what the generator produces:
+# hard-coded lists had death_phase_severe under "Bad" although it is an edge
+# case the pipeline is expected to classify GOOD.
 SCENARIO_CATEGORIES = {
-    "Good (standard growth)": [
-        "standard", "high_A", "low_A", "fast_growth", "slow_growth",
-        "long_lag", "short_lag", "very_clean", "baranyi_generated",
-    ],
-    "Bad (no / failed growth)": [
-        "flat_no_growth", "erratic", "fit_failure", "death_phase_severe",
-        "contamination", "pesticide_only", "minimal_growth", "high_noise",
-    ],
-    "Edge / borderline": [
-        "borderline_noise", "borderline_r2_good", "borderline_r2_bad",
-        "borderline_delta_od", "death_phase_moderate", "drift_positive",
-        "outlier_contaminated", "truncation_challenge", "short_experiment",
-        "long_experiment", "sparse_data", "dense_data", "logistic_generated",
-        "richards_asymmetric", "pesticide_lb_typical",
-    ],
+    "Good (standard growth)": sorted(GOOD_GROWTH_SCENARIOS),
+    "Bad (no / failed growth)": sorted(BAD_CURVE_SCENARIOS),
+    "Edge / borderline": sorted(EDGE_CASE_SCENARIOS),
 }
+
+
+def describe_scenario(name: str) -> str:
+    """Human-readable description plus the class the scenario expects."""
+    desc = SCENARIO_DESCRIPTIONS.get(name)
+    config = ALL_SCENARIOS.get(name)
+    if desc is None:
+        desc = config.description if config is not None else "(no description)"
+    if config is not None:
+        return f"{desc} (expected {config.expected_class})"
+    return desc
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +412,7 @@ def generate_markdown(data: dict, per_scenario: pd.DataFrame, merged: pd.DataFra
     fp_scenarios = per_scenario[per_scenario["false_positives"] > 0].sort_values("false_positives", ascending=False)
     if len(fp_scenarios) > 0:
         for _, row in fp_scenarios.iterrows():
-            desc = SCENARIO_DESCRIPTIONS.get(row["scenario"], "")
+            desc = describe_scenario(row["scenario"])
             ln(f"- **{row['scenario']}** ({row['false_positives']} FP): {desc}")
     else:
         ln("- None.")
@@ -411,7 +423,7 @@ def generate_markdown(data: dict, per_scenario: pd.DataFrame, merged: pd.DataFra
     fn_scenarios = per_scenario[per_scenario["false_negatives"] > 0].sort_values("false_negatives", ascending=False)
     if len(fn_scenarios) > 0:
         for _, row in fn_scenarios.iterrows():
-            desc = SCENARIO_DESCRIPTIONS.get(row["scenario"], "")
+            desc = describe_scenario(row["scenario"])
             ln(f"- **{row['scenario']}** ({row['false_negatives']} FN): {desc}")
     else:
         ln("- None.")
@@ -426,7 +438,7 @@ def generate_markdown(data: dict, per_scenario: pd.DataFrame, merged: pd.DataFra
         ln(f"### {cat}")
         ln()
         for s in members:
-            desc = SCENARIO_DESCRIPTIONS.get(s, "(no description)")
+            desc = describe_scenario(s)
             # Check if this scenario appears in the data
             in_data = s in per_scenario["scenario"].values
             marker = "" if in_data else " *(not present in data)*"

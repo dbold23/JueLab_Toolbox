@@ -60,26 +60,67 @@ ALL_POSTFIT_FEATURES = (
 # Feature extraction
 # ---------------------------------------------------------------------------
 
-def extract_metadata_features(strain_name: Optional[str]) -> Dict[str, float]:
-    """Extract biological metadata from strain name.
+# Media tokens used by the lab naming convention 'MEDIA-STRAINdigits'
+# (e.g. 'H2O-MAL10', 'MALATHIONANDLB-MAL4'). Anything else — synthetic curve
+# ids, plate labels, free-form names — yields NaN metadata rather than a
+# number that happens to be parseable.
+CONTROL_MEDIA_TOKENS = frozenset({'H2O', 'LB'})
 
-    Parses naming conventions like 'H2O-MAL10', 'LB-CISPERM1', 'Bifenthrin-BIF3'.
-    Returns is_control (1/0) and numeric concentration.
+TREATMENT_MEDIA_TOKENS = frozenset({
+    'BIFENTHRIN', 'CISPERMETHRIN', 'CYPERMETHRIN', 'FLUPYRADIFURONE',
+    'IMIDACLOPRID', 'LAMBDACYHALOTHRIN', 'MALATHION', 'PERMETHRIN',
+})
+
+# Pesticide-in-LB media are written '<PESTICIDE>ANDLB' and are treatments,
+# not controls.
+KNOWN_MEDIA_TOKENS = frozenset(
+    CONTROL_MEDIA_TOKENS
+    | TREATMENT_MEDIA_TOKENS
+    | {f'{t}ANDLB' for t in TREATMENT_MEDIA_TOKENS}
+)
+
+# Strain part of the lab convention: letters then at most 3 digits of
+# concentration (the real names top out at 2, e.g. 'MAL10', 'LCY01').
+_STRAIN_CONCENTRATION_RE = re.compile(r'^[A-Z]+(\d{1,3})$')
+
+
+def extract_metadata_features(strain_name: Optional[str]) -> Dict[str, float]:
+    """Extract biological metadata from a strain name.
+
+    Only the lab naming convention 'MEDIA-STRAINdigits' is parsed, where MEDIA
+    is a known media token (see KNOWN_MEDIA_TOKENS): 'H2O-MAL10' -> control,
+    concentration 10; 'MALATHIONANDLB-MAL4' -> treatment, concentration 4.
+
+    Names that do not follow the convention return NaN for both features. This
+    matters for synthetic training curves ('CURVE0330'): parsing their trailing
+    digits would hand the model the curve id, which encodes the scenario and
+    therefore the label.
+
+    Returns is_control (1/0/NaN) and concentration_numeric (float/NaN).
     """
+    nan = float('nan')
+    features = {'is_control': nan, 'concentration_numeric': nan}
+
     if not strain_name:
-        return {'is_control': float('nan'), 'concentration_numeric': float('nan')}
+        return features
 
     name = str(strain_name).strip().upper()
 
-    # Detect controls: H2O or LB prefix (before the dash)
-    prefix = name.split('-')[0] if '-' in name else name
-    is_control = 1.0 if prefix in ('H2O', 'LB') else 0.0
+    # Exactly one dash separates media from strain in the lab convention
+    if name.count('-') != 1:
+        return features
 
-    # Extract trailing number as concentration
-    m = re.search(r'(\d+)\s*$', name)
-    concentration = float(m.group(1)) if m else float('nan')
+    media, strain = name.split('-')
+    if media not in KNOWN_MEDIA_TOKENS:
+        return features
 
-    return {'is_control': is_control, 'concentration_numeric': concentration}
+    features['is_control'] = 1.0 if media in CONTROL_MEDIA_TOKENS else 0.0
+
+    m = _STRAIN_CONCENTRATION_RE.match(strain)
+    if m:
+        features['concentration_numeric'] = float(m.group(1))
+
+    return features
 
 
 def extract_prefit_features(

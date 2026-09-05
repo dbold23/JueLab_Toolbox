@@ -134,7 +134,7 @@ TECAN_growth_curves/
 | `06_advanced_fitting.py` | GP, Bayesian, Bootstrap, Ensemble methods | Results CSV + raw data | Advanced analysis outputs |
 | `07_compare_truncation_methods.py` | Truncation method comparison & bad strain rescue | Ensemble results + raw data | Method rankings, overlay plots, rescued strains |
 | `08_validate_truncation.py` | Interactive truncation method validator | `method_comparison.csv` + raw data | `truncation_validation_audit.csv` |
-| `09_train_classifier.py` | Train ML classifier (70/30 holdout) | Synthetic + real audited curves | `models/*.joblib` + `feature_config.json` |
+| `09_train_classifier.py` | Train ML classifier (70/30 holdout) | Synthetic curves (real audited curves held out as an external test set) | `models/*.joblib` + `feature_config.json` |
 | `ml_classifier.py` | ML runtime (feature extraction, gates) | Raw OD data + fit results | Classification with probabilities |
 
 ---
@@ -813,37 +813,46 @@ def solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0):
 
 ### 8.5 Fitting procedure
 
-The Haldane model is fitted using **L-BFGS-B** (bounded Limited-memory BFGS), a quasi-Newton optimizer suitable for bounded parameter spaces:
+The Haldane model is fitted using **L-BFGS-B** (bounded Limited-memory BFGS) on
+**log(parameter)**, with **S0 held fixed** at the dosing unit passed in (`--s0`),
+so six parameters are free. Three details matter:
+
+* **S0 is not fitted.** The curve samples μ(S) along a single trajectory, so a
+  change in Ki can be absorbed by rescaling S0 (with Ks and q). With S0 free,
+  every strain came back at the Ki initial guess and the "inhibition ranking"
+  ranked nothing.
+* **The search is in log space.** L-BFGS-B takes finite differences with an
+  absolute step of ~1e-8; on a linear Ki of 10 that is a 1e-9 relative step, the
+  gradient underflows and Ki never moves. In log space every parameter gets the
+  same relative step.
+* **Ki is multi-started and profiled.** The fit is repeated from several Ki
+  starting values (best SSE wins) and the winner is profiled over 0.1x–10x its
+  value. Unless the SSE rises on *both* sides, the data cannot distinguish those
+  values: `Ki_identified` is False and `Ki` is reported as NaN (the raw optimum
+  is kept as `Ki_fitted`).
 
 ```python
-# From 05_haldane_analysis.py, lines 91-168
-def fit_haldane(time, od, S0=1.0, gompertz_params=None):
-    # Use Gompertz parameters to inform initial guesses
-    X0_init = max(float(np.mean(od[:3])), 0.001)
-    X_max_init = float(np.max(od)) * 1.1
+# From 05_haldane_analysis.py, fit_haldane()
+bounds = [
+    (0.001, 5.0),    # mu_max
+    (0.001, 10.0),   # Ks
+    (0.1, 1000.0),   # Ki
+    (0.05, 5.0),     # X_max
+    (0.001, 10.0),   # q
+    (1e-6, 0.5),     # X0
+]                    # S0 is FIXED, not fitted
+log_bounds = [(np.log(lo), np.log(hi)) for lo, hi in bounds]
 
-    if gompertz_params:
-        mu_init = gompertz_params.get('mu', 0.2) * 2.0   # Haldane μ_max > Gompertz μ
+def objective(log_params):
+    mu_max, Ks, Ki, X_max, q, X0 = np.exp(log_params)
+    X_pred, _S, solved = solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0,
+                                       return_status=True)
+    sse = np.sum((od - X_pred)**2)
+    return sse if solved else sse + SOLVER_FAILURE_PENALTY   # flat fallback is not a fit
 
-    p0 = np.array([mu_init, 0.1, 10.0, X_max_init, 0.1, X0_init, S0])
-
-    bounds = [
-        (0.001, 5.0),    # mu_max
-        (0.001, 10.0),   # Ks
-        (0.1, 1000.0),   # Ki
-        (0.05, 5.0),     # X_max
-        (0.001, 10.0),   # q
-        (1e-6, 0.5),     # X0
-        (0.01, 100.0),   # S0
-    ]
-
-    def objective(params):
-        mu_max, Ks, Ki, X_max, q, X0, S0_fit = params
-        X_pred, _ = solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0_fit)
-        return np.sum((od - X_pred)**2)    # Sum of squared residuals
-
-    result = minimize(objective, p0, method='L-BFGS-B', bounds=bounds,
-                      options={'maxiter': 5000})
+best = min((minimize(objective, clip_log(start(ki0)), method='L-BFGS-B',
+                     bounds=log_bounds, options={'maxiter': 5000})
+            for ki0 in KI_MULTISTART), key=lambda r: r.fun)
 ```
 
 ### 8.6 Gompertz vs. Haldane comparison (AIC)
@@ -855,15 +864,15 @@ AIC = n × ln(SS_res / n) + 2k
 
 where:
   n = number of data points
-  k = number of free parameters (3 for Gompertz, 7 for Haldane)
+  k = number of free parameters (3 for Gompertz, 6 for Haldane — S0 is fixed)
 ```
 
-Lower AIC is better. The Haldane model has 4 more parameters, so it must explain substantially more variance to justify its added complexity.
+Lower AIC is better. The Haldane model has 3 more parameters, so it must explain substantially more variance to justify its added complexity. Both models are scored on **the same window**: the Gompertz model is refitted on the points the Haldane fit sees (the pipeline's own parameters are kept if they describe that window better), because scoring truncated-window parameters against the full curve made "Haldane preferred" a foregone conclusion.
 
 ```python
-# From 05_haldane_analysis.py, lines 150-153
+# From 05_haldane_analysis.py
 n = len(od)
-k = 7  # Haldane has 7 parameters
+k = 6  # Haldane has 6 free parameters (S0 is held fixed)
 aic = n * np.log(ss_res / n) + 2 * k
 bic = n * np.log(ss_res / n) + k * np.log(n)
 ```
@@ -876,7 +885,10 @@ k = 3  # Gompertz has 3 parameters
 aic = n * np.log(ss_res / n) + 2 * k
 ```
 
-**Result:** 16/21 (76%) pesticide+LB strains preferred the Haldane model over Gompertz by AICc, confirming that substrate inhibition kinetics are at play.
+**Result:** see `results/tables/Haldane_Analysis/haldane_comparison.csv`. The
+16/21 (76%) "Haldane preferred" figure quoted here previously was produced
+before the same-window comparison and the S0/Ki fixes above, and does not
+describe the current code.
 
 ---
 
@@ -1369,7 +1381,7 @@ Raw OD data
 | File | Purpose |
 |------|---------|
 | `scripts/ml_classifier.py` | Runtime module (feature extraction, PreFitGate, PostFitClassifier) |
-| `scripts/09_train_classifier.py` | Training script (70/30 split, real data mixing, metadata) |
+| `scripts/09_train_classifier.py` | Training script (70/30 split on synthetic curves, real audit held out, metadata) |
 | `models/prefit_gate.joblib` | Trained pre-fit gate model (gitignored) |
 | `models/postfit_classifier.joblib` | Trained post-fit classifier (gitignored) |
 | `models/feature_config.json` | Feature names, training metrics, timestamp (committed) |

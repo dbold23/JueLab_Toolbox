@@ -6,9 +6,9 @@ Generates a full test suite covering all scenarios to stress-test
 the TECAN growth curve analysis pipeline.
 
 This script generates ~500 curves covering:
-- All good growth scenarios (7 types)
-- All bad curve scenarios (5 types)
-- All edge case scenarios (12 types)
+- All good growth scenarios (9 types)
+- All bad curve scenarios (8 types)
+- All edge case scenarios (20 types)
 - Various noise levels and model types
 
 Usage:
@@ -43,9 +43,11 @@ This script generates a comprehensive test set covering all scenarios
 defined in curve_scenarios.py.
 
 Scenarios include:
-  GOOD (7): standard, high_A, low_A, fast_growth, slow_growth, short_lag, long_lag
+  GOOD (9): standard, high_A, low_A, fast_growth, slow_growth, short_lag,
+            long_lag, very_clean, pesticide_lb_typical
   BAD (8): flat_no_growth, minimal_growth, contamination, high_noise, etc.
-  EDGE (12): borderline_r2, truncation_challenge, death_phase, etc.
+  EDGE (20): borderline_r2_good/bad, truncation_challenge, death_phase_*,
+             haldane_*, evaporation_drift, bubble_spike, etc.
 
 Examples:
     # Default comprehensive test (~400 curves)

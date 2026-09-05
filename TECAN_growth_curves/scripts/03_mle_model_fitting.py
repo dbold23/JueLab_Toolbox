@@ -985,7 +985,7 @@ def _plot_summary(df, output_path):
                 aic_data.append(vals.values)
                 model_labels.append(model)
     if aic_data:
-        bp = ax.boxplot(aic_data, labels=model_labels, patch_artist=True)
+        bp = ax.boxplot(aic_data, tick_labels=model_labels, patch_artist=True)
         for patch, model in zip(bp['boxes'], model_labels):
             patch.set_facecolor(colors.get(model, 'gray'))
             patch.set_alpha(0.7)

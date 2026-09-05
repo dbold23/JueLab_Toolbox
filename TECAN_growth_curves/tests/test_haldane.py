@@ -77,7 +77,6 @@ class TestHaldaneFit:
         import sys
         from pathlib import Path
         sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-        from importlib import import_module
         import importlib.util
         spec = importlib.util.spec_from_file_location(
             "haldane_analysis",
@@ -86,14 +85,31 @@ class TestHaldaneFit:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
 
+        # Every fit is a multi-start plus a profile over Ki, so a curve
+        # sampled every 15 minutes for 50 h is thinned to hourly here; the
+        # shape (and everything asserted below) is unchanged.
+        time = standard_time[::4]
+
         # Generate clean Haldane data
         X_true = HaldaneModel.compute(
-            standard_time, mu_max=0.5, Ks=0.1, Ki=10.0,
+            time, mu_max=0.5, Ks=0.1, Ki=10.0,
             X_max=1.2, q=0.1, X0=0.01, S0=1.0
         )
         rng = np.random.default_rng(42)
         X_noisy = X_true + rng.normal(0, 0.01, len(X_true))
 
-        result = mod.fit_haldane(standard_time, X_noisy, S0=1.0)
+        result = mod.fit_haldane(time, X_noisy, S0=1.0)
         assert result['success'] is True
         assert result['r_squared'] > 0.95
+
+        # S0 is an input, not a free parameter: fitting it made Ki
+        # unidentifiable and pinned every reported Ki to the initial guess.
+        assert result['S0'] == 1.0
+        assert 'Ki_identified' in result
+        assert np.isfinite(result['Ki_fitted'])
+        # An unidentified Ki is reported as NaN rather than as the value the
+        # optimiser happened to stop at.
+        if not result['Ki_identified']:
+            assert np.isnan(result['Ki'])
+        else:
+            assert result['Ki'] == result['Ki_fitted']

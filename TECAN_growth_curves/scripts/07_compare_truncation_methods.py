@@ -77,14 +77,58 @@ METHOD_LABELS = {
 # Core Comparison Logic
 # =============================================================================
 
-def fit_at_truncation(time, od, trunc_idx):
-    """Truncate data and fit Gompertz. Returns FitResult or None."""
-    if trunc_idx is None or np.isnan(trunc_idx):
+def _as_index(value):
+    """int(value) for a usable index, else None (handles None/NaN/blank cells)."""
+    if value is None:
         return None
-    idx = int(trunc_idx)
-    idx = max(0, min(idx, len(time) - 1))
-    t_trunc = time[:idx + 1]
-    od_trunc = od[:idx + 1]
+    try:
+        if pd.isna(value):
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_fit_thresholds(config):
+    """
+    The fit-quality gate thresholds 01_growth_curve_analysis.py runs with.
+
+    Same keys and same config.yaml sections as 01's ``main()``, so a curve
+    judged here is judged by the pipeline's own rules.
+    """
+    cfg_class = config.get('classification', {}) or {}
+    cfg_gates = config.get('quality_gates', {}) or {}
+    return {
+        'min_r_squared': cfg_class.get('min_r_squared', 0.95),
+        'max_param_error_pct': cfg_class.get('max_param_error_pct', 20.0),
+        'min_points_for_fit': cfg_class.get('min_points_for_fit', 15),
+        'min_snr': cfg_gates.get('min_snr', 5.0),
+        'min_delta_od_ci': cfg_gates.get('min_delta_od_ci', 0.1),
+        'min_absolute_delta_od': cfg_gates.get('min_absolute_delta_od', 0.15),
+        'pre_fit_snr_threshold': cfg_gates.get('pre_fit_snr_threshold', 3.0),
+        'pre_fit_delta_od_override': cfg_gates.get('pre_fit_delta_od_override', 0.5),
+        'excellent_r2_threshold': cfg_gates.get('excellent_r2_threshold', 0.98),
+        'min_monotone_fraction': cfg_gates.get('min_monotone_fraction', 0.55),
+        'max_residual_autocorr': cfg_gates.get('max_residual_autocorr', 0.7),
+    }
+
+
+def fit_at_truncation(time, od, trunc_idx, start_idx=0):
+    """
+    Fit Gompertz on the window ``[start_idx, trunc_idx]``. Returns FitResult or None.
+
+    ``start_idx`` matters for the adaptive method: 01 --adaptive trims a noisy
+    baseline as well as the tail, so fitting from index 0 scores a window the
+    pipeline never fits. Methods that do not trim a start pass 0.
+    """
+    end = _as_index(trunc_idx)
+    if end is None:
+        return None
+    end = max(0, min(end, len(time) - 1))
+    start = _as_index(start_idx) or 0
+    start = max(0, min(start, end))
+    t_trunc = time[start:end + 1]
+    od_trunc = od[start:end + 1]
     if len(t_trunc) < 10:
         return None
     try:
@@ -122,49 +166,48 @@ def run_comparison(ensemble_df, results_df, data_dir, config):
             else:
                 idx_col = f'{method}_idx'
 
-            trunc_idx = erow.get(idx_col)
-            if pd.isna(trunc_idx) if isinstance(trunc_idx, float) else trunc_idx is None:
-                rows.append({
-                    'strain': strain, 'group': group, 'method': method,
-                    'trunc_idx': None, 'trunc_time': None, 'n_points': None,
-                    'fit_success': False, 'r_squared': None, 'rmse': None,
-                    'gompertz_A': None, 'gompertz_mu': None, 'gompertz_lambda': None,
-                    'a_err_pct': None, 'mu_err_pct': None,
-                })
+            trunc_idx_int = _as_index(erow.get(idx_col))
+            # Methods that trim a noisy baseline record where their window
+            # starts (06 writes '<method>_start_idx'); the rest start at 0.
+            start_idx_int = _as_index(erow.get(f'{method}_start_idx')) or 0
+
+            if trunc_idx_int is None:
+                rows.append(_comparison_row(strain, group, method, None, None, None, None))
                 continue
 
-            trunc_idx_int = int(trunc_idx)
-            fit = fit_at_truncation(t, od, trunc_idx_int)
-
-            if fit is not None and fit.success:
-                a_err_pct = abs(fit.a_err / fit.a_opt * 100) if fit.a_opt != 0 else None
-                mu_err_pct = abs(fit.mu_err / fit.mu_opt * 100) if fit.mu_opt != 0 else None
-                rows.append({
-                    'strain': strain, 'group': group, 'method': method,
-                    'trunc_idx': trunc_idx_int,
-                    'trunc_time': t[min(trunc_idx_int, len(t)-1)],
-                    'n_points': trunc_idx_int + 1,
-                    'fit_success': True,
-                    'r_squared': fit.r_squared,
-                    'rmse': fit.rmse,
-                    'gompertz_A': fit.a_opt,
-                    'gompertz_mu': fit.mu_opt,
-                    'gompertz_lambda': fit.lambda_opt,
-                    'a_err_pct': a_err_pct,
-                    'mu_err_pct': mu_err_pct,
-                })
-            else:
-                rows.append({
-                    'strain': strain, 'group': group, 'method': method,
-                    'trunc_idx': trunc_idx_int,
-                    'trunc_time': t[min(trunc_idx_int, len(t)-1)] if trunc_idx_int < len(t) else None,
-                    'n_points': trunc_idx_int + 1,
-                    'fit_success': False, 'r_squared': None, 'rmse': None,
-                    'gompertz_A': None, 'gompertz_mu': None, 'gompertz_lambda': None,
-                    'a_err_pct': None, 'mu_err_pct': None,
-                })
+            fit = fit_at_truncation(t, od, trunc_idx_int, start_idx_int)
+            trunc_time = t[min(trunc_idx_int, len(t) - 1)] if trunc_idx_int < len(t) else None
+            rows.append(_comparison_row(
+                strain, group, method, start_idx_int, trunc_idx_int, trunc_time, fit
+            ))
 
     return pd.DataFrame(rows)
+
+
+def _comparison_row(strain, group, method, start_idx, trunc_idx, trunc_time, fit):
+    """One row of the method comparison table (fit may be None = failed)."""
+    row = {
+        'strain': strain, 'group': group, 'method': method,
+        'start_idx': start_idx,
+        'trunc_idx': trunc_idx,
+        'trunc_time': trunc_time,
+        'n_points': None if trunc_idx is None else trunc_idx - (start_idx or 0) + 1,
+        'fit_success': False, 'r_squared': None, 'rmse': None,
+        'gompertz_A': None, 'gompertz_mu': None, 'gompertz_lambda': None,
+        'a_err_pct': None, 'mu_err_pct': None,
+    }
+    if fit is not None and fit.success:
+        row.update({
+            'fit_success': True,
+            'r_squared': fit.r_squared,
+            'rmse': fit.rmse,
+            'gompertz_A': fit.a_opt,
+            'gompertz_mu': fit.mu_opt,
+            'gompertz_lambda': fit.lambda_opt,
+            'a_err_pct': abs(fit.a_err / fit.a_opt * 100) if fit.a_opt else None,
+            'mu_err_pct': abs(fit.mu_err / fit.mu_opt * 100) if fit.mu_opt else None,
+        })
+    return row
 
 
 # =============================================================================
@@ -212,7 +255,13 @@ def compute_method_summary(comp_df, config):
             })
 
     summary = pd.DataFrame(rows)
-    summary = summary.sort_values('mean_r2', ascending=False).reset_index(drop=True)
+    # Rank by MEDIAN R²: the mean is dominated by the occasional catastrophic
+    # fit, so a method that fails outright on two strains could out-rank one
+    # that is better on every strain it fits. The failure count travels with
+    # the ranking (n_failures) so a high median on few fits is visible.
+    summary = summary.sort_values(
+        'median_r2', ascending=False, na_position='last'
+    ).reset_index(drop=True)
     summary.index.name = 'rank'
     return summary
 
@@ -312,7 +361,7 @@ def plot_r2_boxplot(comp_df, summary_df, output_path):
             labels.append(METHOD_LABELS.get(method, method))
             colors.append(METHOD_COLORS.get(method, '#888888'))
 
-    bp = ax.boxplot(data, labels=labels, patch_artist=True, widths=0.6)
+    bp = ax.boxplot(data, tick_labels=labels, patch_artist=True, widths=0.6)
     for patch, color in zip(bp['boxes'], colors):
         patch.set_facecolor(color)
         patch.set_alpha(0.5)
@@ -333,27 +382,28 @@ def plot_r2_boxplot(comp_df, summary_df, output_path):
 
 
 def plot_ranking_bar(summary_df, output_path):
-    """Horizontal bar chart of mean R² per method."""
+    """Horizontal bar chart of median R² per method, annotated with failures."""
     fig, ax = plt.subplots(figsize=(8, 5))
 
     methods = summary_df['method'].tolist()[::-1]  # reverse for horizontal
-    means = [summary_df[summary_df['method'] == m]['mean_r2'].values[0] for m in methods]
-    stds = [summary_df[summary_df['method'] == m]['std_r2'].values[0] for m in methods]
+    medians = [summary_df[summary_df['method'] == m]['median_r2'].values[0] for m in methods]
+    fails = [summary_df[summary_df['method'] == m]['n_failures'].values[0] for m in methods]
     colors = [METHOD_COLORS.get(m, '#888888') for m in methods]
     labels = [METHOD_LABELS.get(m, m) for m in methods]
+    plotted = [0.0 if (m is None or not np.isfinite(m)) else float(m) for m in medians]
 
-    bars = ax.barh(range(len(methods)), means, xerr=stds, color=colors, alpha=0.7,
-                   capsize=3, edgecolor='black', linewidth=0.5)
+    ax.barh(range(len(methods)), plotted, color=colors, alpha=0.7,
+            edgecolor='black', linewidth=0.5)
     ax.set_yticks(range(len(methods)))
     ax.set_yticklabels(labels)
-    ax.set_xlabel('Mean Gompertz R²')
-    ax.set_title('Method Ranking by Mean R²')
+    ax.set_xlabel('Median Gompertz R²')
+    ax.set_title('Method Ranking by Median R² (failures in parentheses)')
     ax.axvline(x=0.95, color='red', linestyle='--', alpha=0.5)
 
-    # Annotate bars
-    for i, (m, s) in enumerate(zip(means, stds)):
-        if m is not None:
-            ax.text(m + s + 0.002, i, f'{m:.4f}', va='center', fontsize=9)
+    # Annotate bars with the median and how many strains the method failed on
+    for i, (m, n_fail) in enumerate(zip(medians, fails)):
+        if m is not None and np.isfinite(m):
+            ax.text(m + 0.002, i, f'{m:.4f} ({int(n_fail)} fail)', va='center', fontsize=9)
 
     plt.tight_layout()
     plt.savefig(output_path, dpi=150)
@@ -630,10 +680,29 @@ def generate_overlay_plots(comp_df, results_df, data_dir, output_dir, is_bad=Fal
 # Bad Strain Rescue Analysis
 # =============================================================================
 
+def _rescue_extras(bad_row, classification):
+    """Bad-strain columns: what 01 said before, and the verdict on the refit."""
+    return {
+        'original_reason': bad_row['classification_reason'],
+        'delta_od': bad_row['delta_od'],
+        'rescue_verdict_good': None if classification is None else bool(classification.is_good),
+        'rescue_verdict_reason': None if classification is None else classification.reason,
+    }
+
+
 def run_bad_strain_analysis(results_df, data_dir, config, output_dir):
-    """Run ensemble truncation + Gompertz fitting on bad strains to check for rescues."""
+    """
+    Re-truncate the bad strains and check whether any of them becomes GOOD.
+
+    "GOOD" means the same thing it means in 01: ``classify_by_fit_quality``
+    with the config's thresholds, judged on the full curve with the refitted
+    window. Declaring a rescue on R² and parameter errors alone (what this
+    used to do) rescued flat H2O controls whose delta-OD never came near the
+    0.15 gate.
+    """
     bad_df = results_df[results_df['is_good'] == False].copy()
     min_delta_od = 0.015
+    fit_thresholds = build_fit_thresholds(config)
 
     # Filter to strains with some growth signal
     candidates = bad_df[bad_df['delta_od'].astype(float) > min_delta_od]
@@ -664,99 +733,77 @@ def run_bad_strain_analysis(results_df, data_dir, config, output_dir):
             print(f"    {strain}: ensemble failed ({e})")
             continue
 
+        # 01's own incomplete-curve flag, so the gates below match the pipeline
+        try:
+            is_incomplete, _ = _gca.detect_incomplete_curve(t, od)
+        except Exception:
+            is_incomplete = False
+
         # Fit Gompertz at each method's truncation
         method_results = ens_result.method_results
         for method in METHODS:
+            start_idx = 0
             if method == 'consensus':
                 trunc_idx = ens_result.consensus_idx
                 trunc_time = ens_result.consensus_time
             elif method in method_results:
                 trunc_idx = method_results[method].get('idx')
                 trunc_time = method_results[method].get('time')
+                start_idx = (method_results[method].get('metadata') or {}).get('start_idx') or 0
             else:
-                rows.append({
-                    'strain': strain, 'group': group, 'method': method,
-                    'trunc_idx': None, 'trunc_time': None, 'n_points': None,
-                    'fit_success': False, 'r_squared': None, 'rmse': None,
-                    'gompertz_A': None, 'gompertz_mu': None, 'gompertz_lambda': None,
-                    'a_err_pct': None, 'mu_err_pct': None,
-                    'original_reason': brow['classification_reason'],
-                    'delta_od': brow['delta_od'],
-                })
-                continue
+                trunc_idx = trunc_time = None
 
+            trunc_idx = _as_index(trunc_idx)
             if trunc_idx is None:
-                rows.append({
-                    'strain': strain, 'group': group, 'method': method,
-                    'trunc_idx': None, 'trunc_time': None, 'n_points': None,
-                    'fit_success': False, 'r_squared': None, 'rmse': None,
-                    'gompertz_A': None, 'gompertz_mu': None, 'gompertz_lambda': None,
-                    'a_err_pct': None, 'mu_err_pct': None,
-                    'original_reason': brow['classification_reason'],
-                    'delta_od': brow['delta_od'],
-                })
+                row = _comparison_row(strain, group, method, None, None, None, None)
+                row.update(_rescue_extras(brow, None))
+                rows.append(row)
                 continue
 
-            fit = fit_at_truncation(t, od, int(trunc_idx))
+            fit = fit_at_truncation(t, od, trunc_idx, start_idx)
+            row = _comparison_row(
+                strain, group, method, start_idx, trunc_idx, trunc_time, fit
+            )
 
+            # A rescue has to pass every gate 01 applies, not just R² and the
+            # parameter errors: delta-OD, SNR, monotonicity and residual
+            # autocorrelation are what make a flat H2O control BAD in the
+            # first place, and re-truncating cannot change them.
+            classification = None
             if fit is not None and fit.success:
-                a_err_pct = abs(fit.a_err / fit.a_opt * 100) if fit.a_opt != 0 else None
-                mu_err_pct = abs(fit.mu_err / fit.mu_opt * 100) if fit.mu_opt != 0 else None
-                rows.append({
-                    'strain': strain, 'group': group, 'method': method,
-                    'trunc_idx': int(trunc_idx), 'trunc_time': trunc_time,
-                    'n_points': int(trunc_idx) + 1,
-                    'fit_success': True,
-                    'r_squared': fit.r_squared,
-                    'rmse': fit.rmse,
-                    'gompertz_A': fit.a_opt,
-                    'gompertz_mu': fit.mu_opt,
-                    'gompertz_lambda': fit.lambda_opt,
-                    'a_err_pct': a_err_pct,
-                    'mu_err_pct': mu_err_pct,
-                    'original_reason': brow['classification_reason'],
-                    'delta_od': brow['delta_od'],
-                })
-            else:
-                rows.append({
-                    'strain': strain, 'group': group, 'method': method,
-                    'trunc_idx': int(trunc_idx), 'trunc_time': trunc_time,
-                    'n_points': int(trunc_idx) + 1,
-                    'fit_success': False, 'r_squared': None, 'rmse': None,
-                    'gompertz_A': None, 'gompertz_mu': None, 'gompertz_lambda': None,
-                    'a_err_pct': None, 'mu_err_pct': None,
-                    'original_reason': brow['classification_reason'],
-                    'delta_od': brow['delta_od'],
-                })
+                try:
+                    classification = _gca.classify_by_fit_quality(
+                        fit, fit_thresholds,
+                        time=t, od600=od,
+                        is_incomplete=is_incomplete,
+                        fit_window=(int(start_idx), int(trunc_idx)),
+                    )
+                except Exception:
+                    classification = None
+            row.update(_rescue_extras(brow, classification))
+            rows.append(row)
 
     bad_comp_df = pd.DataFrame(rows)
     if bad_comp_df.empty:
         print("  No fits produced.")
         return bad_comp_df, pd.DataFrame()
 
-    # Identify rescued strains: any method gives R² >= 0.95 and param errors < 20%
+    # A strain is rescued only when a re-truncated fit is GOOD by 01's rules
     rescued_rows = []
     for strain, sdf in bad_comp_df.groupby('strain'):
-        success = sdf[(sdf['fit_success'] == True) &
-                      (sdf['r_squared'] >= 0.95)]
-        if success.empty:
-            continue
-        # Check param errors
-        for _, frow in success.iterrows():
-            a_ok = frow['a_err_pct'] is not None and frow['a_err_pct'] < 20
-            mu_ok = frow['mu_err_pct'] is not None and frow['mu_err_pct'] < 20
-            if a_ok and mu_ok:
-                rescued_rows.append({
-                    'strain': strain,
-                    'group': frow['group'],
-                    'rescue_method': frow['method'],
-                    'rescue_r2': frow['r_squared'],
-                    'rescue_rmse': frow['rmse'],
-                    'a_err_pct': frow['a_err_pct'],
-                    'mu_err_pct': frow['mu_err_pct'],
-                    'original_reason': frow['original_reason'],
-                    'delta_od': frow['delta_od'],
-                })
+        for _, frow in sdf[sdf['rescue_verdict_good'] == True].iterrows():
+            rescued_rows.append({
+                'strain': strain,
+                'group': frow['group'],
+                'rescue_method': frow['method'],
+                'rescue_r2': frow['r_squared'],
+                'rescue_rmse': frow['rmse'],
+                'a_err_pct': frow['a_err_pct'],
+                'mu_err_pct': frow['mu_err_pct'],
+                'rescue_reason': frow['rescue_verdict_reason'],
+                'original_reason': frow['original_reason'],
+                'delta_od': frow['delta_od'],
+            })
 
     rescued_df = pd.DataFrame(rescued_rows)
 
@@ -765,7 +812,7 @@ def run_bad_strain_analysis(results_df, data_dir, config, output_dir):
     n_rescued = rescued_df['strain'].nunique() if not rescued_df.empty else 0
     print(f"\n  Bad strain rescue results:")
     print(f"    Candidates analyzed: {n_candidates}")
-    print(f"    Rescued (R²>=0.95, errors<20%): {n_rescued}")
+    print(f"    Rescued (GOOD by 01's full fit-quality gates): {n_rescued}")
     if not rescued_df.empty:
         print(f"\n    Rescued strains:")
         for strain in rescued_df['strain'].unique():
@@ -787,17 +834,18 @@ def print_summary(summary_df, strain_best_df, comp_df):
     print(f"  TRUNCATION METHOD COMPARISON ({n_strains} strains)")
     print(f"{'='*70}\n")
 
-    print(f"{'Rank':<6}{'Method':<22}{'Mean R²':<10}{'Med R²':<10}"
+    print("  (ranked by median R²; Fail = strains the method could not fit)\n")
+    print(f"{'Rank':<6}{'Method':<22}{'Med R²':<10}{'Mean R²':<10}"
           f"{'%Good':<8}{'%Excl':<8}{'Fail':<8}{'RMSE':<10}")
     print('-' * 70)
     for i, row in summary_df.iterrows():
-        mr2 = f"{row['mean_r2']:.4f}" if row['mean_r2'] is not None else 'N/A'
-        mdr2 = f"{row['median_r2']:.4f}" if row['median_r2'] is not None else 'N/A'
+        med_r2 = f"{row['median_r2']:.4f}" if row['median_r2'] is not None else 'N/A'
+        mean_r2 = f"{row['mean_r2']:.4f}" if row['mean_r2'] is not None else 'N/A'
         pg = f"{row['pct_good']:.0f}%" if row['pct_good'] is not None else 'N/A'
         pe = f"{row['pct_excellent']:.0f}%" if row['pct_excellent'] is not None else 'N/A'
         fail = f"{row['n_failures']}/{row['n_strains']}"
         rmse = f"{row['mean_rmse']:.4f}" if row['mean_rmse'] is not None else 'N/A'
-        print(f"{i+1:<6}{row['label']:<22}{mr2:<10}{mdr2:<10}{pg:<8}{pe:<8}{fail:<8}{rmse:<10}")
+        print(f"{i+1:<6}{row['label']:<22}{med_r2:<10}{mean_r2:<10}{pg:<8}{pe:<8}{fail:<8}{rmse:<10}")
 
     # Best method per strain
     print(f"\nBest method per strain:")
