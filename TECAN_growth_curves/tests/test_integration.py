@@ -44,14 +44,29 @@ class TestPipelineOutputs:
             gdir = results_dir / f"{g}_Results"
             assert gdir.exists(), f"Missing: {gdir}"
 
-    def test_plots_exist(self, results_dir):
-        """At least some diagnostic plots should exist."""
-        plot_count = 0
-        for g in ['Group1', 'Group2', 'Group3', 'Group4']:
-            plots_dir = results_dir / f"{g}_Results" / "plots"
-            if plots_dir.exists():
-                plot_count += len(list(plots_dir.glob("*.png")))
-        assert plot_count > 0, "No diagnostic plots found"
+    def test_diagnostic_plots_are_generated(self, repo_root, tmp_path):
+        """
+        Per-strain diagnostic PNGs are regenerable output (gitignored), so run
+        the core pipeline on the smallest bundled group into a temp dir and
+        check that it writes one plot per strain plus the summary figure.
+        """
+        import importlib.util
+        import os
+        os.environ.setdefault("MPLBACKEND", "Agg")
+        spec = importlib.util.spec_from_file_location(
+            "gca_integration", repo_root / "scripts" / "01_growth_curve_analysis.py")
+        gca = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gca)
+        results = gca.process_growth_curves(
+            str(repo_root / "data" / "raw" / "Group1" / "Group_1_DATA"), str(tmp_path), verbose=False)
+        assert len(results) == 24
+        pngs = list((tmp_path / "plots").glob("*.png"))
+        # Curves rejected because no valid truncation window exists get no per-strain plot.
+        expected = sum(1 for r in results.values() if r.stage != "truncation_invalid")
+        assert len(pngs) == expected, f"expected {expected} diagnostic plots, found {len(pngs)}"
+        assert expected >= 20
+        assert (tmp_path / "classification_summary.png").exists()
+        assert (tmp_path / "processing_results.csv").exists()
 
 
 class TestHaldaneOutputs:
