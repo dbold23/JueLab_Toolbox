@@ -10,10 +10,11 @@ and returns a tidy results table identical in content to the CLI's
 """
 from __future__ import annotations
 
+import copy
 import math
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -75,6 +76,8 @@ class CurveResult:
     gates: List[Gate]
     settings: AnalysisSettings
     row: Dict[str, Any] = field(default_factory=dict)
+    #: manual (start, end) cut applied instead of the automatic one, if any
+    truncation_override: Optional[Tuple[int, int]] = None
 
     # ---------------------------------------------------------- properties
     @property
@@ -235,8 +238,26 @@ def analyze_curve(
     strain: str = "",
     wells: Optional[Sequence[str]] = None,
     _ml=None,
+    truncation_override: Optional[Tuple[int, int]] = None,
 ) -> CurveResult:
-    """Analyse one curve (time in hours, blanked OD) and explain the verdict."""
+    """
+    Analyse one curve (time in hours, blanked OD) and explain the verdict.
+
+    Parameters
+    ----------
+    time_h, od : np.ndarray
+        Time in hours and blank-corrected OD600. Rows where either is NaN are
+        dropped before anything else happens.
+    curve_id, media, strain, wells
+        Labels carried through to the results table.
+    settings : AnalysisSettings, optional
+        Thresholds; defaults to ``scripts/config.yaml``.
+    truncation_override : tuple of (int, int), optional
+        Manual growth window as ``(start_index, end_index)`` into the cleaned
+        arrays (inclusive, i.e. the indices of ``cr.time_h``/``cr.od`` after
+        NaN removal). Use it when a person moves the cut by hand; everything
+        after truncation -- fit, gates, verdict -- is unchanged.
+    """
     settings = settings or AnalysisSettings.from_config()
     gca = legacy.growth_curve_analysis()
     t = np.asarray(time_h, dtype=float)
@@ -257,12 +278,77 @@ def analyze_curve(
             fit_quality_thresholds=settings.fit_quality_thresholds(),
             truncation_params=settings.truncation_params(),
             prefit_gate=gate, postfit_clf=clf, verbose=False,
+            truncation_override=None if truncation_override is None
+            else (int(truncation_override[0]), int(truncation_override[1])),
         )
     gates = build_gates(res, settings, y) if res.stage != "too_few_points" else []
     cr = CurveResult(curve_id=curve_id, media=media, strain=strain, wells=list(wells or []),
-                     n_replicates=len(wells or []), time_h=t, od=y, legacy=res, gates=gates, settings=settings)
+                     n_replicates=len(wells or []), time_h=t, od=y, legacy=res, gates=gates, settings=settings,
+                     truncation_override=None if truncation_override is None
+                     else (int(truncation_override[0]), int(truncation_override[1])))
     cr.row = result_row(cr)
     return cr
+
+
+def reclassify(cr: CurveResult, settings: AnalysisSettings) -> CurveResult:
+    """
+    Re-apply the quality gates to an already fitted curve, without refitting.
+
+    Only the *post-fit* thresholds (R², parameter error, SNR, ΔOD, monotone
+    fraction, autocorrelation) are re-evaluated, on the Gompertz fit that is
+    already stored in ``cr``. That is exactly what happens when a slider in
+    the interface changes a verdict threshold, and it is instant.
+
+    Changing a threshold that acts *before* the fit (truncation window,
+    smoothing, pre-fit signal-to-noise) does not belong here: rerun
+    :func:`analyze_curve` for those.
+
+    Parameters
+    ----------
+    cr : CurveResult
+        A curve analysed earlier by :func:`analyze_curve`.
+    settings : AnalysisSettings
+        The new thresholds.
+
+    Returns
+    -------
+    CurveResult
+        A new result (the input is left untouched) whose verdict, gate table
+        and results row reflect ``settings``.
+    """
+    _, clf = _make_ml(settings)
+    if clf is not None:
+        # The ML classifier is the call of record; it needs the full per-curve
+        # path. Reuse the cut that was already chosen so nothing is refit twice.
+        override = cr.truncation_override
+        if override is None and cr.legacy.stage == "classified" and cr.truncation is not None:
+            override = (int(cr.truncation.start_index), int(cr.truncation.truncation_index))
+        return analyze_curve(cr.time_h, cr.od, cr.curve_id, settings, media=cr.media, strain=cr.strain,
+                             wells=cr.wells, truncation_override=override)
+
+    L = cr.legacy
+    if L.stage == "classified":
+        gca = legacy.growth_curve_analysis()
+        cls = gca.classify_by_fit_quality(
+            L.fit, settings.fit_quality_thresholds(),
+            time=cr.time_h, od600=cr.od, is_incomplete=L.is_incomplete,
+        )
+        if "delta_od" not in cls.metrics:
+            cls.metrics["delta_od"] = np.max(cr.od) - np.mean(cr.od[:5])
+        cls.metrics["max_od"] = np.max(cr.od)
+        cls.metrics["best_model"] = L.best_model
+        new_legacy = replace(L, classification=cls)
+    else:
+        # Rejected before fitting, unusable cut, or too few points: no post-fit
+        # gate applies, so only the gate table is rebuilt against the new numbers.
+        new_legacy = replace(L, classification=copy.deepcopy(L.classification))
+
+    gates = build_gates(new_legacy, settings, cr.od) if new_legacy.stage != "too_few_points" else []
+    out = CurveResult(curve_id=cr.curve_id, media=cr.media, strain=cr.strain, wells=list(cr.wells),
+                      n_replicates=cr.n_replicates, time_h=cr.time_h, od=cr.od, legacy=new_legacy,
+                      gates=gates, settings=settings, truncation_override=cr.truncation_override)
+    out.row = result_row(out)
+    return out
 
 
 def result_row(cr: CurveResult) -> Dict[str, Any]:
@@ -377,6 +463,20 @@ def analyze_plate(
     table = pd.DataFrame(rows, columns=RESULT_COLUMNS)
     return PlateResults(table=table, curves=curves, settings=settings, qc=list(processed.qc),
                         run_summary=dict(processed.run_summary), ml_used=ml[1] is not None)
+
+
+def reclassify_plate(results: PlateResults, settings: AnalysisSettings) -> PlateResults:
+    """
+    Apply :func:`reclassify` to every curve of a plate and rebuild the table.
+
+    Use it when only post-fit thresholds moved: no curve is refitted, so a
+    96-well plate updates in milliseconds instead of seconds.
+    """
+    curves = {cid: reclassify(cr, settings) for cid, cr in results.curves.items()}
+    ids = list(results.table.curve_id)
+    table = pd.DataFrame([curves[cid].row for cid in ids], columns=RESULT_COLUMNS)
+    return PlateResults(table=table, curves=curves, settings=settings, qc=list(results.qc),
+                        run_summary=dict(results.run_summary), ml_used=results.ml_used)
 
 
 def legacy_results_frame(results: PlateResults) -> pd.DataFrame:

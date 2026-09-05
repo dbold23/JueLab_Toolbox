@@ -1487,6 +1487,71 @@ def truncate_at_max(
     )
 
 
+def truncation_from_indices(
+    time: np.ndarray,
+    od600: np.ndarray,
+    start_idx: int,
+    end_idx: int,
+    smoothing_window: int = 5
+) -> TruncationResult:
+    """
+    Build a TruncationResult from a hand-picked window (manual truncation).
+
+    Used when a person overrides the automatic cut in the lab interface: the
+    window ``[start_idx, end_idx]`` is taken as given and everything the fit
+    and the classification use -- the kept time/OD arrays, the smoothed curve,
+    the copies of the originals -- is computed exactly as ``truncate_at_max``
+    computes it, so the downstream analysis cannot tell the two apart.
+
+    The one field that can differ is the reported ``max_od``: here it is the
+    highest measured OD inside the chosen window, while ``truncate_at_max``
+    reports the peak it detected before adding its buffer points. ``max_od``
+    is only shown in plots; no gate and no fitted parameter depends on it.
+
+    Parameters
+    ----------
+    time : np.ndarray
+        Time values in hours (NaNs already removed).
+    od600 : np.ndarray
+        OD600 values matching ``time``.
+    start_idx, end_idx : int
+        Inclusive index bounds of the window to keep. They are clipped into
+        the valid range and ordered, so a slider cannot produce an empty cut.
+    smoothing_window : int
+        Rolling average window, only used for the displayed smoothed curve.
+
+    Returns
+    -------
+    TruncationResult
+        Same shape as the output of ``truncate_at_max``.
+    """
+    n = len(od600)
+    if n == 0:
+        raise ValueError("Cannot truncate an empty curve")
+    start_idx = int(min(max(int(start_idx), 0), n - 1))
+    end_idx = int(min(max(int(end_idx), start_idx), n - 1))
+
+    smoothed_od = pd.Series(od600).rolling(
+        window=smoothing_window,
+        center=True,
+        min_periods=1
+    ).mean().values
+
+    actual_max_idx = start_idx + int(np.argmax(od600[start_idx:end_idx + 1]))
+
+    return TruncationResult(
+        truncation_index=end_idx,
+        truncation_time=time[end_idx],
+        max_od=od600[actual_max_idx],
+        time_truncated=time[start_idx:end_idx + 1].copy(),
+        od_truncated=od600[start_idx:end_idx + 1].copy(),
+        time_original=time.copy(),
+        od_original=od600.copy(),
+        smoothed_od=smoothed_od,
+        start_index=start_idx
+    )
+
+
 def validate_truncation(result: TruncationResult, min_points: int = 20) -> Tuple[bool, str]:
     """
     Validate that truncation result is usable.
@@ -2344,6 +2409,7 @@ def analyze_curve(
     prefit_gate=None,
     postfit_clf=None,
     verbose: bool = False,
+    truncation_override: Optional[Tuple[int, int]] = None,
 ) -> ProcessingResult:
     """
     Analyse ONE blank-corrected growth curve: pre-fit gate -> truncation ->
@@ -2365,6 +2431,12 @@ def analyze_curve(
         ML classifier objects from ``ml_classifier``; ``None`` -> rule-based gates.
     verbose : bool
         Print the per-curve progress lines.
+    truncation_override : Optional[Tuple[int, int]]
+        Manual ``(start_index, end_index)`` window into ``time``/``od600``
+        (inclusive, indices of the arrays passed in). When given, the
+        automatic cut is skipped and this window is used instead; it is
+        validated by ``validate_truncation`` like any other cut. ``None``
+        (default) keeps the automatic behaviour unchanged.
 
     Returns
     -------
@@ -2445,13 +2517,21 @@ def analyze_curve(
     # ─── TRUNCATION ─────────────────────────────────────
     is_incomplete, _ = detect_incomplete_curve(time_clean, od600_clean)
 
-    truncation = truncate_at_max(
-        time_clean, od600_clean,
-        smoothing_window=truncation_params['smoothing_window'],
-        buffer_points=truncation_params['buffer_points'],
-        use_first_peak=truncation_params.get('use_first_peak', True),
-        use_adaptive=truncation_params.get('use_adaptive', False)
-    )
+    if truncation_override is not None:
+        truncation = truncation_from_indices(
+            time_clean, od600_clean,
+            start_idx=truncation_override[0],
+            end_idx=truncation_override[1],
+            smoothing_window=truncation_params['smoothing_window']
+        )
+    else:
+        truncation = truncate_at_max(
+            time_clean, od600_clean,
+            smoothing_window=truncation_params['smoothing_window'],
+            buffer_points=truncation_params['buffer_points'],
+            use_first_peak=truncation_params.get('use_first_peak', True),
+            use_adaptive=truncation_params.get('use_adaptive', False)
+        )
 
     trunc_valid, trunc_reason = validate_truncation(
         truncation,
@@ -2675,8 +2755,9 @@ def process_growth_curves(
         if verbose:
             print(f"\nProcessing: {csv_file.name}")
 
-        # Load data
-        df = pd.read_csv(csv_file)
+        # Load data (round_trip parsing keeps every float exactly as written, so
+        # results do not depend on the CSV parser's rounding)
+        df = pd.read_csv(csv_file, float_precision="round_trip")
 
         # Extract time column
         time_cols = [c for c in df.columns if 'TIME' in c.upper()]
