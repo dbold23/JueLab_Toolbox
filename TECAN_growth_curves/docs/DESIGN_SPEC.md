@@ -105,7 +105,7 @@
 
 1. **What the reader measures** — OD600 every 15 min; why blanks; why triplicates.
 2. **Preprocessing** — t(h)=t(s)/3600; `OD(t) = mean(replicate wells) − mean(blank wells of that media)`, floored at 0; the flooring artefact and why SNR can be meaningless.
-3. **Growth phases and truncation** — 5-point centred rolling mean (used only to find the peak); first-peak rule (derivative > 0.001 then ≤ 0.005 after OD > 0.1, peak ≥ 50 % of max) + 3 buffer points; Global max; Adaptive MCCV (one paragraph); incomplete rule (last 15 % still rising > 0.005 OD/h → keep everything).
+3. **Growth phases and truncation** — 5-point centred rolling mean (used only to find the peak); first-peak rule (the smoothed rate, in OD/h, falls through 25 % of its maximum after OD > 0.1, peak ≥ 50 % of max; calibrated on validation_audit.csv, 83/85 agreement) + 3 buffer points; Global max; Adaptive MCCV (one paragraph); incomplete rule (last 15 % still rising > 0.005 OD/h → keep everything).
 4. **The model** — `y(t) = A · exp(−exp((μ·e/A)·(λ − t) + 1))` (Zwietering et al. 1990). **A**: the ceiling the culture reaches (OD). **μ**: the steepest slope, fastest the OD ever rises (OD/h). **λ**: hours the culture waits before that rise (where the steepest tangent crosses baseline). **e** makes μ the true tangent slope. Doubling time `t_d = ln2·A/(μ·e)`.
 5. **Fitting** — least squares (`scipy.optimize.curve_fit`), initial guesses (max OD, max slope, time of max slope), bounds, SE = √diag(cov), relative error = SE/value.
 6. **Fit quality** — `R² = 1 − Σ(y−ŷ)²/Σ(y−ȳ)²`: fraction of variation explained; RMSE; residuals should look like noise.
