@@ -8,9 +8,16 @@ Author: Generated for BIO380SP25 Research Project
 Date: December 2024
 """
 
+import hashlib
+import json
 import os
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+import re
+import subprocess
+import sys
+import time as _clock  # 'time' is a local variable name throughout this module
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +55,114 @@ TRUNCATION_PARAMS = {
 
 
 # =============================================================================
+# Quality-gate vocabulary
+# =============================================================================
+# Every rejection the fit-based pipeline can make carries a stable, machine
+# readable id in addition to its human-readable sentence. The ids are the same
+# ones ``tecan_growth.analyze.build_gates`` already uses for the interface, so
+# a gate means the same thing in the CLI, the app and every report.
+
+#: Canonical gate ids of the fit-based pipeline (the ``failed_gates`` column).
+CANONICAL_GATE_IDS = (
+    'prefit_snr',          # rule-based pre-fit SNR gate rejected the curve
+    'prefit_rejected',     # ML pre-fit gate rejected the curve
+    'too_few_points',      # not enough points to fit (before or after truncation)
+    'fit_success',         # the Gompertz optimiser did not converge
+    'r_squared',           # R2 below min_r_squared
+    'a_err_pct',           # standard error of A above max_param_error_pct
+    'mu_err_pct',          # standard error of mu above max_param_error_pct
+    'snr',                 # signal-to-noise below min_snr
+    'delta_od_ci',         # delta-OD minus 2 sigma below min_delta_od_ci
+    'delta_od',            # absolute growth below min_absolute_delta_od
+    'amplitude_vs_noise',  # fitted A below 3x baseline noise
+    'monotone',            # rising fraction below min_monotone_fraction
+    'residual_autocorr',   # lag-1 residual autocorrelation above the maximum
+    'ml_p_good',           # ML post-fit classifier called it BAD/BORDERLINE
+)
+
+#: Ids for paths outside the fit-based vocabulary: the legacy OD-threshold
+#: classifier (``--od-based``) and the early-peak guard in validate_truncation.
+#: They never occur in a fit-based run, which is what every published number
+#: uses, so they are kept separate from CANONICAL_GATE_IDS.
+EXTRA_GATE_IDS = (
+    'max_od',              # OD-based: peak OD below min_max_od
+    'initial_od',          # OD-based: starting OD above max_initial_od
+    'peak_too_early',      # growth window peaks inside the first hour
+)
+
+#: Everything a failed_gates value may contain.
+KNOWN_GATE_IDS = CANONICAL_GATE_IDS + EXTRA_GATE_IDS
+
+#: How a rejection sentence maps back to a gate id. Needed to read results that
+#: were written before the failed_gates column existed; the sentences are the
+#: literal ones produced below, so this table and the appends stay in step.
+_REASON_PATTERNS = (
+    ('Rejected by ML pre-fit gate', 'prefit_rejected'),
+    ('Pre-fit SNR too low', 'prefit_snr'),
+    ('Too few points after truncation', 'too_few_points'),
+    ('Insufficient data points', 'too_few_points'),
+    ('Maximum too early in experiment', 'peak_too_early'),
+    ('Fit failed', 'fit_success'),
+    ('Low R', 'r_squared'),
+    ('High A error', 'a_err_pct'),
+    ('High mu error', 'mu_err_pct'),
+    ('Low SNR', 'snr'),
+    ('Low signal-to-noise', 'snr'),          # the OD-threshold classifier's wording
+    ('Delta OD not significant', 'delta_od_ci'),
+    ('Insufficient growth', 'delta_od'),
+    ('Insufficient OD change', 'delta_od'),
+    ('Growth amplitude below noise', 'amplitude_vs_noise'),
+    ('Non-monotonic signal', 'monotone'),
+    ('High residual autocorrelation', 'residual_autocorr'),
+    ('Maximum OD too low', 'max_od'),
+    ('High initial OD', 'initial_od'),
+)
+
+_ML_REASON_RE = re.compile(r'^(BAD|BORDERLINE|GOOD) \(ML\): P\(good\)=')
+
+
+def gate_ids_from_reason(reason: Optional[str]) -> Tuple[List[str], List[str]]:
+    """
+    Parse a ``classification_reason`` sentence back into gate ids.
+
+    Results written before the ``failed_gates`` column existed only carry the
+    sentence, so reports have to recover the ids from it. A clause that no
+    pattern matches is returned separately instead of being dropped or guessed.
+
+    Parameters
+    ----------
+    reason : str or None
+        The value of ``classification_reason``.
+
+    Returns
+    -------
+    (ids, unmapped) : (List[str], List[str])
+        ``ids`` are canonical gate ids in the order they appear; ``unmapped``
+        holds any clause the table does not know.
+    """
+    text = '' if reason is None else str(reason).strip()
+    if not text or text.upper().startswith('GOOD'):
+        return [], []
+    if _ML_REASON_RE.match(text):
+        return ([] if text.startswith('GOOD') else ['ml_p_good']), []
+    if text.startswith('BAD:'):
+        text = text[len('BAD:'):].strip()
+    ids: List[str] = []
+    unmapped: List[str] = []
+    for clause in text.split('; '):
+        clause = clause.strip()
+        if not clause:
+            continue
+        for prefix, gate_id in _REASON_PATTERNS:
+            if clause.startswith(prefix):
+                ids.append(gate_id)
+                break
+        else:
+            unmapped.append(clause)
+    return ids, unmapped
+
+
+# =============================================================================
 # Data Classes for Results
 # =============================================================================
 
@@ -57,6 +172,9 @@ class ClassificationResult:
     is_good: bool
     reason: str
     metrics: Dict[str, float]
+    #: Canonical ids of the gates this curve failed (empty when GOOD). The
+    #: machine-readable twin of ``reason``; see CANONICAL_GATE_IDS.
+    failed_gates: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -186,23 +304,29 @@ def classify_growth_curve(
 
     # Apply classification criteria
     reasons = []
+    failed_gates = []
 
     if metrics['delta_od'] < thresholds['min_delta_od']:
         reasons.append(f"Insufficient OD change: {metrics['delta_od']:.3f} < {thresholds['min_delta_od']}")
+        failed_gates.append('delta_od')
 
     if metrics['max_od'] < thresholds['min_max_od']:
         reasons.append(f"Maximum OD too low: {metrics['max_od']:.3f} < {thresholds['min_max_od']}")
+        failed_gates.append('max_od')
 
     if metrics['snr'] < thresholds['min_snr']:
         reasons.append(f"Low signal-to-noise: {metrics['snr']:.1f} < {thresholds['min_snr']}")
+        failed_gates.append('snr')
 
     if metrics['initial_od'] > thresholds['max_initial_od']:
         reasons.append(f"High initial OD (contamination?): {metrics['initial_od']:.3f} > {thresholds['max_initial_od']}")
+        failed_gates.append('initial_od')
 
     is_good = len(reasons) == 0
     reason = "GOOD: All criteria passed" if is_good else "BAD: " + "; ".join(reasons)
 
-    return ClassificationResult(is_good=is_good, reason=reason, metrics=metrics)
+    return ClassificationResult(is_good=is_good, reason=reason, metrics=metrics,
+                                failed_gates=failed_gates)
 
 
 def classify_by_fit_quality(
@@ -267,26 +391,31 @@ def classify_by_fit_quality(
     }
 
     reasons = []
+    failed_gates = []
 
     # Check if fit failed entirely
     if not fit_result.success:
         return ClassificationResult(
             is_good=False,
             reason=f"BAD: Fit failed - {fit_result.error_message}",
-            metrics=metrics
+            metrics=metrics,
+            failed_gates=['fit_success'],
         )
 
     # Check R²
     if fit_result.r_squared < thresholds['min_r_squared']:
         reasons.append(f"Low R²: {fit_result.r_squared:.3f} < {thresholds['min_r_squared']}")
+        failed_gates.append('r_squared')
 
     # Check parameter errors (only A and mu - lambda can be tricky near zero)
     max_err = thresholds['max_param_error_pct']
     # 'not (x <= max)' so that NaN/inf (unknown error) fails rather than passes
     if not (metrics['a_err_pct'] <= max_err):
         reasons.append(f"High A error: {metrics['a_err_pct']:.1f}% > {max_err}%")
+        failed_gates.append('a_err_pct')
     if not (metrics['mu_err_pct'] <= max_err):
         reasons.append(f"High mu error: {metrics['mu_err_pct']:.1f}% > {max_err}%")
+        failed_gates.append('mu_err_pct')
 
     # =====================================================================
     # Secondary quality gates (require raw data)
@@ -326,20 +455,24 @@ def classify_by_fit_quality(
             min_snr = thresholds.get('min_snr', 5.0)
             if snr < min_snr:
                 reasons.append(f"Low SNR: {snr:.1f} < {min_snr}")
+                failed_gates.append('snr')
 
             # Delta-OD confidence interval: growth must be statistically significant
             min_delta_od_ci = thresholds.get('min_delta_od_ci', 0.1)
             if delta_od_ci_lower < min_delta_od_ci:
                 reasons.append(f"Delta OD not significant: CI lower={delta_od_ci_lower:.3f} < {min_delta_od_ci}")
+                failed_gates.append('delta_od_ci')
 
         # Absolute minimum delta-OD (always enforced, even for excellent fits)
         min_delta_od = thresholds.get('min_absolute_delta_od', 0.15)
         if delta_od < min_delta_od:
             reasons.append(f"Insufficient growth: delta_od={delta_od:.3f} < {min_delta_od}")
+            failed_gates.append('delta_od')
 
         # Flatness check: fitted A must exceed noise level (always enforced)
         if fit_result.a_opt < 3 * baseline_std:
             reasons.append(f"Growth amplitude below noise: A={fit_result.a_opt:.3f} < 3*noise={3*baseline_std:.3f}")
+            failed_gates.append('amplitude_vs_noise')
 
         # Monotonicity check: real growth curves have sustained upward trends.
         # Fraction of consecutive smoothed points that rise inside the growth
@@ -366,6 +499,7 @@ def classify_by_fit_quality(
             reasons.append(
                 f"Non-monotonic signal: {monotone_frac:.2f} < {min_monotone}"
             )
+            failed_gates.append('monotone')
 
         # Residual autocorrelation check: structured residuals indicate the
         # Gompertz model is fitting noise rather than real sigmoid growth.
@@ -397,6 +531,7 @@ def classify_by_fit_quality(
                 reasons.append(
                     f"High residual autocorrelation: {lag1_autocorr:.2f} > {max_autocorr}"
                 )
+                failed_gates.append('residual_autocorr')
             metrics['residual_autocorr'] = lag1_autocorr
 
         metrics['snr'] = snr
@@ -409,7 +544,8 @@ def classify_by_fit_quality(
     is_good = len(reasons) == 0
     reason = "GOOD: Fit quality passed" if is_good else "BAD: " + "; ".join(reasons)
 
-    return ClassificationResult(is_good=is_good, reason=reason, metrics=metrics)
+    return ClassificationResult(is_good=is_good, reason=reason, metrics=metrics,
+                                failed_gates=failed_gates)
 
 
 # =============================================================================
@@ -2585,11 +2721,13 @@ def analyze_curve(
     # ML pre-fit gate is primary when available;
     # rule-based SNR check is fallback only
     prefit_rejected = False
+    reject_gates: List[str] = []
 
     if prefit_gate is not None:
         # ML decides whether to skip fitting
         if prefit_gate.should_skip(time_clean, od600_clean, strain_name=strain_name):
             prefit_rejected = True
+            reject_gates = ['prefit_rejected']
             reject_reason = "BAD: Rejected by ML pre-fit gate"
             reject_metrics = {'delta_od': signal_range,
                               'max_od': float(np.max(od600_clean)),
@@ -2604,6 +2742,7 @@ def analyze_curve(
         od_override = fit_quality_thresholds.get('pre_fit_delta_od_override', 0.5)
         if pre_fit_snr < snr_thresh and signal_range < od_override:
             prefit_rejected = True
+            reject_gates = ['prefit_snr']
             reject_reason = "BAD: Pre-fit SNR too low ({:.1f} < {:.1f})".format(pre_fit_snr, snr_thresh)
             reject_metrics = {'snr': pre_fit_snr, 'delta_od': signal_range,
                               'max_od': float(np.max(od600_clean))}
@@ -2612,7 +2751,8 @@ def analyze_curve(
 
     if prefit_rejected:
         classification = ClassificationResult(
-            is_good=False, reason=reject_reason, metrics=reject_metrics
+            is_good=False, reason=reject_reason, metrics=reject_metrics,
+            failed_gates=list(reject_gates),
         )
         truncation = TruncationResult(
             truncation_index=len(od600_clean)-1,
@@ -2669,7 +2809,8 @@ def analyze_curve(
             is_good=False,
             reason=f"BAD: {trunc_reason}",
             metrics={'delta_od': float(np.max(od600_clean) - np.mean(od600_clean[:5])),
-                     'max_od': float(np.max(od600_clean))}
+                     'max_od': float(np.max(od600_clean))},
+            failed_gates=gate_ids_from_reason(trunc_reason)[0],
         )
         fit = FitResult(
             success=False, a_opt=0, mu_opt=0, lambda_opt=0,
@@ -2748,6 +2889,9 @@ def analyze_curve(
                 is_good=ml_result['is_good'],
                 reason=ml_result['reason'],
                 metrics=classification_metrics,
+                # The ML probability is what decided this curve; the rule-based
+                # gates it also failed stay in `rule_based_reason`.
+                failed_gates=[] if ml_result['is_good'] else ['ml_p_good'],
             )
         else:
             # ML returned None (error) — fall back to rules
@@ -2796,7 +2940,9 @@ def process_growth_curves(
     use_ml_classifier: bool = False,
     ml_classifier_config: Optional[Dict] = None,
     verbose: bool = True,
-    no_plots: bool = False
+    no_plots: bool = False,
+    config_path: Optional[str] = None,
+    mccv_config: Optional[Dict] = None,
 ) -> Dict[str, ProcessingResult]:
     """
     Main pipeline function to process all growth curves in a directory.
@@ -2818,12 +2964,20 @@ def process_growth_curves(
         If False, use OD-threshold-based classification.
     verbose : bool
         Print progress messages
+    config_path : Optional[str]
+        The config.yaml this run resolved its settings from, recorded (with its
+        SHA-256) in run_settings.json. None when no config file was used.
+    mccv_config : Optional[Dict]
+        The ``truncation.mccv`` block as read from config.yaml, recorded in
+        run_settings.json next to the MCCV settings actually in effect.
 
     Returns
     -------
     Dict[str, ProcessingResult]
         Results for each processed strain
     """
+    run_started = _clock.time()
+
     # Use defaults if not provided
     if classification_thresholds is None:
         classification_thresholds = CLASSIFICATION_THRESHOLDS
@@ -3034,13 +3188,197 @@ def process_growth_curves(
         classifications = {k: v.classification for k, v in results.items()}
         plot_classification_summary(classifications, output_dir)
 
-    # Export results to CSV
-    export_results_to_csv(results, output_dir)
+    # Export results to CSV, together with the settings that produced them
+    run_settings = build_run_settings(
+        data_dir=data_dir,
+        truncation_params=truncation_params,
+        fit_quality_thresholds=fit_quality_thresholds,
+        classification_thresholds=classification_thresholds,
+        use_fit_based_classification=use_fit_based_classification,
+        ml_classify=use_ml_classifier,
+        config_path=config_path,
+        mccv_config=mccv_config,
+        n_curves=len(results),
+        wall_clock_s=_clock.time() - run_started,
+    )
+    export_results_to_csv(results, output_dir, run_settings=run_settings)
 
     return results
 
 
-def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str) -> str:
+# =============================================================================
+# Run provenance (run_settings.json)
+# =============================================================================
+# Every results table is written together with the exact settings that produced
+# it. Without this, a processing_results.csv does not say which truncation mode,
+# thresholds, code revision or input files it came from -- and adaptive and
+# first-peak truncation give different numbers for the same plate.
+
+#: Keys of run_settings.json, in the order they are written.
+RUN_SETTINGS_KEYS = (
+    'truncation_mode', 'use_adaptive', 'use_first_peak', 'smoothing_window',
+    'buffer_points', 'min_points_for_fit', 'quality_gates', 'mccv',
+    'ml_classify', 'config_path', 'config_sha256', 'git_sha', 'git_dirty',
+    'data_dir', 'dataset_sha256', 'n_curves', 'wall_clock_s', 'timestamp_utc',
+    'argv',
+)
+
+#: Effective MCCV settings of adaptive truncation. find_optimal_truncation_v2
+#: is called with its own defaults (scripts/config.yaml truncation.mccv is not
+#: plumbed through to it), so the effective values are recorded here and the
+#: config block is recorded next to them for comparison.
+_MCCV_DEFAULT_KEYS = ('min_points', 'n_coarse', 'n_cv_folds', 'cv_holdout',
+                      'n_fine_top', 'fine_window', 'try_multi_model')
+
+#: Threshold -> value used when fit_quality_thresholds does not carry it.
+#: These are the .get() defaults inside classify_by_fit_quality/analyze_curve.
+_EFFECTIVE_GATE_DEFAULTS = {
+    'min_r_squared': FIT_QUALITY_THRESHOLDS['min_r_squared'],
+    'max_param_error_pct': FIT_QUALITY_THRESHOLDS['max_param_error_pct'],
+    'min_points_for_fit': FIT_QUALITY_THRESHOLDS['min_points_for_fit'],
+    'min_snr': 5.0,
+    'min_delta_od_ci': 0.1,
+    'min_absolute_delta_od': 0.15,
+    'pre_fit_snr_threshold': 3.0,
+    'pre_fit_delta_od_override': 0.5,
+    'excellent_r2_threshold': 0.98,
+    'min_monotone_fraction': 0.55,
+    'max_residual_autocorr': 0.7,
+    'noise_floor_od': 0.002,
+    'autocorr_lag_hours': 1.0,
+}
+
+
+def truncation_mode_name(truncation_params: Optional[Dict] = None) -> str:
+    """'adaptive', 'first_peak' or 'global_max' for a truncation_params dict."""
+    tp = TRUNCATION_PARAMS if truncation_params is None else truncation_params
+    if tp.get('use_adaptive', False):
+        return 'adaptive'
+    return 'first_peak' if tp.get('use_first_peak', True) else 'global_max'
+
+
+def _sha256_of_file(path) -> Optional[str]:
+    """SHA-256 of one file, or None if it cannot be read."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except Exception:
+        return None
+
+
+def dataset_sha256(data_dir) -> Optional[str]:
+    """
+    SHA-256 over the contents of the ``*_DATA.csv`` files of a directory,
+    concatenated in sorted filename order. None when the directory holds none.
+    """
+    try:
+        files = sorted(Path(data_dir).glob('*_DATA.csv'), key=lambda q: q.name)
+    except Exception:
+        return None
+    if not files:
+        return None
+    h = hashlib.sha256()
+    for f in files:
+        try:
+            h.update(f.read_bytes())
+        except Exception:
+            return None
+    return h.hexdigest()
+
+
+def _git_info() -> Tuple[Optional[str], Optional[bool]]:
+    """(commit sha, working-tree-dirty) of the repository, or (None, None)."""
+    repo = Path(__file__).resolve().parent.parent
+    try:
+        sha = subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD'],
+                             capture_output=True, text=True, timeout=15)
+        if sha.returncode != 0:
+            return None, None
+        status = subprocess.run(['git', '-C', str(repo), 'status', '--porcelain'],
+                                capture_output=True, text=True, timeout=30)
+        dirty = None if status.returncode != 0 else bool(status.stdout.strip())
+        return sha.stdout.strip(), dirty
+    except Exception:
+        return None, None
+
+
+def build_run_settings(
+    data_dir: str,
+    truncation_params: Dict,
+    fit_quality_thresholds: Dict,
+    classification_thresholds: Optional[Dict] = None,
+    use_fit_based_classification: bool = True,
+    ml_classify: bool = False,
+    config_path: Optional[str] = None,
+    mccv_config: Optional[Dict] = None,
+    n_curves: Optional[int] = None,
+    wall_clock_s: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Collect everything needed to reproduce a run into one dict.
+
+    ``ml_classify`` is the resolved setting the run was given, not a guess from
+    whether model files happen to exist on disk.
+    """
+    use_adaptive = bool(truncation_params.get('use_adaptive', False))
+
+    gates: Dict[str, Any] = dict(fit_quality_thresholds)
+    # The values the gates fall back to when the caller's dict is silent (the
+    # literal .get() defaults of classify_by_fit_quality and analyze_curve), so
+    # the record is of the thresholds in force, not of the dict that was passed.
+    for key, value in _EFFECTIVE_GATE_DEFAULTS.items():
+        gates.setdefault(key, value)
+    gates['min_hours_to_peak'] = MIN_HOURS_TO_PEAK
+    gates['classification'] = 'fit_quality' if use_fit_based_classification else 'od_thresholds'
+    gates['od_thresholds'] = dict(classification_thresholds or CLASSIFICATION_THRESHOLDS)
+
+    mccv: Optional[Dict[str, Any]] = None
+    if use_adaptive:
+        import inspect
+        defaults = inspect.signature(find_optimal_truncation_v2).parameters
+        mccv = {k: defaults[k].default for k in _MCCV_DEFAULT_KEYS if k in defaults}
+        mccv['source'] = ('find_optimal_truncation_v2 defaults; scripts/config.yaml '
+                          'truncation.mccv is not passed to it')
+        mccv['config_values'] = dict(mccv_config) if mccv_config else None
+
+    git_sha, git_dirty = _git_info()
+    settings = {
+        'truncation_mode': truncation_mode_name(truncation_params),
+        'use_adaptive': use_adaptive,
+        'use_first_peak': bool(truncation_params.get('use_first_peak', True)),
+        'smoothing_window': truncation_params.get('smoothing_window'),
+        'buffer_points': truncation_params.get('buffer_points'),
+        'min_points_for_fit': truncation_params.get('min_points_for_fit'),
+        'quality_gates': gates,
+        'mccv': mccv,
+        'ml_classify': bool(ml_classify),
+        'config_path': None if config_path is None else str(config_path),
+        'config_sha256': None if config_path is None else _sha256_of_file(config_path),
+        'git_sha': git_sha,
+        'git_dirty': git_dirty,
+        'data_dir': str(data_dir),
+        'dataset_sha256': dataset_sha256(data_dir),
+        'n_curves': None if n_curves is None else int(n_curves),
+        'wall_clock_s': None if wall_clock_s is None else round(float(wall_clock_s), 3),
+        'timestamp_utc': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'argv': list(sys.argv),
+    }
+    return {k: settings[k] for k in RUN_SETTINGS_KEYS}
+
+
+def write_run_settings(run_settings: Dict[str, Any], output_dir: str) -> str:
+    """Write ``run_settings.json`` beside processing_results.csv."""
+    path = os.path.join(output_dir, 'run_settings.json')
+    with open(path, 'w') as fh:
+        json.dump(run_settings, fh, indent=2, default=str)
+        fh.write('\n')
+    return path
+
+
+def export_results_to_csv(
+    results: Dict[str, ProcessingResult],
+    output_dir: str,
+    run_settings: Optional[Dict[str, Any]] = None,
+) -> str:
     """
     Export all results to a summary CSV file.
 
@@ -3050,6 +3388,11 @@ def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str)
         Processing results for all strains
     output_dir : str
         Output directory
+    run_settings : Optional[Dict]
+        Provenance of the run (see :func:`build_run_settings`). When given it is
+        written to ``run_settings.json`` beside the CSV, so the table always
+        says which truncation mode, thresholds, code revision and input files
+        produced it.
 
     Returns
     -------
@@ -3122,11 +3465,20 @@ def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str)
             'ml_classification': metrics.get('ml_classification'),
         })
 
+        # Machine-readable twin of classification_reason. Appended last so that
+        # every existing column keeps its position.
+        row['failed_gates'] = ';'.join(
+            getattr(result.classification, 'failed_gates', None) or []
+        )
+
         rows.append(row)
 
     df = pd.DataFrame(rows)
     output_path = f"{output_dir}/processing_results.csv"
     df.to_csv(output_path, index=False)
+
+    if run_settings is not None:
+        write_run_settings(run_settings, output_dir)
 
     return output_path
 
@@ -3368,7 +3720,9 @@ def main():
         use_ml_classifier=args.ml_classify,
         ml_classifier_config=ml_config,
         verbose=not args.quiet,
-        no_plots=args.no_plots
+        no_plots=args.no_plots,
+        config_path=str(config_path) if config_path.exists() else None,
+        mccv_config=cfg_trunc.get('mccv'),
     )
 
     # Print summary
@@ -3384,6 +3738,7 @@ def main():
     print(f"Successful fits: {fit_count}")
     print(f"\nResults saved to: {args.output}/")
     print(f"  - processing_results.csv")
+    print(f"  - run_settings.json")
     print(f"  - classification_summary.png")
     print(f"  - plots/ (individual strain plots)")
 

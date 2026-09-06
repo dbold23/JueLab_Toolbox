@@ -33,6 +33,9 @@ RESULT_COLUMNS = [
     "delta_od", "max_od", "snr", "prefit_snr", "a_err_pct", "mu_err_pct",
     "truncation_time", "points_used", "baseline_std", "monotone_fraction", "residual_autocorr", "delta_od_ci_lower",
     "p_good", "ml_classification", "rule_based_result", "rule_based_reason",
+    # Machine-readable twin of classification_reason; last, as in the CLI's
+    # processing_results.csv (semicolon-joined gate ids, empty when GOOD).
+    "failed_gates",
 ]
 
 
@@ -270,7 +273,8 @@ def analyze_curve(
         cls = gca.ClassificationResult(is_good=False,
                                        reason=f"BAD: Insufficient data points ({len(y)} < {settings.min_points_for_fit})",
                                        metrics={"delta_od": float(np.max(y) - np.mean(y[:5])) if len(y) else float("nan"),
-                                                "max_od": float(np.max(y)) if len(y) else float("nan")})
+                                                "max_od": float(np.max(y)) if len(y) else float("nan")},
+                                       failed_gates=["too_few_points"])
         res = gca.ProcessingResult(strain_name=curve_id, classification=cls, truncation=None, fit=None, stage="too_few_points")
     else:
         res = gca.analyze_curve(
@@ -379,6 +383,7 @@ def result_row(cr: CurveResult) -> Dict[str, Any]:
         "residual_autocorr": m.get("residual_autocorr"), "delta_od_ci_lower": m.get("delta_od_ci_lower"),
         "p_good": m.get("p_good"), "ml_classification": m.get("ml_classification"),
         "rule_based_result": m.get("rule_based_result"), "rule_based_reason": m.get("rule_based_reason"),
+        "failed_gates": ";".join(getattr(L.classification, "failed_gates", None) or []),
     }
     return row
 
@@ -494,5 +499,6 @@ def legacy_results_frame(results: PlateResults) -> pd.DataFrame:
         "fit_r_squared": t.fit_r_squared, "fit_rmse": t.fit_rmse, "fit_mae": t.fit_mae,
         "baseline_std": t.baseline_std, "monotone_fraction": t.monotone_fraction, "residual_autocorr": t.residual_autocorr,
         "delta_od_ci_lower": t.delta_od_ci_lower, "p_good": t.p_good, "ml_classification": t.ml_classification,
+        "failed_gates": t.failed_gates,
     })
     return out
