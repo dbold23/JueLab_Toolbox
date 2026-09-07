@@ -102,20 +102,23 @@ inclusion of diauxic shifts, death phase, or other non-Gompertz behavior.
 
 ## Validation Results
 
-The pipeline was validated on **480 synthetic growth curves** generated with
-known Gompertz parameters across a range of A, mu, and lambda values, with
-realistic levels of biological noise.
+The pipeline was validated on **1139 synthetic growth curves** across 64 scenarios with known Gompertz, logistic, Richards, Baranyi and Haldane parameters, generated with realistic noise, artefacts and blanks calibrated to the plates in this study.
+
+Numbers below are read from `synthetic_data/benchmark/v2/report.json` at export time (`first_peak` truncation, seed 42, dataset `760a04062cf2`, git `7fec4fe1ae4c`). They are not typed into this script.
 
 | Metric | Value |
 |--------|-------|
-| Overall classification accuracy | 84.4% |
-| Parameter recovery R^2 (A) | > 0.90 |
-| Parameter recovery R^2 (mu) | > 0.90 |
-| Parameter recovery R^2 (lambda) | > 0.90 |
+| Curves in the scored headline | 960 |
+| Balanced accuracy | 87.9% |
+| Sensitivity | 85.6% |
+| Specificity | 90.2% |
+| Accuracy | 87.6% |
+| Parameter recovery R^2 (A) | 0.405 |
+| Parameter recovery R^2 (mu) | 0.991 |
+| Parameter recovery R^2 (lambda) | 0.975 |
 
-Synthetic curves with parameters near classification boundaries (e.g., very
-low growth, high noise) accounted for most misclassifications. For curves
-with clear sigmoid growth, accuracy exceeded 95%.
+Parameter recovery is pooled over the curves the pipeline accepted and the truth calls good; it is conditioned on the pipeline's own verdict, so it is not an unbiased measure of the estimator. The R^2 for A is the lowest of the three because the suite deliberately contains families whose asymptote is not identifiable from the observed window -- runs that stop before the plateau. The full account, including which scenarios are missed and why, is in `docs/BENCHMARK_LEDGER.md` and in the rendered `VALIDATION_SUMMARY.md`.
+
 
 ---
 

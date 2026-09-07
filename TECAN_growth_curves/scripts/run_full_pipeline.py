@@ -199,7 +199,11 @@ def synthetic_suite_counts(root=None):
             per_scenario = data.get('scenarios') if isinstance(
                 data.get('scenarios'), dict) else None
 
-        n_curves = data.get('total_curves') or data.get('n_curves')
+        # 'n_curves_written' first: a replicate scenario expands one request
+        # into several wells, so the sum of n_per_scenario (what was asked
+        # for) is smaller than what the generator actually wrote.
+        n_curves = (data.get('n_curves_written') or data.get('total_curves')
+                    or data.get('n_curves'))
         if n_curves is None and per_scenario:
             try:
                 n_curves = sum(int(v) for v in per_scenario.values())

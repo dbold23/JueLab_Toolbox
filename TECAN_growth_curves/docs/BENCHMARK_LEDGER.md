@@ -889,12 +889,14 @@ step-9 run directory" — section 11's missing run directory, not a v1 pin.
 
 Two things this ledger recorded remain true and unfixed:
 
-* `MANIFEST.json`'s `n_per_scenario` sums to 1057 (curves *requested*) while
-  1139 are written, because the replicate scenarios expand one request into
-  several wells. `run_full_pipeline.py:synthetic_suite_counts` reads that sum,
-  so step 9 announces "1057 synthetic curves"
+* **Closed after this ledger was written.** `MANIFEST.json`'s `n_per_scenario`
+  sums to 1057 (curves *requested*) while 1139 are written, because the
+  replicate scenarios expand one request into several wells. Step 9 announced
+  the requested figure. `run_full_pipeline.synthetic_suite_counts` now reads
+  the manifest's `n_curves_written` first
   (`python -c "import sys;sys.path.insert(0,'scripts');import run_full_pipeline as r;print(r.synthetic_suite_counts())"`
-  -> `(1057, 64, 'MANIFEST.json')`). The count in every *report* is the true 1139.
+  -> `(1139, 64, 'MANIFEST.json')`), so the banner and every report now agree
+  on 1139.
 * Neither `synthetic_data/output/comprehensive_test/generation_summary.json` nor
   the `MANIFEST.json` beside it carries a `dataset_version` field (the manifest
   identifies itself as `schema: synthetic_manifest/1` instead). Both snapshot
@@ -958,8 +960,9 @@ That table is regenerated, not hand-edited, and its generator
 figures: it reads the run's `report.json` at export time and names the
 truncation mode, seed, dataset sha256 and git SHA it read, quoting no accuracy
 at all when the checkout holds no report. Re-running step 8 therefore replaces
-the section above with this release's numbers. Until a pipeline run does that,
-read the 84.4 % — and the 480, and the A recovery claim — as the pre-rebuild
-baseline. `tests/test_docs.py` exempts `results/tables/` from the
+the section above with this release's numbers. Step 8 has since been re-run, so that section now reports this release's
+numbers (1139 curves, balanced accuracy 87.9 %, specificity 90.2 %, and the
+per-parameter recovery R² read from `benchmark/v2/report.json`) together with
+the truncation mode, seed and dataset digest it read them from. `tests/test_docs.py` exempts `results/tables/` from the
 contradicts-the-current-report check for this reason, and that exemption is
 only honest while this paragraph stands.
