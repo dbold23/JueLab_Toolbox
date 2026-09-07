@@ -1,0 +1,89 @@
+{
+  "dataset_version": "v1",
+  "description": "The benchmark as published before the synthetic-suite rebuild. Snapshot of synthetic_data/output/comprehensive_test at git 7fec4fe.",
+  "source_commit": "7fec4fe1ae4c48b656abca330b4cb451f0cacc5b",
+  "snapshot_of": {
+    "ground_truth.csv": "test_data/ground_truth.csv",
+    "generation_summary.json": "generation_summary.json",
+    "validation_metrics.json": "validation_metrics.json",
+    "VALIDATION_SUMMARY.md": "VALIDATION_SUMMARY.md",
+    "processing_results.csv": "validation_latest/processing_results.csv",
+    "validation_report.json": "validation_latest/validation_report.json",
+    "classification_summary.png": "validation_latest/classification_summary.png",
+    "DATA/*": "test_data/DATA/*",
+    "config.json": "test_data/config.json"
+  },
+  "not_snapshotted": {
+    "validation_latest/plots/": "~96 MB of per-curve PNGs; never tracked"
+  },
+  "truncation_mode": "first_peak",
+  "seed": 42,
+  "suite": {
+    "n_curves": 480,
+    "n_scenarios": 32,
+    "n_good": 345,
+    "n_bad": 135,
+    "good_fraction": 0.71875
+  },
+  "classification": {
+    "accuracy": 0.8729166666666667,
+    "precision": 0.9011299435028248,
+    "recall": 0.9246376811594202,
+    "specificity": 0.7407407407407407,
+    "balanced_accuracy": 0.8326892109500805,
+    "f1_score": 0.9127324749642346,
+    "confusion_matrix": {
+      "TP": 319,
+      "TN": 100,
+      "FP": 35,
+      "FN": 26
+    }
+  },
+  "parameter_recovery_pooled": {
+    "A": {
+      "r_squared": 0.8250662899246053,
+      "rmse": 0.14184640742757926,
+      "bias": 0.037062529261377826,
+      "n": 319
+    },
+    "mu": {
+      "r_squared": 0.9084396708831995,
+      "rmse": 0.028197962951377217,
+      "bias": -0.006646041953704583,
+      "n": 319
+    },
+    "lambda": {
+      "r_squared": 0.9867298867561428,
+      "rmse": 0.9151183541607948,
+      "bias": -0.31618580614430514,
+      "n": 319
+    }
+  },
+  "per_scenario_misses": {
+    "borderline_noise": 14,
+    "borderline_r2_bad": 14,
+    "logistic_generated": 13,
+    "sparse_data": 10,
+    "high_noise": 7,
+    "fast_growth": 2,
+    "low_A": 1
+  },
+  "reproduce": [
+    "MPLBACKEND=Agg python - <<'PY'\nimport sys,pandas as pd\nsys.path.insert(0,'synthetic_data')\nfrom validation.matching import match_results\nm=match_results(pd.read_csv('synthetic_data/benchmark/v1/ground_truth.csv'),pd.read_csv('synthetic_data/benchmark/v1/processing_results.csv'))\nprint((m.gt_is_good==m.pred_is_good).mean())\nPY"
+  ],
+  "non_regression": {
+    "claim": "today's pipeline re-run on DATA/ in first-peak mode reproduces this confusion matrix exactly, with zero non-ML cell differences",
+    "command": "MPLBACKEND=Agg python scripts/01_growth_curve_analysis.py synthetic_data/benchmark/v1/DATA -o <tmp> --no-adaptive --first-peak --no-plots -q",
+    "measured": {
+      "TP": 319,
+      "TN": 100,
+      "FP": 35,
+      "FN": 26,
+      "accuracy": 0.8729166666666667,
+      "new_columns": [
+        "failed_gates"
+      ],
+      "non_ml_cells_differing": 0
+    }
+  }
+}

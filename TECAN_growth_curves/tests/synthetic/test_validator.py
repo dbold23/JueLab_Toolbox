@@ -21,6 +21,13 @@ M11  Neither JSON carried specificity, balanced accuracy or prevalence.
 The binding acceptance test is
 :func:`test_committed_report_is_reproduced`: the restructure must change no
 classification number on the committed run.
+
+Data this file reads
+--------------------
+``synthetic_data/benchmark/v1/`` -- the frozen, fully tracked pre-rebuild
+snapshot (``processing_results.csv``, ``ground_truth.csv``, the six v1 plates
+under ``DATA/``).  Nothing here reads a run directory, so the whole file keeps
+working after ``make clean`` and after a regeneration of the live v2 suite.
 """
 
 import json
@@ -52,11 +59,28 @@ from validation.pipeline_validator import (  # noqa: E402
     failure_analysis, gate_attribution, parse_reason_gates,
 )
 
-COMPREHENSIVE = SYNTH / 'output' / 'comprehensive_test'
-GROUND_TRUTH = COMPREHENSIVE / 'test_data' / 'ground_truth.csv'
-DATA_DIR = COMPREHENSIVE / 'test_data' / 'DATA'
-RESULTS_CSV = COMPREHENSIVE / 'validation_latest' / 'processing_results.csv'
+#: The frozen v1 benchmark snapshot: the 480-curve plate, its ground truth and
+#: the published ``processing_results.csv`` exactly as they were committed
+#: before the v2 regeneration.  Every pinned number below (accuracy
+#: 0.8729166666666667, 319/100/35/26, the gate and recovery fixtures) is a
+#: statement about THIS dataset, so the fixture has to be one that never moves.
+#:
+#: It used to be ``output/comprehensive_test/validation_latest/`` -- a run
+#: directory that ``make clean`` deletes and that the v2 release removed.  The
+#: module-level ``skipif`` keyed on it then turned all 33 tests into
+#: ``33 skipped`` with a zero exit code: the benchmark stopped being checked and
+#: nothing said so.  The fixture is now the git-tracked snapshot, and its
+#: absence is a hard failure (``test_the_benchmark_fixture_is_present``), never
+#: a skip.
+BENCHMARK_V1 = SYNTH / 'benchmark' / 'v1'
+GROUND_TRUTH = BENCHMARK_V1 / 'ground_truth.csv'
+DATA_DIR = BENCHMARK_V1 / 'DATA'
+RESULTS_CSV = BENCHMARK_V1 / 'processing_results.csv'
 ANALYSIS_SCRIPT = REPO_ROOT / 'scripts' / '01_growth_curve_analysis.py'
+
+#: The live v2 suite, read only by the guard that keeps this module from being
+#: re-pointed at a cleanable run directory.
+COMPREHENSIVE = SYNTH / 'output' / 'comprehensive_test'
 
 # The committed benchmark, to full precision.  These are the numbers the
 # restructure is required to leave untouched.
@@ -65,10 +89,53 @@ EXPECTED_PRECISION = 0.9011299435028248
 EXPECTED_RECALL = 0.9246376811594202
 EXPECTED_CONFUSION = {"tp": 319, "tn": 100, "fp": 35, "fn": 26}
 
-pytestmark = pytest.mark.skipif(
-    not (RESULTS_CSV.exists() and GROUND_TRUTH.exists()),
-    reason="committed synthetic benchmark not present",
-)
+#: Deliberately no module-level ``skipif``.  A missing fixture is a defect in
+#: the tree, not a property of the environment, and it must be reported as a
+#: failure.
+REQUIRED_FIXTURES = (RESULTS_CSV, GROUND_TRUTH, DATA_DIR, ANALYSIS_SCRIPT)
+
+
+# ------------------------------------------------------- the fixture itself
+
+def test_the_benchmark_fixture_is_present():
+    """The 33 tests below must never silently switch themselves off.
+
+    This module scores a frozen benchmark.  If the files it scores are gone the
+    correct outcome is red, not ``33 skipped`` -- that is the exact failure this
+    rebuild exists to eliminate.
+    """
+    missing = [str(path.relative_to(REPO_ROOT)) for path in REQUIRED_FIXTURES
+               if not path.exists()]
+    assert not missing, (
+        "the frozen v1 benchmark fixture is missing: " + ", ".join(missing)
+        + " -- these files are git-tracked; restore them rather than skipping "
+          "this module"
+    )
+    assert len(list(DATA_DIR.glob("*_DATA.csv"))) == 6
+
+
+def test_the_fixture_survives_make_clean():
+    """The fixture may not live in a run directory.
+
+    ``make clean`` runs ``git clean`` over
+    ``synthetic_data/output/comprehensive_test/validation*/``, and the v2
+    release deleted ``validation_latest/`` outright.  Anything this module pins
+    has to be tracked and outside ``output/``.
+    """
+    for path in (RESULTS_CSV, GROUND_TRUTH, DATA_DIR):
+        assert BENCHMARK_V1 in path.parents or path == BENCHMARK_V1, path
+        assert COMPREHENSIVE not in path.parents, path
+
+    proc = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--",
+         str(RESULTS_CSV.relative_to(REPO_ROOT)),
+         str(GROUND_TRUTH.relative_to(REPO_ROOT))],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+    assert proc.returncode == 0, (
+        "the benchmark fixture is untracked and would not survive make clean: "
+        + proc.stderr.strip()
+    )
 
 
 # ---------------------------------------------------------------- fixtures

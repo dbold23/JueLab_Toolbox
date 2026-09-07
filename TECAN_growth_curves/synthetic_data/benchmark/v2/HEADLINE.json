@@ -1,0 +1,77 @@
+{
+  "dataset_version": "v2",
+  "description": "The published first-peak benchmark run of the rebuilt synthetic suite.",
+  "headline": "accuracy 87.6% (balanced 87.9%, sensitivity 85.6%, specificity 90.2%) -- first_peak truncation, 1139 curves, seed 42, dataset 760a04062cf2, git 7fec4fe1ae4c",
+  "truncation_mode": "first_peak",
+  "seed": 42,
+  "git_sha": "7fec4fe1ae4c48b656abca330b4cb451f0cacc5b",
+  "dataset_sha256": "760a04062cf22e91e0ec6eaad4874cf5d90f8dd0e3d61d924542bbe84c63d626",
+  "suite": {
+    "n_curves": 1139,
+    "n_scenarios": 64,
+    "n_good": 645,
+    "n_bad": 494,
+    "good_fraction": 0.5662862159789289
+  },
+  "classification_headline": {
+    "balanced_accuracy": 0.8789852610960873,
+    "sensitivity": 0.8558225508317929,
+    "specificity": 0.9021479713603818,
+    "accuracy": 0.8760416666666667,
+    "prevalence": 0.5635416666666667,
+    "precision": 0.9186507936507936,
+    "recall": 0.8558225508317929,
+    "npv": 0.8289473684210527,
+    "f1_score": 0.8861244019138756,
+    "mcc": 0.7527664772660293,
+    "n": 960,
+    "macro_accuracy": 0.8853801169590644,
+    "lab_prior_source": "/home/user/TECAN-Growth-Curve-Analysis-Pipeline/synthetic_data/config/lab_prior.json",
+    "lab_weighted_accuracy": 0.8903827747254908,
+    "lab_weight_covered": 1.0000010000000001
+  },
+  "classification_core32": {
+    "balanced_accuracy": 0.9676923076923076,
+    "sensitivity": 0.9353846153846154,
+    "specificity": 1.0,
+    "accuracy": 0.9605263157894737,
+    "prevalence": 0.6109022556390977,
+    "precision": 1.0,
+    "recall": 0.9353846153846154,
+    "npv": 0.9078947368421053,
+    "f1_score": 0.9666136724960255,
+    "mcc": 0.9215371773459654,
+    "n": 532
+  },
+  "classification_core32_confusion": {
+    "true_positives": 304,
+    "true_negatives": 207,
+    "false_positives": 0,
+    "false_negatives": 21
+  },
+  "flat_all_curves": {
+    "n": 1139,
+    "correct": 933,
+    "accuracy": 0.8191395961369623,
+    "TP": 555,
+    "TN": 378,
+    "FP": 116,
+    "FN": 90,
+    "sensitivity": 0.8604651162790697,
+    "specificity": 0.7651821862348178,
+    "balanced_accuracy": 0.8128236512569438
+  },
+  "excluded_from_headline": {
+    "a_not_identifiable": {
+      "n": 80,
+      "correct": 68,
+      "accuracy": 0.85
+    },
+    "preprocessing_blind": {
+      "n": 99,
+      "correct": 24,
+      "accuracy": 0.24242424242424243
+    }
+  },
+  "ledger": "docs/BENCHMARK_LEDGER.md"
+}

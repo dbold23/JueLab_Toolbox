@@ -28,8 +28,10 @@
 # Step 9 writes $(SYNTH)/output/comprehensive_test/validation/<mode>/, one
 # directory per truncation mode, and defaults to first-peak -- the published
 # headline. `make clean` empties those run directories of generated files with
-# `git clean`, so no git-tracked file is ever deleted: today the benchmark
-# snapshot is still three tracked files inside validation_latest/.
+# `git clean`, so no git-tracked file is ever deleted. The published benchmark
+# snapshot is not in a run directory at all any more: it is tracked under
+# $(SYNTH)/benchmark/v1/ (the pre-release baseline) and $(SYNTH)/benchmark/v2/
+# (the current release), outside everything `make clean` touches.
 #
 # =============================================================================
 
@@ -182,13 +184,13 @@ synthetic-data: ## REGENERATE the committed synthetic curves (invalidates the pu
 synthetic-verify: ## Regenerate into a temp dir and check the committed curves still reproduce
 	MPLBACKEND=Agg $(PYTHON) $(SCRIPTS)/verify_synthetic_data.py --self-check
 
-# validation_summary.py is renderer-owned and is being migrated to the per-mode
-# run directories. Until it takes --run-dir this target maps RUN_DIR onto the
-# flags it does have, so `make validation-summary` renders rather than aborting
-# in argparse; when --run-dir lands the first branch takes over with no edit
-# here. LEGACY_RUN_DIR is the pre-per-mode layout, which is where the tracked
-# snapshot still lives.
-LEGACY_RUN_DIR = $(SYNTH_TEST)/validation_latest
+# validation_summary.py is renderer-owned. When it offers --run-dir the first
+# branch below uses it; otherwise the target maps RUN_DIR onto the flags that
+# renderer does have, so `make validation-summary` renders rather than aborting
+# in argparse. There is no second directory to fall back to: the pre-per-mode
+# single-directory layout is gone, and the tracked snapshot now lives in
+# $(SYNTH)/benchmark/, which is a release snapshot rather than a run directory
+# to re-render.
 
 validation-summary: ## Render the markdown summary from an existing run directory (no re-run)
 	@if MPLBACKEND=Agg $(PYTHON) $(SYNTH)/scripts/validation_summary.py --help 2>&1 \
@@ -198,15 +200,15 @@ validation-summary: ## Render the markdown summary from an existing run director
 			--run-dir $(RUN_DIR); \
 	else \
 		src=""; \
-		for d in $(RUN_DIR) $(LEGACY_RUN_DIR); do \
+		for d in $(RUN_DIR); do \
 			if [ -f "$$d/validation_report.json" ] && \
 			   [ -f "$$d/processing_results.csv" ]; then src="$$d"; break; fi; \
 		done; \
 		if [ -z "$$src" ]; then \
 			echo "No renderable run directory."; \
 			echo "  validation_summary.py cannot read the new report.json layout yet,"; \
-			echo "  and neither $(RUN_DIR) nor $(LEGACY_RUN_DIR) holds a"; \
-			echo "  validation_report.json + processing_results.csv pair."; \
+			echo "  and $(RUN_DIR) holds no validation_report.json +"; \
+			echo "  processing_results.csv pair."; \
 			echo "  Run 'make step-9' first, or point RUN_DIR at a run directory."; \
 			exit 1; \
 		fi; \
@@ -226,14 +228,16 @@ validate-truncation: ## Launch interactive truncation method validator
 
 # ─── Cleanup ─────────────────────────────────────────────────────────────────
 
-# `git clean -fdx <dir>` is what does the deleting, not `rm -rf`: the step-9 run
-# directories are not purely generated. validation_latest/ holds ~96 MB of
-# per-curve plots AND three git-tracked files (processing_results.csv,
-# validation_report.json, classification_summary.png) -- the benchmark snapshot
-# every published number is quoted from. `rm -rf` on that glob deletes them.
-# git clean removes untracked and ignored files and never touches a tracked one,
-# so the snapshot survives wherever it currently lives -- including after it is
-# moved out of the run directories, which is where it belongs.
+# `git clean -fdx <dir>` is what does the deleting, not `rm -rf`: a step-9 run
+# directory is not guaranteed to be purely generated. It holds ~96 MB of
+# per-curve plots, and older layouts kept git-tracked files in there too
+# (processing_results.csv, validation_report.json, classification_summary.png
+# -- the benchmark snapshot every published number is quoted from), which an
+# `rm -rf` on that glob would delete. git clean removes untracked and ignored
+# files and never touches a tracked one, so the snapshot survives wherever it
+# lives -- which since this release is $(SYNTH)/benchmark/v1/ and
+# $(SYNTH)/benchmark/v2/, outside the run directories entirely, where it
+# belongs.
 clean: ## Remove generated output (never deletes a git-tracked file)
 	@echo "Removing generated files from the step-9 run directories:"
 	@if git rev-parse --git-dir >/dev/null 2>&1; then \
@@ -256,4 +260,5 @@ clean: ## Remove generated output (never deletes a git-tracked file)
 	rm -rf $(SCRIPTS)/OUTPUT/
 	@echo "Cleaned generated output. Raw data, committed results and every"
 	@echo "git-tracked file are preserved -- including the benchmark snapshot,"
-	@echo "which is tracked under $(SYNTH_TEST)/validation_latest/ today."
+	@echo "which is tracked under $(SYNTH)/benchmark/v1/ and $(SYNTH)/benchmark/v2/,"
+	@echo "outside every directory this target touches."

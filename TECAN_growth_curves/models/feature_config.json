@@ -7,9 +7,7 @@
     "raw_baseline_std",
     "raw_baseline_mean",
     "n_points",
-    "time_span",
-    "is_control",
-    "concentration_numeric"
+    "time_span"
   ],
   "postfit_feature_names": [
     "fit_r_squared",
@@ -33,53 +31,1049 @@
     "lambda_over_trunc_time",
     "rmse_over_delta_od",
     "err_product",
-    "points_per_hour",
-    "is_control",
-    "concentration_numeric"
+    "points_per_hour"
   ],
   "prefit_metrics": {
-    "accuracy": 0.9406057945566287,
-    "precision": 0.9522937004589069,
-    "recall": 0.9670918367346939,
-    "f1": 0.9593769271664009,
-    "specificity": 0.871345029239766,
-    "accuracy_std": 0.03228219195730966,
-    "precision_std": 0.03189020620610647,
-    "recall_std": 0.02083177142555449,
-    "f1_std": 0.021792780925337613,
-    "specificity_std": 0.08791401390861349
+    "accuracy": 0.88257754398694,
+    "precision": 0.8748823576367748,
+    "recall": 0.911392405063291,
+    "f1": 0.8922459057190126,
+    "specificity": 0.8497722567287784,
+    "accuracy_std": 0.02291524861264836,
+    "precision_std": 0.030401435852235058,
+    "recall_std": 0.028865200635421213,
+    "f1_std": 0.020499582949527386,
+    "specificity_std": 0.041336086852360836
   },
   "postfit_metrics": {
-    "accuracy": 0.9616487455197132,
-    "precision": 0.9747229511601125,
-    "recall": 0.9742830712303423,
-    "f1": 0.9741851686008083,
-    "specificity": 0.925,
-    "accuracy_std": 0.007886634502607341,
-    "precision_std": 0.015539523452516961,
-    "recall_std": 0.020810154839541434,
-    "f1_std": 0.005562220500007841,
-    "specificity_std": 0.046770717334674264
+    "accuracy": 0.919083969465649,
+    "precision": 0.912967489982813,
+    "recall": 0.9491531531531532,
+    "f1": 0.9306305939678913,
+    "specificity": 0.8791979949874686,
+    "accuracy_std": 0.025819136679828637,
+    "precision_std": 0.02856412292827108,
+    "recall_std": 0.01573764287092774,
+    "f1_std": 0.021845244642978788,
+    "specificity_std": 0.04048637332436239
   },
   "postfit_feature_importance": {},
-  "training_date": "2026-09-05T22:02:33.503648",
+  "training_date": "2026-09-07T06:39:32.259218",
   "trained_on": "synthetic_only",
+  "truncation_mode": "first_peak",
+  "truncation_mode_requested": "first_peak",
   "training_features": {
     "ground_truth": "synthetic_data/output/comprehensive_test/test_data/ground_truth.csv",
     "processing_results": "synthetic_data/output/comprehensive_test/training_features/processing_results.csv",
     "processing_results_source": "rebuilt without --ml-classify",
-    "raw_data_dir": "synthetic_data/output/comprehensive_test/test_data/DATA"
+    "raw_data_dir": "synthetic_data/output/comprehensive_test/test_data/DATA",
+    "truncation_mode": "first_peak",
+    "feature_build": {
+      "schema": "feature_build/1",
+      "truncation_mode": "first_peak",
+      "truncation_mode_source": "explicit (--truncation-mode)",
+      "pipeline_reported_truncation_mode": "first_peak",
+      "extra_args": [],
+      "raw_data_dir": "/home/user/TECAN-Growth-Curve-Analysis-Pipeline/synthetic_data/output/comprehensive_test/test_data/DATA",
+      "config_path": "/home/user/TECAN-Growth-Curve-Analysis-Pipeline/scripts/config.yaml",
+      "config_sha256": "f3e5188283cb5b42325736882fe74a66f1e329348c76c9fed0c2ddf87b060033",
+      "truncation_block_sha256": "ea8179fafd4e0454ebc18d32be2c41d97ff073b7db8fb42facf679a182565c04",
+      "analysis_script": "/home/user/TECAN-Growth-Curve-Analysis-Pipeline/scripts/01_growth_curve_analysis.py",
+      "analysis_script_git_sha": "2ad47247af11c7fffc39d7203297dc8e1fd9c1e4",
+      "analysis_script_git_dirty": false,
+      "ml_gated": false,
+      "results_csv": "/home/user/TECAN-Growth-Curve-Analysis-Pipeline/synthetic_data/output/comprehensive_test/training_features/processing_results.csv",
+      "built_at": "2026-09-07T06:38:33.432898"
+    }
   },
-  "n_training_samples": 480,
-  "n_prefit_training_samples": 480,
-  "n_postfit_training_samples": 452,
+  "truth_provenance": {
+    "ground_truth": "synthetic_data/output/comprehensive_test/test_data/ground_truth.csv",
+    "ground_truth_sha256": "9d5e4dfea062223e748da36af34e82a68fa5a2943cfd6b76e92812c94c31ea47",
+    "label_rule": [
+      "oracle",
+      "scenario"
+    ],
+    "label_rule_version": "1",
+    "label_rule_version_source": "label_rule_version column",
+    "truth_schema_version": "2",
+    "truth_schema_version_source": "src/truth.py TRUTH_SCHEMA_VERSION (all GROUND_TRUTH_COLUMNS present)",
+    "scoring_modes": {
+      "standard": 867,
+      "preprocessing_blind": 99,
+      "model_mismatch": 93,
+      "a_not_identifiable": 80
+    }
+  },
+  "label_rule_version": "1",
+  "label_rule_version_source": "label_rule_version column",
+  "truth_schema_version": "2",
+  "truth_schema_version_source": "src/truth.py TRUTH_SCHEMA_VERSION (all GROUND_TRUTH_COLUMNS present)",
+  "label_agreement": {
+    "report": {
+      "method": "leave-one-out 1-NN over the standardised post-fit feature matrix; baseline = P(a random other curve carries this curve's label)",
+      "n_rows": 670,
+      "min_scenario_size": 5,
+      "scenarios": [
+        {
+          "scenario": "baranyi_generated",
+          "n": 10,
+          "agreement": 1.0,
+          "baseline": 0.5742424242424242,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "borderline_delta_od",
+          "n": 11,
+          "agreement": 1.0,
+          "baseline": 0.5735963581183611,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "borderline_noise",
+          "n": 11,
+          "agreement": 0.7272727272727273,
+          "baseline": 0.5735963581183611,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "borderline_r2_bad",
+          "n": 11,
+          "agreement": 0.6363636363636364,
+          "baseline": 0.5735963581183611,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "borderline_r2_good",
+          "n": 8,
+          "agreement": 0.875,
+          "baseline": 0.5755287009063444,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "bubble_spike",
+          "n": 11,
+          "agreement": 0.8181818181818182,
+          "baseline": 0.5735963581183611,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "clipped_baseline",
+          "n": 13,
+          "agreement": 1.0,
+          "baseline": 0.4079147640791475,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "clipped_then_grows",
+          "n": 8,
+          "agreement": 1.0,
+          "baseline": 0.5755287009063444,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "contaminated_blank",
+          "n": 23,
+          "agreement": 0.8260869565217391,
+          "baseline": 0.3987635239567234,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "contamination",
+          "n": 16,
+          "agreement": 1.0,
+          "baseline": 0.40519877675840976,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "contamination_offset",
+          "n": 23,
+          "agreement": 0.4782608695652174,
+          "baseline": 0.3987635239567234,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "death_phase_extreme",
+          "n": 4,
+          "agreement": 1.0,
+          "baseline": 0.5780780780780781,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": false
+        },
+        {
+          "scenario": "death_phase_moderate",
+          "n": 8,
+          "agreement": 0.875,
+          "baseline": 0.5755287009063444,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "death_phase_severe",
+          "n": 7,
+          "agreement": 1.0,
+          "baseline": 0.5761689291101054,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "dense_data",
+          "n": 7,
+          "agreement": 1.0,
+          "baseline": 0.5761689291101054,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "diauxic_second_larger",
+          "n": 9,
+          "agreement": 1.0,
+          "baseline": 0.5748865355521936,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "dip_and_recover",
+          "n": 9,
+          "agreement": 1.0,
+          "baseline": 0.5748865355521936,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "drift_positive",
+          "n": 15,
+          "agreement": 1.0,
+          "baseline": 0.5709923664122137,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "edge_well_evaporation",
+          "n": 16,
+          "agreement": 1.0,
+          "baseline": 0.5703363914373089,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "erratic",
+          "n": 14,
+          "agreement": 0.9285714285714286,
+          "baseline": 0.4070121951219513,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "evaporation_drift",
+          "n": 21,
+          "agreement": 1.0,
+          "baseline": 0.4006163328197226,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "fast_growth",
+          "n": 3,
+          "agreement": 1.0,
+          "baseline": 0.5787106446776612,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": false
+        },
+        {
+          "scenario": "fit_failure",
+          "n": 18,
+          "agreement": 1.0,
+          "baseline": 0.4033742331288344,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "flat_no_growth",
+          "n": 26,
+          "agreement": 1.0,
+          "baseline": 0.3959627329192547,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "haldane_mild_inhibition",
+          "n": 8,
+          "agreement": 1.0,
+          "baseline": 0.5755287009063444,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "haldane_strong_inhibition",
+          "n": 13,
+          "agreement": 0.9230769230769231,
+          "baseline": 0.572298325722983,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "haldane_total_inhibition",
+          "n": 7,
+          "agreement": 1.0,
+          "baseline": 0.41327300150829555,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "high_A",
+          "n": 7,
+          "agreement": 0.8571428571428571,
+          "baseline": 0.5761689291101054,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "high_autocorr_good",
+          "n": 5,
+          "agreement": 1.0,
+          "baseline": 0.5774436090225564,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "high_baseline_good",
+          "n": 8,
+          "agreement": 0.875,
+          "baseline": 0.5755287009063444,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "high_noise",
+          "n": 12,
+          "agreement": 0.8333333333333334,
+          "baseline": 0.5506585612968592,
+          "majority_class_rate": 0.8333333333333334,
+          "label_good_fraction": 0.8333333333333334,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "late_growth_still_rising",
+          "n": 9,
+          "agreement": 1.0,
+          "baseline": 0.5748865355521936,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "logistic_generated",
+          "n": 9,
+          "agreement": 1.0,
+          "baseline": 0.5748865355521936,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "long_experiment",
+          "n": 8,
+          "agreement": 1.0,
+          "baseline": 0.5755287009063444,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "long_lag",
+          "n": 6,
+          "agreement": 1.0,
+          "baseline": 0.5768072289156626,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "low_A",
+          "n": 12,
+          "agreement": 0.9166666666666666,
+          "baseline": 0.5729483282674773,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "minimal_growth",
+          "n": 27,
+          "agreement": 0.9259259259259259,
+          "baseline": 0.39502332814930013,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "negative_drift",
+          "n": 12,
+          "agreement": 1.0,
+          "baseline": 0.4088145896656536,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "noise_ladder_1",
+          "n": 8,
+          "agreement": 1.0,
+          "baseline": 0.5755287009063444,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "noise_ladder_2",
+          "n": 11,
+          "agreement": 0.7272727272727273,
+          "baseline": 0.5487653469444062,
+          "majority_class_rate": 0.8181818181818182,
+          "label_good_fraction": 0.8181818181818182,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "noise_ladder_3",
+          "n": 12,
+          "agreement": 0.6666666666666666,
+          "baseline": 0.471631205673759,
+          "majority_class_rate": 0.6666666666666666,
+          "label_good_fraction": 0.3333333333333333,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "noise_ladder_4",
+          "n": 13,
+          "agreement": 0.8461538461538461,
+          "baseline": 0.4383561643835616,
+          "majority_class_rate": 0.8461538461538461,
+          "label_good_fraction": 0.15384615384615385,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "outlier_contaminated",
+          "n": 16,
+          "agreement": 1.0,
+          "baseline": 0.5703363914373089,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "partial_lysis",
+          "n": 9,
+          "agreement": 1.0,
+          "baseline": 0.5748865355521936,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "pesticide_lb_typical",
+          "n": 8,
+          "agreement": 1.0,
+          "baseline": 0.5755287009063444,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "pesticide_only",
+          "n": 25,
+          "agreement": 0.96,
+          "baseline": 0.39689922480620154,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "replicate_dropout",
+          "n": 20,
+          "agreement": 0.6,
+          "baseline": 0.40153846153846146,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "replicate_outlier_high",
+          "n": 13,
+          "agreement": 1.0,
+          "baseline": 0.4079147640791475,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 0.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "richards_asymmetric",
+          "n": 8,
+          "agreement": 1.0,
+          "baseline": 0.5755287009063444,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "run_24h_plateaued",
+          "n": 5,
+          "agreement": 0.6,
+          "baseline": 0.5774436090225564,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "run_ends_at_plateau_edge",
+          "n": 9,
+          "agreement": 0.8888888888888888,
+          "baseline": 0.5748865355521936,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "short_experiment",
+          "n": 8,
+          "agreement": 0.375,
+          "baseline": 0.5755287009063444,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": false,
+          "judged": true
+        },
+        {
+          "scenario": "short_lag",
+          "n": 7,
+          "agreement": 0.5714285714285714,
+          "baseline": 0.5761689291101054,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": false,
+          "judged": true
+        },
+        {
+          "scenario": "slow_growth",
+          "n": 8,
+          "agreement": 1.0,
+          "baseline": 0.5755287009063444,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "slow_secondary_drift",
+          "n": 12,
+          "agreement": 1.0,
+          "baseline": 0.5729483282674773,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "sparse_data",
+          "n": 6,
+          "agreement": 1.0,
+          "baseline": 0.5768072289156626,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "standard",
+          "n": 6,
+          "agreement": 0.6666666666666666,
+          "baseline": 0.5768072289156626,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "sudden_crash",
+          "n": 7,
+          "agreement": 1.0,
+          "baseline": 0.5761689291101054,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "truncation_challenge",
+          "n": 6,
+          "agreement": 1.0,
+          "baseline": 0.5768072289156626,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        },
+        {
+          "scenario": "very_clean",
+          "n": 8,
+          "agreement": 1.0,
+          "baseline": 0.5755287009063444,
+          "majority_class_rate": 1.0,
+          "label_good_fraction": 1.0,
+          "beats_baseline": true,
+          "judged": true
+        }
+      ],
+      "flagged_scenarios": [
+        "short_experiment",
+        "short_lag"
+      ],
+      "skipped": null,
+      "features_used": [
+        "fit_r_squared",
+        "fit_rmse",
+        "fit_mae",
+        "a_err_pct",
+        "mu_err_pct",
+        "snr",
+        "delta_od",
+        "max_od",
+        "points_used",
+        "gompertz_a",
+        "gompertz_mu",
+        "gompertz_lambda",
+        "truncation_time",
+        "baseline_std",
+        "monotone_fraction",
+        "residual_autocorr",
+        "delta_od_ci_lower",
+        "mu_over_a",
+        "lambda_over_trunc_time",
+        "rmse_over_delta_od",
+        "err_product",
+        "points_per_hour"
+      ]
+    },
+    "decision": {
+      "enabled": true,
+      "flagged_scenarios": [
+        "short_experiment",
+        "short_lag"
+      ],
+      "dropped_scenarios": [
+        "short_experiment",
+        "short_lag"
+      ],
+      "n_rows_dropped": 15,
+      "override": null
+    }
+  },
+  "contributing_scenarios": {
+    "minimal_growth": 40,
+    "flat_no_growth": 35,
+    "pesticide_only": 35,
+    "contamination_offset": 35,
+    "evaporation_drift": 31,
+    "contaminated_blank": 30,
+    "fit_failure": 27,
+    "contamination": 25,
+    "replicate_dropout": 25,
+    "edge_well_evaporation": 24,
+    "clipped_baseline": 22,
+    "replicate_outlier_high": 20,
+    "outlier_contaminated": 20,
+    "drift_positive": 20,
+    "bubble_spike": 20,
+    "noise_ladder_3": 20,
+    "noise_ladder_4": 20,
+    "erratic": 18,
+    "negative_drift": 17,
+    "low_A": 15,
+    "high_noise": 15,
+    "borderline_noise": 15,
+    "borderline_r2_good": 15,
+    "borderline_r2_bad": 15,
+    "borderline_delta_od": 15,
+    "haldane_strong_inhibition": 15,
+    "noise_ladder_1": 15,
+    "noise_ladder_2": 15,
+    "slow_secondary_drift": 15,
+    "truncation_challenge": 12,
+    "death_phase_moderate": 12,
+    "death_phase_severe": 12,
+    "baranyi_generated": 12,
+    "logistic_generated": 12,
+    "richards_asymmetric": 12,
+    "haldane_mild_inhibition": 12,
+    "late_growth_still_rising": 12,
+    "diauxic_second_larger": 12,
+    "high_autocorr_good": 12,
+    "partial_lysis": 12,
+    "dip_and_recover": 12,
+    "standard": 10,
+    "high_A": 10,
+    "slow_growth": 10,
+    "long_lag": 10,
+    "very_clean": 10,
+    "pesticide_lb_typical": 10,
+    "high_baseline_good": 10,
+    "long_experiment": 10,
+    "dense_data": 10,
+    "haldane_total_inhibition": 10,
+    "run_24h_plateaued": 10,
+    "run_ends_at_plateau_edge": 10,
+    "clipped_then_grows": 10,
+    "sudden_crash": 10,
+    "sparse_data": 7,
+    "fast_growth": 6,
+    "death_phase_extreme": 5
+  },
+  "dropped_scenarios": [
+    "short_experiment",
+    "short_lag"
+  ],
+  "lab_weighting": {
+    "train_split": {
+      "lab_prior": "synthetic_data/config/lab_prior.json",
+      "applied": true,
+      "reason": null,
+      "band_source": "ground truth column lab_band",
+      "schema": "lab_prior/1",
+      "lab_fraction": {
+        "dead": 0.304348,
+        "trace": 0.130435,
+        "marginal": 0.086957,
+        "partial": 0.01087,
+        "moderate": 0.021739,
+        "full": 0.445652
+      },
+      "generated_fraction": {
+        "full": 0.5786259541984733,
+        "trace": 0.13282442748091602,
+        "dead": 0.11603053435114503,
+        "moderate": 0.09312977099236641,
+        "marginal": 0.07938931297709924
+      },
+      "weight_by_band": {
+        "dead": 2.651821862348179,
+        "full": 0.7786533148047339,
+        "marginal": 1.1073596419483367,
+        "moderate": 0.23599196386840043,
+        "trace": 0.9928013904972222
+      },
+      "note": "class_weight='balanced' corrects the GOOD/BAD marginal but not the amplitude composition; these weights correct the composition."
+    },
+    "deployment_fit": {
+      "lab_prior": "synthetic_data/config/lab_prior.json",
+      "applied": true,
+      "reason": null,
+      "band_source": "ground truth column lab_band",
+      "schema": "lab_prior/1",
+      "lab_fraction": {
+        "dead": 0.304348,
+        "trace": 0.130435,
+        "marginal": 0.086957,
+        "partial": 0.01087,
+        "moderate": 0.021739,
+        "full": 0.445652
+      },
+      "generated_fraction": {
+        "full": 0.5865384615384616,
+        "trace": 0.13247863247863248,
+        "dead": 0.11858974358974358,
+        "moderate": 0.08226495726495726,
+        "marginal": 0.08012820512820513
+      },
+      "weight_by_band": {
+        "dead": 2.5945945945945947,
+        "full": 0.7681491441958049,
+        "marginal": 1.0971482644867059,
+        "moderate": 0.26715965438743317,
+        "trace": 0.9953927952594165
+      },
+      "note": "class_weight='balanced' corrects the GOOD/BAD marginal but not the amplitude composition; these weights correct the composition."
+    }
+  },
+  "threshold_sweep": {
+    "targets": {
+      "specificity": 0.95,
+      "npv": 0.9
+    },
+    "weighted": true,
+    "n_rows": 286,
+    "sweep": [
+      {
+        "threshold": 0.05,
+        "specificity": 0.9423458403653917,
+        "npv": 0.9550027624060986,
+        "precision": 0.9218619465570373,
+        "recall": 0.9387233231111028,
+        "n_called_good": 168
+      },
+      {
+        "threshold": 0.1,
+        "specificity": 0.9447147762776426,
+        "npv": 0.9551105309686454,
+        "precision": 0.9248312031371239,
+        "recall": 0.9387233231111028,
+        "n_called_good": 167
+      },
+      {
+        "threshold": 0.15,
+        "specificity": 0.9491548639238514,
+        "npv": 0.9510609536268284,
+        "precision": 0.9300232911425137,
+        "recall": 0.9325956554222132,
+        "n_called_good": 165
+      },
+      {
+        "threshold": 0.2,
+        "specificity": 0.9597414270058274,
+        "npv": 0.9515746412602493,
+        "precision": 0.9437740645991971,
+        "recall": 0.9325956554222132,
+        "n_called_good": 163
+      },
+      {
+        "threshold": 0.25,
+        "specificity": 0.9597414270058274,
+        "npv": 0.9474038800997707,
+        "precision": 0.9434232254572982,
+        "recall": 0.9264679877333235,
+        "n_called_good": 162
+      },
+      {
+        "threshold": 0.3,
+        "specificity": 0.9597414270058274,
+        "npv": 0.9474038800997707,
+        "precision": 0.9434232254572982,
+        "recall": 0.9264679877333235,
+        "n_called_good": 162
+      },
+      {
+        "threshold": 0.35,
+        "specificity": 0.9597414270058274,
+        "npv": 0.9432695203671488,
+        "precision": 0.9430679804848332,
+        "recall": 0.9203403200444339,
+        "n_called_good": 161
+      },
+      {
+        "threshold": 0.4,
+        "specificity": 0.9597414270058274,
+        "npv": 0.939171087578255,
+        "precision": 0.9427082461649091,
+        "recall": 0.9142126523555442,
+        "n_called_good": 160
+      },
+      {
+        "threshold": 0.45,
+        "specificity": 0.9597414270058274,
+        "npv": 0.939171087578255,
+        "precision": 0.9427082461649091,
+        "recall": 0.9142126523555442,
+        "n_called_good": 160
+      },
+      {
+        "threshold": 0.5,
+        "specificity": 0.9597414270058274,
+        "npv": 0.9351081154596721,
+        "precision": 0.9423439368563493,
+        "recall": 0.9080849846666544,
+        "n_called_good": 159
+      },
+      {
+        "threshold": 0.55,
+        "specificity": 0.9597414270058274,
+        "npv": 0.9310801457718575,
+        "precision": 0.9419749647257216,
+        "recall": 0.9019573169777647,
+        "n_called_good": 158
+      },
+      {
+        "threshold": 0.6,
+        "specificity": 0.9597414270058274,
+        "npv": 0.9310801457718575,
+        "precision": 0.9419749647257216,
+        "recall": 0.9019573169777647,
+        "n_called_good": 158
+      },
+      {
+        "threshold": 0.65,
+        "specificity": 0.9597414270058274,
+        "npv": 0.9310801457718575,
+        "precision": 0.9419749647257216,
+        "recall": 0.9019573169777647,
+        "n_called_good": 158
+      },
+      {
+        "threshold": 0.7,
+        "specificity": 0.9597414270058274,
+        "npv": 0.9310801457718575,
+        "precision": 0.9419749647257216,
+        "recall": 0.9019573169777647,
+        "n_called_good": 158
+      },
+      {
+        "threshold": 0.75,
+        "specificity": 0.9621103629180783,
+        "npv": 0.9312381735885233,
+        "precision": 0.9452022331370082,
+        "recall": 0.9019573169777647,
+        "n_called_good": 157
+      },
+      {
+        "threshold": 0.8,
+        "specificity": 0.9665504505642872,
+        "npv": 0.9315324208256485,
+        "precision": 0.9513110414164334,
+        "recall": 0.9019573169777647,
+        "n_called_good": 156
+      },
+      {
+        "threshold": 0.85,
+        "specificity": 0.9665504505642872,
+        "npv": 0.9275631705245795,
+        "precision": 0.95099431945306,
+        "recall": 0.895829649288875,
+        "n_called_good": 155
+      },
+      {
+        "threshold": 0.9,
+        "specificity": 0.970990538210496,
+        "npv": 0.9200630225633579,
+        "precision": 0.9566534160085662,
+        "recall": 0.8835743139110955,
+        "n_called_good": 152
+      },
+      {
+        "threshold": 0.95,
+        "specificity": 0.9798707135029137,
+        "npv": 0.9169046122980327,
+        "precision": 0.969311566538914,
+        "recall": 0.8774466462222058,
+        "n_called_good": 149
+      }
+    ],
+    "good_threshold": 0.2,
+    "bad_threshold": 0.15,
+    "degenerate": false,
+    "policy": "good_threshold = the threshold with the best lab-weighted Youden's J among those reaching the target specificity (ties to the threshold nearest 0.5); bad_threshold = highest threshold below it whose NPV reaches the target"
+  },
+  "recommended_thresholds": {
+    "status": "ADVISORY - reported, not applied. The deployed gate stays at config.yaml / PostFitClassifier defaults (0.70 / 0.30) until a policy change adopts these.",
+    "good_threshold": 0.2,
+    "bad_threshold": 0.15,
+    "derived_on": "held-out 30% split, lab-weighted",
+    "policy": "good_threshold = the threshold with the best lab-weighted Youden's J among those reaching the target specificity (ties to the threshold nearest 0.5); bad_threshold = highest threshold below it whose NPV reaches the target"
+  },
+  "constant_features": {
+    "prefit_train_split": [],
+    "postfit_train_split": [],
+    "prefit_deployment": [],
+    "postfit_deployment": []
+  },
+  "n_training_samples": 1059,
+  "n_prefit_training_samples": 1059,
+  "n_postfit_training_samples": 936,
   "class_distribution": {
-    "GOOD": 345,
-    "BAD": 135
+    "GOOD": 565,
+    "BAD": 494
   },
   "postfit_class_distribution": {
-    "GOOD": 333,
-    "BAD": 119
+    "GOOD": 533,
+    "BAD": 403
   },
   "real_audit_holdout": {
     "n_curves": 85,
@@ -92,30 +1086,92 @@
       "n_bad": 30,
       "prefit_rejects": {
         "0.05": {
-          "n_reject": 34,
-          "true_bad": 28,
-          "false_rejects": 6
+          "n_reject": 39,
+          "true_bad": 30,
+          "false_rejects": 9
         },
         "0.10": {
-          "n_reject": 34,
-          "true_bad": 28,
-          "false_rejects": 6
+          "n_reject": 39,
+          "true_bad": 30,
+          "false_rejects": 9
         },
         "0.20": {
-          "n_reject": 36,
-          "true_bad": 28,
-          "false_rejects": 8
+          "n_reject": 41,
+          "true_bad": 30,
+          "false_rejects": 11
         }
       },
-      "n_postfit_curves": 67,
+      "n_postfit_curves": 66,
       "postfit_metrics": {
-        "accuracy": 0.9402985074626866,
-        "precision": 0.9636363636363636,
-        "recall": 0.9636363636363636,
-        "f1": 0.9636363636363636,
-        "specificity": 0.8333333333333334
+        "accuracy": 0.8181818181818182,
+        "precision": 1.0,
+        "recall": 0.7818181818181819,
+        "f1": 0.8775510204081632,
+        "specificity": 1.0
       }
-    }
+    },
+    "external_test_results_before_retrain": {
+      "n_curves": 85,
+      "n_postfit_curves": 66,
+      "n_features": 24,
+      "accuracy": 0.9090909090909091,
+      "precision": 0.9803921568627451,
+      "recall": 0.9090909090909091,
+      "f1": 0.9433962264150944,
+      "specificity": 0.9090909090909091,
+      "confusion_matrix": {
+        "true_good_pred_good": 50,
+        "true_good_pred_bad": 5,
+        "true_bad_pred_good": 1,
+        "true_bad_pred_bad": 10
+      },
+      "model_path": "/home/user/TECAN-Growth-Curve-Analysis-Pipeline/models/postfit_classifier.joblib",
+      "feature_names": [
+        "fit_r_squared",
+        "fit_rmse",
+        "fit_mae",
+        "a_err_pct",
+        "mu_err_pct",
+        "snr",
+        "delta_od",
+        "max_od",
+        "points_used",
+        "gompertz_a",
+        "gompertz_mu",
+        "gompertz_lambda",
+        "truncation_time",
+        "baseline_std",
+        "monotone_fraction",
+        "residual_autocorr",
+        "delta_od_ci_lower",
+        "mu_over_a",
+        "lambda_over_trunc_time",
+        "rmse_over_delta_od",
+        "err_product",
+        "points_per_hour",
+        "is_control",
+        "concentration_numeric"
+      ],
+      "training_date": "2026-09-05T22:02:33.503648",
+      "truncation_mode": null
+    },
+    "external_test_results_after_retrain": {
+      "n_curves": 85,
+      "n_postfit_curves": 66,
+      "n_features": 22,
+      "accuracy": 0.8181818181818182,
+      "precision": 1.0,
+      "recall": 0.7818181818181819,
+      "f1": 0.8775510204081632,
+      "specificity": 1.0,
+      "confusion_matrix": {
+        "true_good_pred_good": 43,
+        "true_good_pred_bad": 12,
+        "true_bad_pred_good": 0,
+        "true_bad_pred_bad": 11
+      }
+    },
+    "note": "\"before\" is the model previously shipped in models/, scored with its own feature list; \"after\" is the model this run deploys. The audit curves are never trained on."
   },
   "model_type": "HistGradientBoostingClassifier"
 }

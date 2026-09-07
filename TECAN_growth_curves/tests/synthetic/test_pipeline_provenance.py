@@ -13,8 +13,11 @@ Two additive changes to the pipeline are covered here:
     while the committed headline is first-peak).
 
 Neither changes a verdict: the non-regression half of this file re-runs the
-committed synthetic plate and asserts the published confusion matrix
-(319/100/35/26, accuracy 0.8729166666666667) unchanged.
+frozen v1 benchmark plate (``synthetic_data/benchmark/v1/``) and asserts the
+published v1 confusion matrix (319/100/35/26, accuracy 0.8729166666666667)
+unchanged. It is deliberately pinned to the v1 snapshot rather than to the live
+``output/comprehensive_test`` suite: the assertion is a statement about the
+pipeline, and it can only stay one if the data underneath it never moves.
 """
 
 import importlib.util
@@ -32,8 +35,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / 'scripts'
 SYNTH = REPO_ROOT / 'synthetic_data'
 COMPREHENSIVE = SYNTH / 'output' / 'comprehensive_test'
-SYNTH_DATA_DIR = COMPREHENSIVE / 'test_data' / 'DATA'
-SYNTH_GROUND_TRUTH = COMPREHENSIVE / 'test_data' / 'ground_truth.csv'
+#: The v1 benchmark snapshot -- the 480-curve plate and ground truth exactly as
+#: they were committed before the v2 regeneration. The non-regression assertion
+#: below is about the PIPELINE, so it has to be pinned to a frozen dataset: if it
+#: read the live ``output/comprehensive_test/test_data`` it would go red every
+#: time the suite is regenerated and would no longer distinguish a pipeline
+#: change from a data change (which is the only reason it exists).
+BENCHMARK_V1 = SYNTH / 'benchmark' / 'v1'
+SYNTH_DATA_DIR = BENCHMARK_V1 / 'DATA'
+SYNTH_GROUND_TRUTH = BENCHMARK_V1 / 'ground_truth.csv'
 
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(SYNTH))
@@ -71,7 +81,7 @@ def gca():
 
 @pytest.fixture(scope='module')
 def synthetic_run(gca, tmp_path_factory):
-    """The committed synthetic plate, first-peak truncation, no ML."""
+    """The frozen v1 benchmark plate, first-peak truncation, no ML."""
     out = tmp_path_factory.mktemp('synth_first_peak')
     params = dict(gca.TRUNCATION_PARAMS)
     params.update(use_first_peak=True, use_adaptive=False)
@@ -187,7 +197,12 @@ class TestFailedGatesColumn:
             assert parsed == [g for g in gates.split(';') if g], reason
 
     def test_verdicts_are_unchanged(self, synthetic_run):
-        """The published synthetic numbers: 319/100/35/26, accuracy 0.8729166666666667."""
+        """The published v1 numbers: 319/100/35/26, accuracy 0.8729166666666667.
+
+        Pinned to the v1 snapshot on purpose -- these are the numbers the v1
+        headline published, and any movement here is a pipeline regression, not
+        a regeneration.
+        """
         _, df = synthetic_run
         gt = pd.read_csv(SYNTH_GROUND_TRUTH)
         curve = re.compile(r'CURVE\d+')
@@ -208,7 +223,10 @@ class TestCommittedResultsParse:
 
     @pytest.mark.parametrize('csv_path', sorted(
         list((REPO_ROOT / 'results' / 'tables').glob('Group*_Results/processing_results.csv'))
-        + list(COMPREHENSIVE.glob('*/processing_results.csv'))))
+        + list(COMPREHENSIVE.glob('*/processing_results.csv'))
+        # the committed synthetic results tables now live under benchmark/
+        # (v1 = the frozen snapshot, v2 = the regenerated suite)
+        + list((SYNTH / 'benchmark').glob('*/processing_results.csv'))))
     def test_reasons_map_to_canonical_ids(self, gca, csv_path):
         df = pd.read_csv(csv_path)
         seen, unmapped = set(), []
