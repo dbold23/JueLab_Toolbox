@@ -115,6 +115,21 @@ DEFAULT_LAB_PRIOR: Dict[str, Any] = {
 
 _LAB_PRIOR_PATH = Path(__file__).resolve().parents[1] / "config" / "lab_prior.json"
 
+#: ``config/lab_prior.json`` names its edges ``delta_od_min``/``delta_od_max``
+#: (``derive_lab_prior.py``).  Reading only ``min``/``max`` silently gave every
+#: band (-inf, +inf), so every curve landed in the first band and the whole
+#: stratified view collapsed - hence both spellings, and an explicit null.
+_BAND_MIN_KEYS = ("delta_od_min", "min", "lower", "min_delta_od")
+_BAND_MAX_KEYS = ("delta_od_max", "max", "upper", "max_delta_od")
+
+
+def _band_edge(band: Dict[str, Any], keys: Sequence[str], default: float) -> float:
+    """First present, non-null edge among ``keys``; ``default`` (+/-inf) if none."""
+    for key in keys:
+        if key in band and band[key] is not None:
+            return float(band[key])
+    return default
+
 
 # =============================================================================
 # Gate attribution (M17)
@@ -525,10 +540,18 @@ def load_lab_prior(path: Optional[Path] = None) -> Dict[str, Any]:
             for band in bands:
                 normalised.append({
                     "name": str(band.get("name", band.get("label", "?"))),
-                    "min": float(band.get("min", band.get("lower", -math.inf))),
-                    "max": float(band.get("max", band.get("upper", math.inf))),
+                    "min": _band_edge(band, _BAND_MIN_KEYS, -math.inf),
+                    "max": _band_edge(band, _BAND_MAX_KEYS, math.inf),
                     "fraction": float(band.get("fraction", band.get("observed_fraction", 0.0))),
+                    "description": band.get("description"),
                 })
+            # The derived file states the histogram edges it measured (the
+            # lowest is 0.0, the highest open); open the two outer edges so the
+            # bands partition the line and a curve with a slightly negative or
+            # very large delta_od is banded rather than silently dropped.
+            normalised.sort(key=lambda b: b["min"])
+            normalised[0]["min"] = -math.inf
+            normalised[-1]["max"] = math.inf
             return {"source": str(path), "bands": normalised, "raw": raw}
     return dict(DEFAULT_LAB_PRIOR)
 
@@ -552,6 +575,75 @@ def _truth_delta_od(matched: pd.DataFrame) -> Optional[pd.Series]:
                 continue
             return pd.to_numeric(matched[column], errors="coerce")
     return None
+
+
+def _declared_lab_band(matched: pd.DataFrame) -> Optional[pd.Series]:
+    """The ground truth's own ``lab_band`` label, when the truth carries one."""
+    for column in ("lab_band_gt", "lab_band"):
+        if column in matched.columns:
+            if column == "lab_band" and "lab_band_pred" in matched.columns:
+                continue
+            series = matched[column].astype("object")
+            return series.where(series.notna() & (series.astype(str) != ""), None)
+    return None
+
+
+def _assign_bands(matched: pd.DataFrame,
+                  bands: Sequence[Dict[str, Any]]) -> Tuple[pd.Series, Dict[str, Any]]:
+    """Band every row, preferring the measured ground-truth ``delta_od``.
+
+    The declared ``lab_band`` of the ground truth is what the *sampler asked
+    for*; the band a curve actually landed in is a property of the curve that
+    was written, so the measured ``delta_od`` wins and the declared label is
+    only a fallback (v1 ground truth has no ``delta_od``-free rows, but a
+    truncated or hand-made truth file can).  The disagreement between the two
+    is counted rather than hidden.
+    """
+    known = {band["name"] for band in bands}
+    delta = _truth_delta_od(matched)
+    declared = _declared_lab_band(matched)
+
+    delta_values = ([None] * len(matched) if delta is None
+                    else list(delta.to_numpy(dtype=float)))
+    declared_values = ([None] * len(matched) if declared is None
+                       else list(declared.to_numpy(dtype=object)))
+
+    measured: List[Optional[str]] = [
+        None if value is None else _band_of(_safe_float(value), bands)
+        for value in delta_values
+    ]
+
+    assigned: List[Optional[str]] = []
+    from_declared = 0
+    n_disagrees = 0
+    declared_counts: Dict[str, int] = {}
+    for band_name, label in zip(measured, declared_values):
+        if label is None or (isinstance(label, float) and math.isnan(label)):
+            label = None
+        else:
+            label = str(label)
+            if label not in known:
+                label = None
+        if label is not None:
+            declared_counts[label] = declared_counts.get(label, 0) + 1
+        if band_name is None and label is not None:
+            assigned.append(label)
+            from_declared += 1
+            continue
+        if band_name is not None and label is not None and band_name != label:
+            n_disagrees += 1
+        assigned.append(band_name)
+
+    from_delta = int(sum(1 for value in measured if value is not None))
+    unbanded = int(sum(1 for value in assigned if value is None))
+    assigned = pd.Series(assigned, index=matched.index, dtype="object")
+    return assigned, {
+        "from_delta_od": from_delta,
+        "from_declared": from_declared,
+        "unbanded": unbanded,
+        "n_disagrees": int(n_disagrees),
+        "declared_counts": declared_counts,
+    }
 
 
 def per_scenario_table(matched: pd.DataFrame) -> pd.DataFrame:
@@ -620,27 +712,38 @@ def classification_metrics(matched: pd.DataFrame,
 
     prior = lab_prior or load_lab_prior()
     bands = prior["bands"]
-    delta = _truth_delta_od(headline)
     per_band: Dict[str, Any] = {}
     weighted_num = 0.0
     weight_covered = 0.0
-    if delta is not None:
-        band_names = delta.map(lambda v: _band_of(_safe_float(v), bands))
-        for band in bands:
-            sel = (band_names == band["name"]).to_numpy()
-            n = int(sel.sum())
-            entry: Dict[str, Any] = {
-                "n": n,
-                "lab_fraction": band["fraction"],
-                "min_delta_od": None if math.isinf(band["min"]) else band["min"],
-                "max_delta_od": None if math.isinf(band["max"]) else band["max"],
-            }
-            if n:
-                entry.update(core_classification(gt[sel], pred[sel]))
-                weighted_num += band["fraction"] * entry["accuracy"]
-                weight_covered += band["fraction"]
-            per_band[band["name"]] = entry
+    band_names, assignment = _assign_bands(headline, bands)
+    for band in bands:
+        sel = (band_names == band["name"]).to_numpy()
+        n = int(sel.sum())
+        entry: Dict[str, Any] = {
+            "n": n,
+            "lab_fraction": band["fraction"],
+            "min_delta_od": None if math.isinf(band["min"]) else band["min"],
+            "max_delta_od": None if math.isinf(band["max"]) else band["max"],
+            "n_declared_lab_band": assignment["declared_counts"].get(band["name"], 0),
+        }
+        if n:
+            entry.update(core_classification(gt[sel], pred[sel]))
+            weighted_num += band["fraction"] * entry["accuracy"]
+            weight_covered += band["fraction"]
+        per_band[band["name"]] = entry
     block["per_delta_od_band"] = per_band
+    block["band_assignment"] = {
+        "statistic": "ground-truth delta_od (falling back to the ground "
+                     "truth's declared lab_band when delta_od is missing)",
+        "outer_edges": "opened to -/+inf so the bands partition the line; "
+                       "the derived file declares the lowest edge at its "
+                       "measured minimum",
+        "bands_source": prior.get("source"),
+        "from_delta_od": assignment["from_delta_od"],
+        "from_declared_lab_band": assignment["from_declared"],
+        "unbanded": assignment["unbanded"],
+        "n_declared_disagrees": assignment["n_disagrees"],
+    }
     block["lab_prior_source"] = prior.get("source")
     block["lab_weighted_accuracy"] = (
         weighted_num / weight_covered if weight_covered > 0 else None)

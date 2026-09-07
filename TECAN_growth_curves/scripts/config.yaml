@@ -26,10 +26,19 @@ truncation:
   buffer_points: 3             # Points to keep after max for fit stability
   min_points_for_fit: 20       # Minimum points after truncation
   use_first_peak: true         # Truncate at first local max (vs global max)
-  # Adaptive (Monte-Carlo cross-validated) truncation. This is what the
-  # published analysis used, so run_full_pipeline.py / 01_growth_curve_analysis.py
-  # default to it; override per run with --no-adaptive. The lab interface keeps
-  # first-peak truncation as its default because adaptive costs ~1-3 min a plate.
+  # Adaptive (Monte-Carlo cross-validated) truncation. This flag is the BATCH
+  # default: it governs run_full_pipeline.py step 2 and 01_growth_curve_analysis.py
+  # on the real plates, which is what the published real-plate analysis used.
+  # Override per run with --no-adaptive. The lab interface keeps first-peak
+  # truncation as its default because adaptive costs ~1-3 min a plate.
+  #
+  # It does NOT govern the synthetic benchmark (step 9). The published synthetic
+  # headline is measured under FIRST-PEAK truncation -- the lab interface default
+  # -- and step 9 writes one run directory per mode
+  # (synthetic_data/output/comprehensive_test/validation/<mode>/) so neither can
+  # overwrite the other. Use `--all-modes` to benchmark both. The two modes do
+  # not agree: on the sparse_data scenario they return the same verdict for only
+  # 7 of 15 curves, so an unlabelled synthetic number is not publishable.
   use_adaptive: true
   # Incomplete curve detection (prevents FNs when experiment ended early)
   incomplete_curve_tail_fraction: 0.15  # Fraction of tail to check for rising

@@ -33,6 +33,15 @@ results/tables/Advanced_Analysis/truncation_comparison/bad_strain_overlay_plots/
 synthetic_data/output/**/plots/
 # ML training features (rebuilt by scripts/09_train_classifier.py)
 synthetic_data/output/comprehensive_test/training_features/
+# Step 9 benchmark run directories (regenerate with: make step-9).
+# One directory per truncation mode under validation/, plus the opt-in
+# in-sample ML pass; each holds a per-curve plot for every synthetic curve
+# (~96 MB a run), which is why `make clean` removes them and git never sees
+# them. The tracked benchmark snapshot is not one of these run directories:
+# it is the three committed files inside validation_latest/, which git keeps
+# tracked despite this pattern and `make clean` (git clean) never deletes.
+synthetic_data/output/comprehensive_test/validation/
+synthetic_data/output/comprehensive_test/validation_*/
 
 # App runtime
 .streamlit/secrets.toml

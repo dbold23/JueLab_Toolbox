@@ -1,0 +1,73 @@
+{
+  "band_edges_od": [
+    0.02,
+    0.1,
+    0.3,
+    0.6,
+    1.2
+  ],
+  "bands": [
+    {
+      "delta_od_max": 0.02,
+      "delta_od_min": 0.0,
+      "description": "no measurable rise (< 0.02 OD) - dead well or empty control",
+      "fraction": 0.304348,
+      "n": 28,
+      "name": "dead"
+    },
+    {
+      "delta_od_max": 0.1,
+      "delta_od_min": 0.02,
+      "description": "trace rise (0.02-0.1 OD) - below the pipeline growth gate",
+      "fraction": 0.130435,
+      "n": 12,
+      "name": "trace"
+    },
+    {
+      "delta_od_max": 0.3,
+      "delta_od_min": 0.1,
+      "description": "marginal rise (0.1-0.3 OD) - straddles the 0.15 OD gate",
+      "fraction": 0.086957,
+      "n": 8,
+      "name": "marginal"
+    },
+    {
+      "delta_od_max": 0.6,
+      "delta_od_min": 0.3,
+      "description": "partial growth (0.3-0.6 OD)",
+      "fraction": 0.01087,
+      "n": 1,
+      "name": "partial"
+    },
+    {
+      "delta_od_max": 1.2,
+      "delta_od_min": 0.6,
+      "description": "moderate growth (0.6-1.2 OD)",
+      "fraction": 0.021739,
+      "n": 2,
+      "name": "moderate"
+    },
+    {
+      "delta_od_max": null,
+      "delta_od_min": 1.2,
+      "description": "full culture (>= 1.2 OD)",
+      "fraction": 0.445652,
+      "n": 41,
+      "name": "full"
+    }
+  ],
+  "conditions_per_group": {
+    "Group1": 24,
+    "Group2": 24,
+    "Group3": 24,
+    "Group4": 20
+  },
+  "delta_od_mean": 0.777682,
+  "delta_od_median": 0.204997,
+  "derived_by": "synthetic_data/scripts/derive_lab_prior.py",
+  "n_conditions": 92,
+  "note": "Derived, never hand-edited: re-run the script to regenerate. Scenario weights reference a band by name (curve_scenarios.ScenarioConfig.lab_band).",
+  "schema": "lab_prior/1",
+  "source": "data/raw/Group1..4 via tecan_growth.load_plate + preprocess_plate",
+  "statistic": "delta_od = max(od) - mean(od[:5]), the pipeline definition (01_growth_curve_analysis.py:289), on the blank-subtracted, replicate-averaged condition"
+}
