@@ -1610,15 +1610,34 @@ python scripts/08_validate_truncation.py --comparison-csv path/to/method_compari
 
 **Step 9: Synthetic validation:**
 
-```bash
-# Generate comprehensive test suite (480 curves)
-python synthetic_data/scripts/generate_comprehensive.py \
-    --output-dir synthetic_data/output/comprehensive_test
+Step 9 does not re-run the analysis on its own: it runs the ordinary pipeline
+over the generated plates and scores the resulting `processing_results.csv`
+against `ground_truth.csv` with `synthetic_data/validation/benchmark.py`. (The
+older `synthetic_data/scripts/validate_pipeline.py`, which re-ran the analysis
+from a path that did not exist and wrote a second, incompatible metrics schema,
+has been removed.)
 
-# Run pipeline on synthetic data and compare to ground truth
-python synthetic_data/scripts/validate_pipeline.py \
-    --test-dir synthetic_data/output/comprehensive_test
+```bash
+# Generate the comprehensive test suite (writes test_data/DATA + ground_truth.csv)
+python synthetic_data/scripts/generate_comprehensive.py \
+    --output synthetic_data/output/comprehensive_test
+
+# Run the pipeline over it and score it, first-peak truncation (the headline)
+make step-9              # = python scripts/run_full_pipeline.py --steps 9
+make step-9-all-modes    # first-peak and adaptive, one run directory each
+
+# Or score a finished run directly
+python synthetic_data/validation/benchmark.py \
+    --results-csv  synthetic_data/output/comprehensive_test/validation/first_peak/processing_results.csv \
+    --ground-truth synthetic_data/output/comprehensive_test/test_data/ground_truth.csv \
+    --out-dir      synthetic_data/output/comprehensive_test/validation/first_peak \
+    --truncation-mode first_peak
 ```
+
+Each mode writes its own directory (`validation/first_peak/`,
+`validation/adaptive/`), so an adaptive run can no longer overwrite the
+first-peak headline in place, and the mode is recorded in the run's
+`run_settings.json` sidecar and in the emitted `report.json`.
 
 ### 13.3 CI/CD
 

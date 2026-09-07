@@ -58,24 +58,67 @@ from src.plate_writer import PlateFormatWriter                # noqa: E402
 # ---------------------------------------------------------------------------
 
 def _curve(curve_id, duration_h, dt_h, *, A=1.2, mu=0.20, lam=4.0, seed=0, t0=0.0):
-    """One generator-shaped row: a clean Gompertz on an explicit grid."""
+    """
+    One generator-shaped row: a clean Gompertz on an explicit grid.
+
+    The row carries the FULL v2 ground-truth schema (``truth.py``'s
+    ``GROUND_TRUTH_COLUMNS``) minus ``strain_name``, because that is what the
+    generator now hands the writer: ``create_ground_truth_csv`` selects, it
+    does not invent a measurement, so a v1-shaped fixture would only be
+    testing the schema error. ``test_fixture_row_is_schema_complete`` pins
+    that coverage, and the ``true_*`` values are the realised ones -- this
+    curve is a clean Gompertz, so it realises exactly what was requested.
+    """
     n = int(round(duration_h / dt_h))
     t = t0 + np.arange(n) * dt_h
     clean = GompertzModel.compute(t, A, mu, lam)
     noisy = clean + np.random.default_rng(seed).normal(0, 0.002, n)
     noisy = np.maximum(noisy, 0.0)
+    rmse = float(np.sqrt(np.mean((noisy - clean) ** 2)))
+    ss_res = float(np.sum((noisy - clean) ** 2))
+    ss_tot = float(np.sum((noisy - noisy.mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
+    # the primary phase is complete at 95% of the realised amplitude
+    reached = np.nonzero(clean - clean[0] >= 0.95 * A)[0]
+    t95 = float(t[reached[0]]) if len(reached) else float('nan')
+
     return {
+        # identity and label
         'curve_id': curve_id,
         'scenario': f'scen_{int(round(duration_h))}h',
         'expected_class': 'GOOD',
+        'label_rule': 'scenario',
+        'label_rule_version': of.label_rule_version(),
+        'scoring_mode': 'standard',
+        'lab_band': '',
+        # what was generated
+        'model_type': 'gompertz', 'shape': 'gompertz',
+        'requested_A': A, 'requested_mu': mu, 'requested_lambda': lam,
+        # what was actually written
         'true_A': A, 'true_mu': mu, 'true_lambda': lam,
-        'model_type': 'gompertz', 'initial_od': 0.0,
-        'noise_level': 'low', 'target_r_squared': np.nan,
-        'actual_r_squared': 0.99, 'rmse': 0.002,
+        'mu_realisation_ratio': 1.0, 'lambda_realisation_error': 0.0,
+        'shape_solved': True,
+        'initial_od': 0.0,
+        # noise provenance
+        'noise_level': 'low', 'noise_sources': 'preset',
+        'target_r_squared': np.nan, 'actual_r_squared': r2,
+        'artefact_free_r_squared': r2, 'artefact_free_rmse': rmse, 'rmse': rmse,
+        # trace summary
         'max_od': float(noisy.max()), 'delta_od': float(noisy.max() - noisy[0]),
         'n_points': n,
         'time_resolution': dt_h,
         'duration_hours': n * dt_h,
+        'seed': seed,
+        # truncation / identifiability ground truth
+        'true_window_end_h': 1.3 * t95, 't_primary_95': t95,
+        't_second_start': np.nan, 't_death': np.nan,
+        'oracle_A_relerr': 0.0, 'oracle_mu_relerr': 0.0, 'oracle_fit_ok': True,
+        'true_frac_of_A_reached': 1.0,
+        # replicates and artefacts
+        'replicate_A_cv': 0.0, 'replicate_mu_cv': 0.0, 'outlier_well': False,
+        'spike_indices': '', 'drift_od_per_h': 0.0, 'twin_curve_id': '',
+        'metrics_defined': True,
+        # series
         'time': t.tolist(),
         'od600': noisy.tolist(),
     }
@@ -225,6 +268,18 @@ def test_duration_uses_the_grid_not_the_last_sample():
 # ground-truth schema
 # ---------------------------------------------------------------------------
 
+def test_fixture_row_is_schema_complete():
+    """
+    The fixture speaks the schema the generator writes.
+
+    A v1-shaped fixture is why this file could pass while
+    ``create_ground_truth_csv`` was never exercised on a real generator row:
+    every case would stop at the schema error instead.
+    """
+    row = _curve(0, 100.0, 0.25)
+    assert set(ground_truth_columns()) - set(row) == {'strain_name'}
+
+
 def test_ground_truth_schema_complete(tmp_path):
     """The emitted column list equals the declared schema exactly, in order."""
     df = _frame([_curve(i, 100.0, 0.25, seed=i) for i in range(3)])
@@ -258,11 +313,13 @@ def test_ground_truth_derives_what_is_a_pure_function_of_the_frame(tmp_path):
     """
     ``strain_name`` and the grid columns are formatting, not measurement.
 
-    This is the shape ``generate_synthetic.py``'s ``--scenario`` and manual
-    branches hand over: no ``duration_hours``, no ``target_r_squared``.  The
-    file still comes out with the full schema, ``duration_hours`` computed as
-    ``n_points * dt`` off the stored time vector (never ``time[-1]``), and
-    ``target_r_squared`` -- a *request*, not a measurement -- left empty.
+    This is the shape a hand-built caller hands over -- the shape
+    ``generate_synthetic.py``'s ``--scenario`` and manual branches had before
+    they were routed through ``data_generator.curve_rows``: no grid columns,
+    no ``target_r_squared``.  The file still comes out with the full schema,
+    ``duration_hours`` computed as ``n_points * dt`` off the stored time
+    vector (never ``time[-1]``), and ``target_r_squared`` -- a *request*, not
+    a measurement -- left empty.
     """
     df = _frame([_curve(i, 100.0, 0.25, seed=i) for i in range(2)])
     df = df.drop(columns=['strain_name'], errors='ignore').drop(
@@ -272,7 +329,8 @@ def test_ground_truth_derives_what_is_a_pure_function_of_the_frame(tmp_path):
     path = writer.create_ground_truth_csv(df, verbose=False)
 
     assert writer.last_ground_truth_fill['missing'] == []
-    assert set(writer.last_ground_truth_fill['derived']) == {'strain_name', 'duration_hours'}
+    assert set(writer.last_ground_truth_fill['derived']) == {
+        'strain_name', 'time_resolution', 'duration_hours'}
     assert writer.last_ground_truth_fill['filled'] == ['target_r_squared']
 
     gt = pd.read_csv(path)
@@ -302,11 +360,12 @@ def test_require_complete_still_forbids_any_reconstruction(tmp_path):
 ])
 def test_generate_synthetic_script_still_runs(tmp_path, mode):
     """
-    REGRESSION: ``generate_synthetic.py`` builds its own row dicts in the
-    ``--scenario`` and manual-parameter branches and never had
-    ``target_r_squared`` or ``duration_hours`` in them.  A schema check that
-    only ever raises breaks a script that worked; the export has to
-    reconstruct what it can and say so.
+    REGRESSION: ``generate_synthetic.py`` used to build its own row dicts in
+    the ``--scenario`` and manual-parameter branches -- a v1 subset with no
+    ``target_r_squared`` and no ``duration_hours`` -- so the v2 schema check
+    turned a working script into an exit 1.  Both branches now go through
+    ``data_generator.curve_rows``, the same full-schema row the comprehensive
+    set writes, and the CLI has to keep running end to end.
     """
     out = tmp_path / mode[0].lstrip('-')
     proc = subprocess.run(

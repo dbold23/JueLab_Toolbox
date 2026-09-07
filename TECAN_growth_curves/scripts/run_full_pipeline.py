@@ -67,9 +67,10 @@ PIPELINE FLOWCHART:
                    └──────┬──────────────────┘
                           │
                    ┌──────▼──────────────────┐
-                   │  STEP 9                  │
-                   │  Synthetic Validation     │  480 synthetic curves
-                   │  Accuracy / Recall / F1   │  parameter recovery
+                   │  STEP 9                  │  suite size read from
+                   │  Synthetic Validation     │  MANIFEST.json at run time
+                   │  Accuracy / Recall / F1   │  one directory per
+                   │  parameter recovery       │  truncation mode
                    └──────────────────────────┘
 
 Usage:
@@ -82,6 +83,16 @@ Usage:
     python run_full_pipeline.py --config my.yaml    # Custom config file
     python run_full_pipeline.py --no-adaptive       # Override truncation.use_adaptive
     python run_full_pipeline.py --force-preprocess  # Rebuild every group's *_DATA.csv
+    python run_full_pipeline.py --steps 9 --all-modes        # Benchmark both truncation modes
+    python run_full_pipeline.py --steps 9 --allow-in-sample-ml  # Extra IN-SAMPLE ML pass
+
+Step 9 (synthetic validation) does NOT follow truncation.use_adaptive: that
+setting is the batch default for the real plates (step 2). The published
+synthetic headline is first-peak truncation -- the lab interface default -- so
+step 9 benchmarks first-peak unless --adaptive or --all-modes says otherwise,
+and each mode gets its own run directory so one can never overwrite the other.
+Step 9 is always rule-based; the ML classifier was trained on these very curves,
+so an ML pass is in-sample and needs the explicit --allow-in-sample-ml flag.
 
 Truncation and ML classification come from config.yaml (truncation.use_adaptive,
 ml_classifier.enabled); --adaptive/--no-adaptive and --ml/--no-ml override them.
@@ -124,10 +135,119 @@ def ml_models_exist():
     return prefit.exists() and postfit.exists()
 
 
-def synthetic_data_exists():
+#: Root of the committed synthetic benchmark (data in ``test_data/``, run
+#: directories beside it). Overridable per run with ``--synthetic-out-dir``
+#: so a scratch run never writes into the committed tree.
+SYNTHETIC_ROOT = PROJECT_DIR / 'synthetic_data' / 'output' / 'comprehensive_test'
+
+#: The truncation mode the published synthetic headline is measured under.
+#: It is the lab interface default; ``truncation.use_adaptive`` is the *batch*
+#: default for the real plates and deliberately does not reach step 9 (M14:
+#: `make step-9` used to run adaptive and overwrite the first-peak headline in
+#: place, with nothing in any output naming the mode).
+HEADLINE_TRUNCATION_MODE = 'first_peak'
+
+#: Every truncation mode step 9 can benchmark, headline first.
+STEP9_TRUNCATION_MODES = ('first_peak', 'adaptive')
+
+
+def synthetic_test_data_dir(**kwargs):
+    """Directory holding the generated plate CSVs and ``ground_truth.csv``."""
+    return synthetic_root(**kwargs) / 'test_data'
+
+
+def synthetic_root(**kwargs):
+    """Where step 9 reads its data from and writes its run directories."""
+    override = kwargs.get('synthetic_out_dir')
+    return Path(override).resolve() if override else SYNTHETIC_ROOT
+
+
+def synthetic_data_exists(**kwargs):
     """Check if synthetic test data is available for validation."""
-    synth_dir = PROJECT_DIR / 'synthetic_data' / 'output' / 'comprehensive_test' / 'test_data'
+    synth_dir = synthetic_test_data_dir(**kwargs)
     return (synth_dir / 'DATA').exists() and (synth_dir / 'ground_truth.csv').exists()
+
+
+def _read_json(path):
+    """Parse a small JSON file, or ``None`` if it is missing or unreadable."""
+    import json
+    try:
+        with open(path) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def synthetic_suite_counts(root=None):
+    """
+    ``(n_curves, n_scenarios, source)`` for the synthetic suite.
+
+    Read from ``MANIFEST.json`` (written by generate_comprehensive.py), falling
+    back to ``generation_summary.json`` and finally to counting the rows of
+    ``ground_truth.csv``. Nothing here is hand-typed: a printed suite size that
+    disagrees with the data on disk is how a literal curve count outlives the
+    suite it was written for.
+    """
+    root = Path(root) if root is not None else SYNTHETIC_ROOT
+
+    for name in ('MANIFEST.json', 'generation_summary.json'):
+        data = _read_json(root / name)
+        if not isinstance(data, dict):
+            continue
+        per_scenario = data.get('n_per_scenario')
+        if not isinstance(per_scenario, dict):
+            per_scenario = data.get('scenarios') if isinstance(
+                data.get('scenarios'), dict) else None
+
+        n_curves = data.get('total_curves') or data.get('n_curves')
+        if n_curves is None and per_scenario:
+            try:
+                n_curves = sum(int(v) for v in per_scenario.values())
+            except (TypeError, ValueError):
+                n_curves = None
+
+        scenarios = data.get('scenario_names')
+        if scenarios is None:
+            scenarios = data.get('scenarios')
+        if scenarios is None:
+            scenarios = per_scenario
+        if isinstance(scenarios, dict):
+            n_scenarios = len(scenarios)
+        elif isinstance(scenarios, (list, tuple)):
+            n_scenarios = len(scenarios)
+        else:
+            n_scenarios = None
+
+        if n_curves is not None or n_scenarios is not None:
+            return (int(n_curves) if n_curves is not None else None,
+                    n_scenarios, name)
+
+    ground_truth = root / 'test_data' / 'ground_truth.csv'
+    if ground_truth.exists():
+        import csv
+        try:
+            with open(ground_truth, newline='') as handle:
+                rows = list(csv.DictReader(handle))
+        except OSError:
+            rows = []
+        if rows:
+            scenarios = {r.get('scenario') for r in rows if r.get('scenario')}
+            return len(rows), len(scenarios) or None, 'ground_truth.csv'
+
+    return None, None, None
+
+
+def describe_synthetic_suite(root=None):
+    """``'<n> synthetic curves (<k> scenarios)'``, or an honest hedge."""
+    n_curves, n_scenarios, source = synthetic_suite_counts(root)
+    if n_curves is None and n_scenarios is None:
+        return "the synthetic curves (suite size unknown: no MANIFEST.json)"
+    if n_curves is None:
+        return f"the synthetic curves ({n_scenarios} scenarios, per {source})"
+    text = f"{n_curves} synthetic curves"
+    if n_scenarios:
+        text += f" ({n_scenarios} scenarios)"
+    return text
 
 
 def resolve_use_adaptive(config, **kwargs):
@@ -449,51 +569,193 @@ def step8_export(config, dry_run=False, **kwargs):
     )
 
 
-def step9_validate(config, dry_run=False, **kwargs):
-    """Step 9: Validate pipeline on synthetic data."""
-    if not synthetic_data_exists():
-        print("\n  Step 9: No synthetic test data found, skipping validation")
-        return True
+def resolve_step9_modes(config, **kwargs):
+    """
+    Which truncation modes step 9 benchmarks, in run order.
 
-    synth_data = PROJECT_DIR / 'synthetic_data' / 'output' / 'comprehensive_test' / 'test_data' / 'DATA'
-    synth_gt = PROJECT_DIR / 'synthetic_data' / 'output' / 'comprehensive_test' / 'test_data' / 'ground_truth.csv'
-    out_dir = PROJECT_DIR / 'synthetic_data' / 'output' / 'comprehensive_test' / 'validation_latest'
+    ``--all-modes`` runs both. Otherwise an explicit ``--adaptive`` /
+    ``--no-adaptive`` on the command line picks one, and with neither the
+    headline mode (first peak) is used. ``truncation.use_adaptive`` is
+    deliberately *not* consulted: it is the batch default for the real plates,
+    and letting it reach step 9 is how a config flag silently replaced the
+    published first-peak headline with adaptive numbers (M14).
+    """
+    if kwargs.get('all_modes'):
+        return list(STEP9_TRUNCATION_MODES)
+    override = kwargs.get('adaptive')
+    if override is None:
+        return [HEADLINE_TRUNCATION_MODE]
+    return ['adaptive' if override else 'first_peak']
 
-    # Run pipeline on synthetic data (same flags as step 2)
+
+def step9_run_dir(mode, **kwargs):
+    """``<root>/validation/<mode>/`` -- one directory per truncation mode."""
+    return synthetic_root(**kwargs) / 'validation' / mode
+
+
+def step9_ml_run_dir(mode, n_modes, **kwargs):
+    """
+    Where the opt-in in-sample ML pass writes.
+
+    ``validation_latest_ml/`` for a single mode; ``validation_latest_ml/<mode>/``
+    when ``--all-modes`` asked for more than one, so neither mode's ML pass can
+    overwrite the other's.
+    """
+    base = synthetic_root(**kwargs) / 'validation_latest_ml'
+    return base if n_modes == 1 else base / mode
+
+
+def _analysis_cmd(mode, data_dir, out_dir, ml_classify, **kwargs):
+    """The 01_growth_curve_analysis.py command line for one benchmark pass."""
     cmd = [
         sys.executable, str(SCRIPT_DIR / '01_growth_curve_analysis.py'),
-        str(synth_data),
+        str(data_dir),
         '-o', str(out_dir),
         '-q',
     ]
     cmd += config_args(**kwargs)
-    cmd.append('--adaptive' if resolve_use_adaptive(config, **kwargs) else '--no-adaptive')
-    if resolve_use_ml(config, **kwargs):
+    # Spell the mode out in full instead of leaving half of it to config.yaml:
+    # --no-adaptive alone still lets truncation.use_first_peak decide between
+    # first-peak and global-max, and the run_settings.json sidecar (and so the
+    # report header) would then name a mode nobody asked for.
+    if mode == 'adaptive':
+        cmd.append('--adaptive')
+    else:
+        cmd += ['--no-adaptive', '--first-peak']
+    if ml_classify:
         cmd.append('--ml-classify')
+    return cmd
 
-    ok = run_step(cmd, "STEP 9a: Run pipeline on 480 synthetic curves", dry_run=dry_run)
-    if not ok:
+
+def _score_run(out_dir, data_dir, ground_truth, mode, dry_run=False):
+    """Score one finished pipeline run with WP7's ``run_benchmark``."""
+    print(f"\n{'='*60}")
+    print(f"  STEP 9: Score the {mode} run against ground truth")
+    print(f"{'='*60}")
+    print(f"  run_benchmark(results_csv={out_dir / 'processing_results.csv'}, "
+          f"ground_truth_csv={ground_truth}, out_dir={out_dir}, "
+          f"truncation_mode={mode!r})")
+
+    if dry_run:
+        print("  [DRY RUN] Skipping execution")
+        return True
+
+    results_csv = out_dir / 'processing_results.csv'
+    if not results_csv.exists():
+        print(f"  FAILED: {results_csv} was not written")
         return False
 
-    # Run validator to compute accuracy metrics
-    results_csv = out_dir / 'processing_results.csv'
-    validator_script = PROJECT_DIR / 'synthetic_data' / 'validation' / 'pipeline_validator.py'
+    # Agg before the benchmark imports pyplot for its comparison figures.
+    os.environ.setdefault('MPLBACKEND', 'Agg')
+    synth_pkg = str(PROJECT_DIR / 'synthetic_data')
+    if synth_pkg not in sys.path:
+        sys.path.insert(0, synth_pkg)
+    try:
+        from validation.benchmark import run_benchmark
+    except ImportError as exc:
+        print(f"  FAILED: cannot import the benchmark ({exc})")
+        return False
 
-    if validator_script.exists() and (results_csv.exists() or dry_run):
-        ok = run_step(
-            [sys.executable, str(validator_script),
-             '--pipeline', str(SCRIPT_DIR / '01_growth_curve_analysis.py'),
-             '--data-dir', str(synth_data),
-             '--ground-truth', str(synth_gt),
-             '--output-dir', str(out_dir),
-             '--skip-run',
-             '--results-csv', str(results_csv)],
-            "STEP 9b: Compute validation metrics (accuracy, recall, F1, parameter recovery)",
-            dry_run=dry_run
+    start = time.time()
+    try:
+        report = run_benchmark(
+            results_csv=results_csv,
+            ground_truth_csv=ground_truth,
+            out_dir=out_dir,
+            truncation_mode=mode,
+            data_dir=data_dir,
+            verbose=False,
         )
-        return ok
+    except Exception as exc:
+        print(f"  FAILED after {time.time() - start:.1f}s: {type(exc).__name__}: {exc}")
+        return False
 
+    # Every printed number names its mode; the headline carries seed, dataset
+    # digest and git SHA so it cannot be quoted without its provenance.
+    print(f"  Completed in {time.time() - start:.1f}s")
+    print(f"  [{mode}] {report.get('headline', '')}")
+    print(f"  [{mode}] report: {out_dir / 'report.json'}")
     return True
+
+
+def _benchmark_pass(mode, out_dir, label, ml_classify, dry_run=False, **kwargs):
+    """Run the pipeline over the synthetic curves and score it. One mode."""
+    data_dir = synthetic_test_data_dir(**kwargs) / 'DATA'
+    ground_truth = synthetic_test_data_dir(**kwargs) / 'ground_truth.csv'
+
+    ok = run_step(
+        _analysis_cmd(mode, data_dir, out_dir, ml_classify, **kwargs),
+        label,
+        dry_run=dry_run,
+    )
+    if not ok:
+        return False
+    return _score_run(out_dir, data_dir, ground_truth, mode, dry_run=dry_run)
+
+
+def _in_sample_ml_note(config, **kwargs):
+    """Why the in-sample ML pass is not being run. Exactly one line, always."""
+    if not ml_requested(config, **kwargs):
+        reason = ("ML classification is off, and the rule-based benchmark is "
+                  "the headline")
+    elif not ml_models_exist():
+        reason = "ML is enabled but models/*.joblib are missing"
+    else:
+        reason = ("pass --allow-in-sample-ml to run it; the synthetic curves are "
+                  "the classifier's own training set")
+    return f"  step 9b: in-sample ML pass skipped ({reason})"
+
+
+def step9_validate(config, dry_run=False, **kwargs):
+    """
+    Step 9: score the pipeline against the synthetic ground truth.
+
+    One run directory per truncation mode (``validation/first_peak/``,
+    ``validation/adaptive/``) so a run in one mode can never overwrite the
+    other's numbers, and the mode is named on every line this step prints.
+
+    The benchmark is always rule-based. The ML classifier was trained on these
+    exact curves, so an ML pass measures the model on its own training rows
+    (measured: accuracy 0.975 / precision 1.000 / recall 0.965 in-sample versus
+    0.873 / 0.901 / 0.925 rule-based on the same curves, M26). It runs only
+    when ML is resolved on *and* ``--allow-in-sample-ml`` is given, into its own
+    directory, under a banner saying what it is.
+    """
+    if not synthetic_data_exists(**kwargs):
+        print("\n  Step 9: No synthetic test data found, skipping validation")
+        return True
+
+    modes = resolve_step9_modes(config, **kwargs)
+    suite = describe_synthetic_suite(synthetic_root(**kwargs))
+
+    print(f"\n  Step 9: {suite}")
+    print(f"  Truncation modes: {', '.join(modes)}"
+          f"{'  (headline: ' + HEADLINE_TRUNCATION_MODE + ')' if len(modes) > 1 else ''}")
+
+    all_ok = True
+    for mode in modes:
+        out_dir = step9_run_dir(mode, **kwargs)
+        ok = _benchmark_pass(
+            mode, out_dir,
+            f"STEP 9a [{mode}]: Run pipeline on {suite} → {out_dir}",
+            ml_classify=False, dry_run=dry_run, **kwargs)
+        all_ok = all_ok and ok
+
+    if resolve_use_ml(config, **kwargs) and kwargs.get('allow_in_sample_ml'):
+        for mode in modes:
+            ml_dir = step9_ml_run_dir(mode, len(modes), **kwargs)
+            print("\n  step 9b: ML pass is IN-SAMPLE (models were trained on "
+                  "these curves)")
+            print(f"  step 9b: [{mode}] writing to {ml_dir}")
+            ok = _benchmark_pass(
+                mode, ml_dir,
+                f"STEP 9b [{mode}]: IN-SAMPLE ML pass over {suite} → {ml_dir}",
+                ml_classify=True, dry_run=dry_run, **kwargs)
+            all_ok = all_ok and ok
+    else:
+        print(_in_sample_ml_note(config, **kwargs))
+
+    return all_ok
 
 
 # ─── Step Registry ───────────────────────────────────────────────────────────
@@ -509,7 +771,8 @@ STEPS = [
     (6, step6_statistics,       "Statistical analysis + figures",     False, False),
     (7, step7_compare_methods,  "Truncation comparison + rescue",     True,  False),
     (8, step8_export,           "Export for collaboration",           False, False),
-    (9, step9_validate,         "Synthetic validation (480 curves)",  False, False),
+    (9, step9_validate,         f"Synthetic validation, {describe_synthetic_suite()}",
+                                                                      False, False),
 ]
 
 
@@ -529,6 +792,8 @@ Pipeline Steps:
   7  Truncation method comparison + bad strain rescue
   8  Export clean results for collaboration
   9  Synthetic validation (accuracy, recall, F1, parameter recovery)
+     first-peak truncation by default -- the published headline; --all-modes
+     adds adaptive in its own directory. Rule-based unless --allow-in-sample-ml.
 
 Examples:
   python run_full_pipeline.py                     # Run everything
@@ -539,6 +804,8 @@ Examples:
   python run_full_pipeline.py --no-adaptive        # First-peak truncation this run
   python run_full_pipeline.py --force-preprocess   # Rebuild all groups from raw
   python run_full_pipeline.py --dry-run            # Preview without running
+  python run_full_pipeline.py --steps 9 --all-modes  # Both truncation modes, one dir each
+  python run_full_pipeline.py --steps 9 --allow-in-sample-ml  # Extra IN-SAMPLE ML pass
         """
     )
     parser.add_argument('--config', type=str, default=None,
@@ -562,6 +829,19 @@ Examples:
                              'truncation.use_adaptive in config.yaml')
     parser.add_argument('--force-preprocess', action='store_true',
                         help='Re-run step 0 for every group even when its processed data already exists')
+    parser.add_argument('--all-modes', action='store_true',
+                        help='Step 9: benchmark every truncation mode '
+                             f'({", ".join(STEP9_TRUNCATION_MODES)}), each in its own '
+                             'run directory. Without it step 9 runs the headline mode '
+                             f'({HEADLINE_TRUNCATION_MODE}) unless --adaptive/--no-adaptive says otherwise')
+    parser.add_argument('--allow-in-sample-ml', action='store_true',
+                        help='Step 9: additionally run the ML classifier over the synthetic '
+                             'curves. These curves are the classifier\'s training set, so the '
+                             'numbers are IN-SAMPLE; they are written to their own directory '
+                             'and never replace the rule-based benchmark')
+    parser.add_argument('--synthetic-out-dir', type=str, default=None,
+                        help='Step 9: root holding test_data/ and the per-mode run '
+                             f'directories (default: {SYNTHETIC_ROOT})')
     parser.add_argument('--dry-run', action='store_true',
                         help='Show what would run without executing')
 
@@ -590,6 +870,9 @@ Examples:
         adaptive=args.adaptive,
         force_preprocess=args.force_preprocess,
         config_path=args.config,
+        all_modes=args.all_modes,
+        allow_in_sample_ml=args.allow_in_sample_ml,
+        synthetic_out_dir=args.synthetic_out_dir,
     )
 
     # Header
@@ -611,6 +894,12 @@ Examples:
     print(f"  Steps:        {sorted(run_steps)}")
     print(f"  Truncation:   {adaptive_status}")
     print(f"  ML classify:  {ml_status}")
+    if 9 in run_steps:
+        modes = resolve_step9_modes(config, **step_kwargs)
+        ml_note = ("IN-SAMPLE ML pass requested"
+                   if (resolve_use_ml(config, **step_kwargs)
+                       and args.allow_in_sample_ml) else "rule-based")
+        print(f"  Step 9:       {', '.join(modes)} truncation, {ml_note}")
     if args.dry_run:
         print(f"  Mode:         DRY RUN (no execution)")
     print()

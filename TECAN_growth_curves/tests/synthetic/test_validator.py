@@ -795,3 +795,105 @@ def test_match_is_computed_once(validator, monkeypatch):
     fresh.identify_failure_cases()
     fresh.compute_uncertainty()
     assert calls["n"] == 1
+
+
+# ------------------------------------------- lab-prior band stratification
+#
+# Fix round 1: ``load_lab_prior`` read the band edges as ``min``/``max``, but
+# ``config/lab_prior.json`` (written by ``derive_lab_prior.py``) names them
+# ``delta_od_min``/``delta_od_max``.  Every band therefore normalised to
+# (-inf, +inf), so every curve landed in the first band ("dead") with
+# min_delta_od/max_delta_od null and the other five bands at n=0, and
+# ``lab_weighted_accuracy`` was the whole-suite accuracy under a 0.30 weight.
+
+def test_lab_prior_edges_come_from_the_derived_file():
+    from validation.pipeline_validator import load_lab_prior
+
+    raw = json.loads((SYNTH / 'config' / 'lab_prior.json').read_text())
+    prior = load_lab_prior()
+    bands = prior["bands"]
+    assert [b["name"] for b in bands] == [b["name"] for b in raw["bands"]]
+
+    # Interior edges are the measured ones; only the two outer edges are open.
+    for band, declared in zip(bands, raw["bands"]):
+        if declared is not raw["bands"][0]:
+            assert band["min"] == declared["delta_od_min"], band["name"]
+        if declared is not raw["bands"][-1]:
+            assert band["max"] == declared["delta_od_max"], band["name"]
+    assert bands[0]["min"] == -np.inf and np.isfinite(bands[0]["max"])
+    assert bands[-1]["max"] == np.inf and np.isfinite(bands[-1]["min"])
+    # No band may swallow the line.
+    assert not any(np.isinf(b["min"]) and np.isinf(b["max"]) for b in bands)
+    # And the bands must tile it.
+    for lower, upper in zip(bands, bands[1:]):
+        assert lower["max"] == upper["min"]
+
+
+def test_per_delta_od_band_is_actually_stratified(committed_report, matched):
+    """More than one band populated, and every band bracketing its members."""
+    from validation.pipeline_validator import _truth_delta_od
+
+    per_band = committed_report["classification"]["per_delta_od_band"]
+    assert len(per_band) == 6
+    populated = {name: e for name, e in per_band.items() if e["n"] > 0}
+    assert len(populated) >= 4, per_band
+
+    headline_n = committed_report["classification"]["n"]
+    assert sum(e["n"] for e in per_band.values()) == headline_n
+
+    assignment = committed_report["classification"]["band_assignment"]
+    assert assignment["unbanded"] == 0
+    assert assignment["from_delta_od"] == headline_n
+
+    # Edges are reported, not nulled out by an unparsed key.
+    finite_edges = [e for e in per_band.values()
+                    if e["min_delta_od"] is not None or e["max_delta_od"] is not None]
+    assert len(finite_edges) == 6
+
+    # Cross-check the counts against the ground truth's own delta_od.
+    delta = _truth_delta_od(matched).to_numpy(dtype=float)
+    for name, entry in populated.items():
+        low = -np.inf if entry["min_delta_od"] is None else entry["min_delta_od"]
+        high = np.inf if entry["max_delta_od"] is None else entry["max_delta_od"]
+        assert int(((delta >= low) & (delta < high)).sum()) == entry["n"], name
+
+    weighted = committed_report["classification"]["lab_weighted_accuracy"]
+    accuracy = committed_report["classification"]["accuracy"]
+    # A genuine reweighting, not the unstratified number wearing a new name.
+    assert weighted is not None and abs(weighted - accuracy) > 1e-9
+
+
+def test_band_assignment_prefers_measured_delta_od_over_the_declared_band():
+    """v2 ground truth carries ``lab_band`` -- the sampler's request.
+
+    The band a curve is scored in is the one it actually landed in, so the
+    measured ``delta_od`` wins; the declared label is only used when the
+    measurement is missing, and the disagreement is counted rather than hidden.
+    """
+    from validation.pipeline_validator import classification_metrics
+
+    frame = pd.DataFrame({
+        "curve_id": ["CURVE0001", "CURVE0002", "CURVE0003", "CURVE0004"],
+        "scenario": ["s"] * 4,
+        "expected_class": ["GOOD", "BAD", "GOOD", "BAD"],
+        "gt_is_good": [True, False, True, False],
+        "pred_is_good": [True, False, True, True],
+        # curve 3 was asked for 'full' but only reached the trace band;
+        # curve 4 has no measured delta_od at all.
+        "delta_od_gt": [1.5, 0.005, 0.05, np.nan],
+        "delta_od_pred": [1.5, 0.005, 0.05, 0.9],
+        "lab_band": ["full", "dead", "full", "moderate"],
+    })
+    block = classification_metrics(frame)
+    per_band = block["per_delta_od_band"]
+    assert per_band["full"]["n"] == 1
+    assert per_band["dead"]["n"] == 1
+    assert per_band["trace"]["n"] == 1
+    assert per_band["moderate"]["n"] == 1        # from the declared label
+
+    assignment = block["band_assignment"]
+    assert assignment["from_delta_od"] == 3
+    assert assignment["from_declared_lab_band"] == 1
+    assert assignment["unbanded"] == 0
+    assert assignment["n_declared_disagrees"] == 1   # curve 3
+    assert per_band["full"]["n_declared_lab_band"] == 2
