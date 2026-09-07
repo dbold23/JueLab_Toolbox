@@ -173,8 +173,13 @@ those 32 scenarios, and 0.92 for A. What is still missed: hourly-sampled and
 fast-growing curves that leave fewer than the 20 points the default window
 minimum asks for (lower it in the sidebar for hourly data), curves whose
 residuals are correlated enough to trip the autocorrelation gate, and diauxic
-curves whose second phase the Gompertz shape cannot absorb. Every published
-number comes from
+curves whose second phase the Gompertz shape cannot absorb. The batch pipeline's own default rule, the
+cross-validated window search, was scored on the same curves and does better
+overall (89.6 % accuracy, 89.3 % balanced) at a cost in specificity (86.9 %
+against 90.2 %) and about fifty times the runtime; the two are compared
+scenario by scenario in
+[synthetic_data/benchmark/v2_adaptive/README.md](synthetic_data/benchmark/v2_adaptive/README.md).
+Every published number comes from
 [synthetic_data/benchmark/v2/report.json](synthetic_data/benchmark/v2/report.json);
 `make validation-summary` renders it into a markdown summary listing every
 scenario and which gate fired on it (a build artefact, rendered on demand into

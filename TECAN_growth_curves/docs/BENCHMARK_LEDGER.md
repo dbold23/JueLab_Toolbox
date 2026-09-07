@@ -817,13 +817,24 @@ same check.
 
 ## 11. What this release does **not** contain
 
-* **The adaptive-mode benchmark.** There is no `validation/adaptive/` in this
-  tree — no run directory at all, in fact: `make clean` was run to check the
-  snapshots survive it, so `synthetic_data/output/comprehensive_test/validation/`
-  does not exist. Adaptive truncation costs ~13 s a curve, i.e. ~4 h for 1139
-  curves, and it is run separately. Until it exists, no adaptive synthetic
-  number should be quoted. `make step-9-all-modes` produces it; `make step-9`
-  (~18 min) puts the first-peak run directory back.
+* **The adaptive-mode benchmark: now measured.** When this ledger was first
+  written there was no adaptive synthetic number at all, while
+  `scripts/config.yaml` makes adaptive the batch pipeline's default. The run
+  has since been made over the same v2 dataset (5 h 40 min for 1139 curves on
+  4 CPUs, against 6 minutes for first peak) and is tracked at
+  `synthetic_data/benchmark/v2_adaptive/`, whose README puts the two modes side
+  by side. Headline over the same 960 decidable curves: accuracy 0.8958,
+  balanced 0.8928, sensitivity 0.9168, specificity 0.8687, MCC 0.7879,
+  496/364/55/45 — against first peak's 0.8760, 0.8790, 0.8558, 0.9021, 0.7528,
+  463/378/41/78. Adaptive fits 33 more curves correctly and accepts 14 more it
+  should have rejected; on the core 32 it is *worse* (0.9511 against 0.9605,
+  specificity 0.9179 against 1.0000). The whole difference is one trade:
+  cross-validated window search finds the growth phase where the first-peak
+  rule cannot (`diauxic_second_larger` 0/12 -> 12/12, `sparse_data` 0.47 ->
+  0.87, `fast_growth` 0.60 -> 1.00, `bubble_spike` 0.75 -> 0.95) and fits the
+  plateau of wells that never grew (`contamination` 1.00 -> 0.52). First peak
+  stays the published headline: it is the interface default and the safer one
+  on controls.
 * **`validation_metrics.json` and `validation_latest/`.** The pre-rebuild
   layout is gone from the live tree. Both are preserved under
   `synthetic_data/benchmark/v1/` (`validation_metrics.json`,
