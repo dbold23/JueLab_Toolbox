@@ -1,0 +1,69 @@
+{
+  "truncation_mode": "adaptive",
+  "use_adaptive": true,
+  "use_first_peak": true,
+  "smoothing_window": 5,
+  "buffer_points": 3,
+  "min_points_for_fit": 20,
+  "quality_gates": {
+    "min_r_squared": 0.95,
+    "max_param_error_pct": 20.0,
+    "min_points_for_fit": 15,
+    "min_snr": 5.0,
+    "min_delta_od_ci": 0.1,
+    "min_absolute_delta_od": 0.15,
+    "pre_fit_snr_threshold": 3.0,
+    "pre_fit_delta_od_override": 0.5,
+    "excellent_r2_threshold": 0.98,
+    "min_monotone_fraction": 0.55,
+    "max_residual_autocorr": 0.7,
+    "noise_floor_od": 0.002,
+    "autocorr_lag_hours": 1.0,
+    "min_hours_to_peak": 1.0,
+    "classification": "fit_quality",
+    "od_thresholds": {
+      "min_delta_od": 0.3,
+      "min_max_od": 0.5,
+      "min_snr": 5.0,
+      "max_initial_od": 0.15
+    }
+  },
+  "mccv": {
+    "min_points": 30,
+    "n_coarse": 50,
+    "n_cv_folds": 20,
+    "cv_holdout": 0.2,
+    "n_fine_top": 3,
+    "fine_window": 10,
+    "try_multi_model": false,
+    "source": "find_optimal_truncation_v2 defaults; scripts/config.yaml truncation.mccv is not passed to it",
+    "config_values": {
+      "n_coarse_candidates": 50,
+      "n_cv_folds": 20,
+      "cv_holdout_fraction": 0.2,
+      "n_fine_tune_top": 3,
+      "fine_tune_window": 10,
+      "try_multi_model": false,
+      "min_points": 30
+    }
+  },
+  "ml_classify": false,
+  "config_path": "/home/user/TECAN-Growth-Curve-Analysis-Pipeline/scripts/config.yaml",
+  "config_sha256": "f3e5188283cb5b42325736882fe74a66f1e329348c76c9fed0c2ddf87b060033",
+  "git_sha": "64b586cea02a5200b67c60bc9624894afa2dfaae",
+  "git_dirty": false,
+  "data_dir": "synthetic_data/output/comprehensive_test/test_data/DATA",
+  "dataset_sha256": "760a04062cf22e91e0ec6eaad4874cf5d90f8dd0e3d61d924542bbe84c63d626",
+  "n_curves": 1139,
+  "wall_clock_s": 21685.346,
+  "timestamp_utc": "2026-09-07T13:23:47Z",
+  "argv": [
+    "scripts/01_growth_curve_analysis.py",
+    "synthetic_data/output/comprehensive_test/test_data/DATA",
+    "-o",
+    "/tmp/claude-0/-home-user-TECAN-Growth-Curve-Analysis-Pipeline/2ac134c8-af58-5caa-beda-13b5ba43c702/scratchpad/adaptive_v2/run",
+    "--adaptive",
+    "--no-plots",
+    "-q"
+  ]
+}
