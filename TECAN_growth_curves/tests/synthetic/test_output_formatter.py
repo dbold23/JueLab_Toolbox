@@ -399,14 +399,29 @@ def test_ground_truth_schema_follows_truth_module_when_present(tmp_path, monkeyp
     assert list(pd.read_csv(path).columns) == _FakeTruth.GROUND_TRUTH_COLUMNS
 
 
-def test_legacy_schema_matches_the_committed_ground_truth():
-    """The v1 fallback is the schema of the committed ground_truth.csv, in order."""
-    committed = (REPO_ROOT / 'synthetic_data' / 'output' / 'comprehensive_test' /
-                 'test_data' / 'ground_truth.csv')
+def test_legacy_schema_matches_the_v1_benchmark_snapshot():
+    """The v1 fallback is the schema of the archived v1 ground_truth.csv, in order.
+
+    The release (WP12) moved the live ``comprehensive_test`` ground truth to truth
+    schema v2 and snapshotted the pre-rebuild file under ``synthetic_data/benchmark/v1/``.
+    That snapshot is what ``LEGACY_GROUND_TRUTH_COLUMNS`` has to keep describing, since
+    it is the fallback WP7 reads when a v1 ground truth is handed to the validator.
+    """
+    committed = REPO_ROOT / 'synthetic_data' / 'benchmark' / 'v1' / 'ground_truth.csv'
     if not committed.exists():
-        pytest.skip('committed ground truth not present')
+        pytest.skip('v1 benchmark snapshot not present')
     header = pd.read_csv(committed, nrows=0).columns.tolist()
     assert header == list(of.LEGACY_GROUND_TRUTH_COLUMNS)
+
+
+def test_live_ground_truth_follows_the_current_schema():
+    """The regenerated ground truth carries the schema this writer emits today."""
+    live = (REPO_ROOT / 'synthetic_data' / 'output' / 'comprehensive_test' /
+            'test_data' / 'ground_truth.csv')
+    if not live.exists():
+        pytest.skip('regenerated ground truth not present')
+    header = pd.read_csv(live, nrows=0).columns.tolist()
+    assert header == list(ground_truth_columns())
 
 
 # ---------------------------------------------------------------------------

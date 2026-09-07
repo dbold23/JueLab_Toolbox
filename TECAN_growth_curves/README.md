@@ -124,7 +124,7 @@ data/raw/            Four plates (Groups 1-4) as SparkControl exports, keys and 
 results/tables/      Committed outputs of the batch pipeline for the four groups
 synthetic_data/      Generator and validation suite of curves with known parameters
 tests/               pytest suite: readers, preprocessing, numerics, golden regression, app, docs
-docs/                HOW_IT_WORKS.md, LAB_PROTOCOL.md, DESIGN_SPEC.md, how_it_works/, images/
+docs/                HOW_IT_WORKS.md, LAB_PROTOCOL.md, BENCHMARK_LEDGER.md, DESIGN_SPEC.md, how_it_works/, images/
 ```
 
 ### Included data
@@ -156,18 +156,31 @@ that gate), the rule agrees on 83 of 85, and it was calibrated on that
 comparison: the 25 % peak-rate threshold gave 83, a stricter 10 % gave 75.
 
 **Against curves with known answers.** `make step-9` runs the pipeline on
-480 synthetic curves from 32 scenarios (`synthetic_data/`). With the
-first-peak rule the verdict is right for 87 % of them, with 90 % precision
-and 93 % recall, and the recovered parameters track the truth with
-R² of 0.98 (A), 0.91 (μ) and 0.98 (λ). Every miss is concentrated in five
-scenarios, and the summary in
-`synthetic_data/output/comprehensive_test/VALIDATION_SUMMARY.md` lists
-them. Three of those scenarios define "BAD" by the R² of a fit to the
-whole 99-hour trace, whereas the pipeline fits the growth window, where
-R² is 0.96 to 0.99, so it accepts them; the other two are logistic-shaped
-curves the Gompertz model flags as a shape mismatch, and hourly-sampled
-curves that leave fewer than the 20 points the default window minimum
-asks for. Lower that minimum in the sidebar for hourly data.
+1139 synthetic curves from 64 scenarios (`synthetic_data/`), generated with
+known parameters and with the noise, artefacts, blanks and run geometries
+measured on the four plates above. With the first-peak rule the verdict is
+right for 87.6 % of the 960 curves the present gate set can decide fairly:
+balanced accuracy 87.9 %, sensitivity 85.6 %, specificity 90.2 %. On the 32
+scenarios the suite held before it was rebuilt — the set comparable with the
+number this README used to quote — it is 96.1 % accuracy, 96.8 % balanced and
+100 % specificity. The two are not interchangeable: the suite is larger and
+harder now. The 179 curves held out of the headline (runs that stop before the
+plateau, so the asymptote is not identifiable, and per-well artefacts the
+preprocessing step averages away before the pipeline sees them) are scored
+separately rather than dropped; over all 1139 curves under one flat rule it is
+81.9 %. Recovered parameters track the truth with R² 0.99 (μ) and 0.99 (λ) on
+those 32 scenarios, and 0.92 for A. What is still missed: hourly-sampled and
+fast-growing curves that leave fewer than the 20 points the default window
+minimum asks for (lower it in the sidebar for hourly data), curves whose
+residuals are correlated enough to trip the autocorrelation gate, and diauxic
+curves whose second phase the Gompertz shape cannot absorb. Every published
+number comes from
+[synthetic_data/benchmark/v2/report.json](synthetic_data/benchmark/v2/report.json);
+`make validation-summary` renders it into a markdown summary listing every
+scenario and which gate fired on it (a build artefact, rendered on demand into
+the run directory, never committed), and
+[docs/BENCHMARK_LEDGER.md](docs/BENCHMARK_LEDGER.md) accounts for every point
+of movement from the older number.
 
 ## Testing
 

@@ -11,6 +11,7 @@ Author: Generated for BIO380SP25 Research Project
 """
 
 import argparse
+import json
 import math
 from pathlib import Path
 
@@ -24,6 +25,118 @@ import pandas as pd
 
 EULER_E = math.e
 LN2 = math.log(2)
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SYNTH = REPO_ROOT / "synthetic_data"
+
+# Where the synthetic benchmark's own artefacts live. The suite size and the
+# headline are read from these at run time: this document used to hard-code
+# "480 synthetic growth curves" and an accuracy that had already been
+# superseded, and there was nothing to keep the two in step.
+SYNTH_REPORTS = (
+    SYNTH / "output" / "comprehensive_test" / "validation" / "first_peak" / "report.json",
+    SYNTH / "output" / "comprehensive_test" / "validation" / "adaptive" / "report.json",
+    SYNTH / "benchmark" / "v2" / "report.json",
+)
+SYNTH_MANIFEST = SYNTH / "output" / "comprehensive_test" / "MANIFEST.json"
+
+
+def _load_json(path: Path):
+    try:
+        with open(path, "r") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def synthetic_validation_section() -> str:
+    """The 'Validation Results' section, built from the benchmark's own files.
+
+    Reads the first report.json it finds (a step-9 run directory, else the
+    tracked snapshot) and MANIFEST.json for the suite size. When neither is in
+    the checkout the section says so instead of quoting a number no file in the
+    tree supports.
+    """
+    report = None
+    report_path = None
+    for candidate in SYNTH_REPORTS:
+        report = _load_json(candidate)
+        if report and "classification" in report:
+            report_path = candidate
+            break
+        report = None
+
+    manifest = _load_json(SYNTH_MANIFEST)
+
+    if report is None:
+        source = "MANIFEST.json" if manifest else None
+        n_curves = manifest.get("n_curves_written") if manifest else None
+        n_scenarios = manifest.get("n_scenarios") if manifest else None
+        if n_curves:
+            return (
+                f"The pipeline is validated against **{n_curves} synthetic growth "
+                f"curves** across {n_scenarios} scenarios with known parameters "
+                f"(`synthetic_data/`, suite size read from {source}). This "
+                f"checkout holds no benchmark report, so no accuracy is quoted "
+                f"here; run `make step-9` to produce one, and see "
+                f"`docs/BENCHMARK_LEDGER.md`.\n"
+            )
+        return (
+            "The pipeline is validated against a synthetic suite with known "
+            "parameters (`synthetic_data/`). No benchmark report is present in "
+            "this checkout, so no accuracy is quoted here; run `make step-9` to "
+            "produce one, and see `docs/BENCHMARK_LEDGER.md`.\n"
+        )
+
+    run = report.get("run", {})
+    cls = report.get("classification", {})
+    recovery = (report.get("parameter_recovery", {}) or {}).get("accepted_good", {})
+    n_curves = run.get("n_curves") or (manifest or {}).get("n_curves_written")
+    n_scenarios = run.get("n_scenarios") or (manifest or {}).get("n_scenarios")
+
+    def pc(value):
+        return "--" if value is None else f"{value * 100:.1f}%"
+
+    def r2(name):
+        block = recovery.get(name) or {}
+        value = block.get("r_squared_across_scenarios")
+        return "--" if value is None else f"{value:.3f}"
+
+    rel = report_path.relative_to(REPO_ROOT)
+    lines = [
+        f"The pipeline was validated on **{n_curves} synthetic growth curves** "
+        f"across {n_scenarios} scenarios with known Gompertz, logistic, Richards, "
+        f"Baranyi and Haldane parameters, generated with realistic noise, "
+        f"artefacts and blanks calibrated to the plates in this study.",
+        "",
+        f"Numbers below are read from `{rel}` at export time "
+        f"(`{run.get('truncation_mode')}` truncation, seed {run.get('seed')}, "
+        f"dataset `{str(run.get('dataset_sha256'))[:12]}`, git "
+        f"`{str(run.get('git_sha'))[:12]}`). They are not typed into this script.",
+        "",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Curves in the scored headline | {cls.get('n')} |",
+        f"| Balanced accuracy | {pc(cls.get('balanced_accuracy'))} |",
+        f"| Sensitivity | {pc(cls.get('sensitivity'))} |",
+        f"| Specificity | {pc(cls.get('specificity'))} |",
+        f"| Accuracy | {pc(cls.get('accuracy'))} |",
+        f"| Parameter recovery R^2 (A) | {r2('A')} |",
+        f"| Parameter recovery R^2 (mu) | {r2('mu')} |",
+        f"| Parameter recovery R^2 (lambda) | {r2('lambda')} |",
+        "",
+        "Parameter recovery is pooled over the curves the pipeline accepted and "
+        "the truth calls good; it is conditioned on the pipeline's own verdict, "
+        "so it is not an unbiased measure of the estimator. The R^2 for A is the "
+        "lowest of the three because the suite deliberately contains families "
+        "whose asymptote is not identifiable from the observed window -- runs "
+        "that stop before the plateau. The full account, "
+        "including which scenarios are missed and why, is in "
+        "`docs/BENCHMARK_LEDGER.md` and in the rendered "
+        "`VALIDATION_SUMMARY.md`.",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -237,6 +350,9 @@ def generate_methodology(df: pd.DataFrame, clean: pd.DataFrame, output_path: Pat
 | R_squared | Coefficient of determination (R^2) of the Gompertz fit |
 | RMSE | Root mean squared error of the Gompertz fit |"""
 
+    # Read at run time from the benchmark's own artefacts (never hard-coded).
+    synthetic_validation = synthetic_validation_section()
+
     md = f"""\
 # TECAN Growth Curve Analysis Pipeline - Methodology
 
@@ -342,20 +458,7 @@ inclusion of diauxic shifts, death phase, or other non-Gompertz behavior.
 
 ## Validation Results
 
-The pipeline was validated on **480 synthetic growth curves** generated with
-known Gompertz parameters across a range of A, mu, and lambda values, with
-realistic levels of biological noise.
-
-| Metric | Value |
-|--------|-------|
-| Overall classification accuracy | 84.4% |
-| Parameter recovery R^2 (A) | > 0.90 |
-| Parameter recovery R^2 (mu) | > 0.90 |
-| Parameter recovery R^2 (lambda) | > 0.90 |
-
-Synthetic curves with parameters near classification boundaries (e.g., very
-low growth, high noise) accounted for most misclassifications. For curves
-with clear sigmoid growth, accuracy exceeded 95%.
+{synthetic_validation}
 
 ---
 

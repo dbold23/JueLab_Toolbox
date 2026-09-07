@@ -56,7 +56,7 @@ TECAN_growth_curves/
 │   ├── Group{1-4}_Results/              # Per-group results + diagnostic plots
 │   ├── Haldane_Analysis/                # Haldane feedback inhibition results
 │   └── Advanced_Analysis/               # GP, Bayesian, Bootstrap, Comparison results
-├── synthetic_data/                      # Validation test suite (480 synthetic curves)
+├── synthetic_data/                      # Validation test suite (1139 synthetic curves, 64 scenarios)
 ├── tests/                               # pytest test suite
 ├── Makefile                             # Build/run automation
 └── .github/workflows/test.yml           # CI/CD pipeline
@@ -394,25 +394,32 @@ When you run the pipeline, you should see approximately:
 
 ### Validation Metrics
 
-**Rule-based (480 synthetic curves, first-peak rule):**
+**Rule-based (synthetic suite, 1139 curves over 64 scenarios, first-peak rule, seed 42).** The headline is scored over the 960 curves the present gate set can decide fairly; the other 179 are scored separately, not dropped.
 
-| Metric | Value |
-|--------|-------|
-| Accuracy | 87.3% |
-| Precision | 90.1% |
-| Recall | 92.5% |
-| F1 Score | 91.3% |
-
-**ML Classifier (5-fold CV on the 480 synthetic curves; the 85 audited real curves are an external test set):**
-
-| Metric | Synthetic CV | Real audit set (67 fitted) |
+| Metric | Full suite (n=960) | The original 32 scenarios (n=532) |
 |--------|-------|-------|
-| Accuracy | 96.2% | 94.0% |
-| Precision | 97.5% | 96.4% |
-| Recall | 97.4% | 96.4% |
-| Specificity | 92.5% | 83.3% |
+| Balanced accuracy | 87.9% | 96.8% |
+| Sensitivity | 85.6% | 93.5% |
+| Specificity | 90.2% | 100.0% |
+| Accuracy | 87.6% | 96.1% |
+| Precision | 91.9% | 100.0% |
+| MCC | 0.753 | 0.922 |
+| TP / TN / FP / FN | 463 / 378 / 41 / 78 | 304 / 207 / 0 / 21 |
 
-26 of 32 synthetic scenarios are classified 100% correctly; the misses are listed in `synthetic_data/output/comprehensive_test/VALIDATION_SUMMARY.md`. Of the 85 confident calls in the visual audit (recorded against an earlier pipeline version), the first-peak rule reproduces 74 and the adaptive rule 73; almost every difference is a well with a 0.05-0.13 OD rise that the present 0.15 OD growth gate rejects.
+Over all 1139 curves under one flat rule, ignoring the scoring policy: 81.9% accuracy, 81.3% balanced. The two held-out blocks are `a_not_identifiable` (80 curves whose run stops before the plateau) at 85.0% and `preprocessing_blind` (99 curves carrying a per-well artefact the preprocessing step averages away before the pipeline sees it) at 24.2%. Both held-out figures are flat-rule figures: correct means the accept/reject verdict matched the truth. `report.json` scores `a_not_identifiable` under a second, stricter block rule as well (correct if the curve was rejected, or the fitted A is within 15 % of the observed final OD and no more than 1.20 x the last observed point), which it passes 12 times out of 80 -- 15.0 %. The verdict is right on 68 of the 80 while the reported amplitude is supportable on 12, which is the whole reason the block is outside the headline. `docs/BENCHMARK_LEDGER.md` and the rendered summary both carry the pair.
+
+**ML Classifier (5-fold CV on the synthetic suite; the 85 audited real curves are an external test set, never trained on):**
+
+| Metric | Synthetic CV (post-fit) | Real audit set (66 fitted) |
+|--------|-------|-------|
+| Accuracy | 91.9% | 81.8% |
+| Precision | 91.3% | 100.0% |
+| Recall | 94.9% | 78.2% |
+| Specificity | 87.9% | 100.0% |
+
+Retraining on the rebuilt suite made the model markedly more conservative: on the real audit curves it now makes no false-GOOD calls at all (specificity 1.00 against 0.91 before) at the cost of calling 12 real GOOD curves BAD, and accuracy fell from 90.9% to 81.8%. That is a regression in accuracy and is published as one; the deployed thresholds (0.70 / 0.30) were not changed. Before/after on identical rows is in `models/feature_config.json` and section 9 of `docs/BENCHMARK_LEDGER.md`.
+
+47 of the 64 synthetic scenarios are classified 100% correctly; every scenario, every miss and the gate that fired on it are in `synthetic_data/benchmark/v2/report.json` and in the markdown summary `make validation-summary` renders from it (a build artefact, rendered into the run directory on demand, never hand-edited and never committed). Of the 85 confident calls in the visual audit (recorded against an earlier pipeline version), the first-peak rule reproduces 74 and the adaptive rule 73; almost every difference is a well with a 0.05-0.13 OD rise that the present 0.15 OD growth gate rejects.
 
 ### Truncation Method Comparison
 
@@ -511,7 +518,7 @@ Trains a two-stage ML classifier for growth curve quality classification:
 1. **Pre-fit gate** (8 raw features + 2 metadata) — rejects obvious junk before expensive truncation/fitting
 2. **Post-fit classifier** (22 fit features + 2 metadata) — three-class output: GOOD / BORDERLINE / BAD
 
-Features include biological metadata (`is_control`, `concentration_numeric`) parsed from strain names, enabling the model to learn that water/LB controls with growth signals are suspicious.
+Features include biological metadata (`is_control`, `concentration_numeric`) parsed from strain names. On synthetic training data those two columns are constant, so the model cannot learn anything from them there, and on the real audit set the metadata features carry no discriminative signal; they are kept for real-plate training, not because they are doing work today.
 
 ```bash
 # Train with 70/30 holdout validation
@@ -524,7 +531,7 @@ python 09_train_classifier.py --compare
 python 01_growth_curve_analysis.py DATA_DIR -o OUTPUT_DIR --ml-classify
 ```
 
-**Training data:** 480 synthetic curves. The 85 audited real curves (7 "unsure" excluded) are an external test set and are never trained on.
+**Training data:** 1059 synthetic curves enter training (565 GOOD / 494 BAD), 936 of them reaching the post-fit stage. 80 curves are excluded as not trainable (their asymptote is not identifiable from the observed window) and 15 train-split rows are dropped by the label-agreement guard, from `short_experiment` and `short_lag`. The 85 audited real curves (7 "unsure" excluded) are an external test set and are never trained on.
 **Held-out test (30%) and real-data metrics:** written to `models/feature_config.json` by the training run.
 
 ### `ml_classifier.py` - ML Classifier Runtime Module

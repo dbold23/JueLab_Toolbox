@@ -41,8 +41,80 @@ DATA_DIR = COMPREHENSIVE / 'test_data' / 'DATA'
 AUDIT_CSV = REPO_ROOT / 'results' / 'tables' / 'validation_audit.csv'
 RESULTS_DIR = REPO_ROOT / 'results' / 'tables'
 
+#: Where a scored synthetic run leaves its results now.  ``validation_latest/``
+#: was a single mode-less directory whose numbers could not be attributed to a
+#: truncation mode; runs land in ``validation/<mode>/`` and the published one is
+#: copied to ``synthetic_data/benchmark/v2/``, which is tracked and survives
+#: ``make clean``.  Tried in that order.
+SYNTHETIC_RESULT_CANDIDATES = (
+    COMPREHENSIVE / 'validation' / 'first_peak' / 'processing_results.csv',
+    COMPREHENSIVE / 'validation' / 'adaptive' / 'processing_results.csv',
+    SYNTH / 'benchmark' / 'v2' / 'processing_results.csv',
+)
+
+
+def synthetic_results_csv():
+    """The most authoritative synthetic processing_results.csv in the tree."""
+    for candidate in SYNTHETIC_RESULT_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
+
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(SYNTH))
+
+
+# ---------------------------------------------------------------------------
+# Thread caps for this file only.
+#
+# Every model trained here is trained on tens of rows, so the OpenMP pool that
+# HistGradientBoostingClassifier opens buys nothing and its threads spin-wait.
+# Measured on this 4-core box: this file plus tests/test_ml_classifier.py and
+# tests/synthetic/test_ml_training.py finish in 19 s with the caps in place and
+# had not finished after five and a half minutes without them, because each
+# trainer subprocess opens its own pool on top of the parent's.
+#
+# The caps belong process-wide -- tests/conftest.py is the only place that gets
+# them in before any module imports sklearn -- but that file is nobody's to
+# edit in this rebuild, so this file caps itself and hands the process-wide
+# change to the orchestrator.  ``pytest.MonkeyPatch`` undoes the environment
+# when this module is done, and ``threadpoolctl`` handles the runtimes already
+# loaded, which a late environment variable cannot reach.
+# ---------------------------------------------------------------------------
+THREAD_CAP_VARS = ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS',
+                   'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS')
+
+
+@pytest.fixture(scope='module', autouse=True)
+def single_threaded_math():
+    """Cap OpenMP/BLAS threads while this file runs (subprocesses included).
+
+    Module scoped, not session scoped, so the caps do not leak into test files
+    this package does not own: they are set when this file starts and undone
+    when it ends.
+    """
+    patch = pytest.MonkeyPatch()
+    for var in THREAD_CAP_VARS:
+        patch.setenv(var, '1')
+    try:
+        from threadpoolctl import threadpool_limits
+    except ImportError:                                        # pragma: no cover
+        try:
+            yield
+        finally:
+            patch.undo()
+        return
+    try:
+        with threadpool_limits(1):
+            yield
+    finally:
+        patch.undo()
+
+
+def child_env(**extra):
+    """Environment for a trainer subprocess: Agg, single-threaded, plus extra."""
+    return {**os.environ, 'MPLBACKEND': 'Agg',
+            **{var: '1' for var in THREAD_CAP_VARS}, **extra}
 
 
 def _load_trainer():
@@ -269,8 +341,8 @@ class TestRealAuditLabels:
 
 @pytest.fixture(scope='module')
 def merged(trainer):
-    pr = COMPREHENSIVE / 'validation_latest' / 'processing_results.csv'
-    if not (GROUND_TRUTH.exists() and pr.exists()):
+    pr = synthetic_results_csv()
+    if not (GROUND_TRUTH.exists() and pr is not None):
         pytest.skip('synthetic ground truth / results not present')
     return trainer.load_training_data(str(GROUND_TRUTH), str(pr))
 
@@ -300,15 +372,31 @@ class TestSyntheticMergeKeepsFeatures:
 # ---------------------------------------------------------------------------
 
 GOOD_SUBSET_SCENARIOS = ['standard', 'very_clean', 'high_A', 'fast_growth']
-BAD_SUBSET_SCENARIOS = ['high_noise', 'borderline_noise', 'erratic',
-                        'minimal_growth', 'contamination', 'flat_no_growth']
+#: BAD scenarios chosen so that the subset contains curves that are bad
+#: BECAUSE OF THEIR FIT, not only because they are flat.  ``noise_ladder_3`` and
+#: ``noise_ladder_4`` fit at median R2 0.66 and 0.30 with delta-OD 1.8 and 2.1;
+#: without them every BAD curve in the subset is separable on amplitude alone
+#: and the two "does the classifier read fit quality?" tests below test nothing.
+#: (The oracle label rule moved most of ``high_noise`` and all of
+#: ``borderline_noise`` to GOOD, which is what emptied the old list.)
+BAD_SUBSET_SCENARIOS = ['high_noise', 'noise_ladder_3', 'noise_ladder_4',
+                        'erratic', 'minimal_growth', 'contamination',
+                        'flat_no_growth']
 
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope='session')
 def synthetic_subset(tmp_path_factory):
-    """A small synthetic DATA directory (fast to fit) plus its ground truth."""
-    source = DATA_DIR / 'SYNTHETIC_400pts_99h_DATA.csv'
-    if not (source.exists() and GROUND_TRUTH.exists()):
+    """A small synthetic DATA directory (fast to fit) plus its ground truth.
+
+    The plate is found by globbing, never by name: the v1 files were called
+    ``SYNTHETIC_400pts_99h_DATA.csv`` and the regenerated suite calls the same
+    grid ``SYNTHETIC_400pts_100h_15m_DATA.csv`` (the name now carries the time
+    resolution, because bucketing two resolutions into one plate is what the
+    grid guard exists to prevent).  A hard-coded name did not fail here -- it
+    skipped, silently, and took nine other tests with it.
+    """
+    plates = sorted(DATA_DIR.glob('SYNTHETIC_*pts_*_DATA.csv'))
+    if not (plates and GROUND_TRUTH.exists()):
         pytest.skip('synthetic test data not present')
 
     gt = pd.read_csv(GROUND_TRUTH)
@@ -316,6 +404,13 @@ def synthetic_subset(tmp_path_factory):
     for scenario in GOOD_SUBSET_SCENARIOS + BAD_SUBSET_SCENARIOS:
         keep += list(gt.loc[gt['scenario'] == scenario, 'strain_name'].head(5))
 
+    # The scenarios above share one time grid, so one plate holds them all;
+    # pick the plate that covers the most of them rather than assuming which.
+    def _covered(path):
+        header = pd.read_csv(path, nrows=0).columns
+        return sum(1 for c in header if any(k in c for k in keep))
+
+    source = max(plates, key=_covered)
     df = pd.read_csv(source)
     columns = [df.columns[0]] + [c for c in df.columns
                                  if any(k in c for k in keep)]
@@ -324,7 +419,7 @@ def synthetic_subset(tmp_path_factory):
     root = tmp_path_factory.mktemp('synthetic_subset')
     data_dir = root / 'DATA'
     data_dir.mkdir()
-    df[columns].to_csv(data_dir / 'SYNTHETIC_400pts_99h_DATA.csv', index=False)
+    df[columns].to_csv(data_dir / source.name, index=False)
     return {'root': root, 'data_dir': data_dir, 'n_curves': len(columns) - 1}
 
 
@@ -453,18 +548,27 @@ class TestTrainerCommandLine:
              '--output', str(tmp_path / 'models'),
              '--n-folds', '3'],
             capture_output=True, text=True, cwd=str(REPO_ROOT),
-            env={**os.environ, 'MPLBACKEND': 'Agg'},
+            env=child_env(),
         )
         assert proc.returncode != 0, 'training accepted single-class post-fit data'
         assert 'all one class' in proc.stdout
 
-    def test_ml_gated_results_are_detected(self, trainer, training_features):
-        validation = COMPREHENSIVE / 'validation_latest' / 'processing_results.csv'
+    def test_ml_gated_results_are_detected(self, trainer, training_features, tmp_path):
         assert trainer.results_are_ml_gated(training_features) is False
-        if validation.exists():
-            gated = pd.read_csv(validation)
-            if gated['p_good'].notna().any():
-                assert trainer.results_are_ml_gated(validation) is True
+
+        # A published run must NOT be ML-gated; and a hand-made gated file must
+        # be detected, so the check is exercised whichever way the tree is.
+        published = synthetic_results_csv()
+        if published is not None:
+            assert trainer.results_are_ml_gated(published) is False, (
+                f'{published} was produced with --ml-classify; its gate-rejected '
+                'curves carry no fit features and it must not train a classifier')
+
+        gated = pd.read_csv(training_features)
+        gated['p_good'] = 0.9
+        path = tmp_path / 'ml_gated_results.csv'
+        gated.to_csv(path, index=False)
+        assert trainer.results_are_ml_gated(path) is True
 
     def test_default_does_not_train_on_the_ml_gated_validation_run(self):
         out = subprocess.run(
@@ -493,7 +597,7 @@ class TestTrainerCommandLine:
              '--validate-real',
              '--n-folds', '3'],
             capture_output=True, text=True, cwd=str(REPO_ROOT),
-            env={**os.environ, 'MPLBACKEND': 'Agg'},
+            env=child_env(),
         )
         assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-4000:]
         assert 'no data leakage' not in proc.stdout.lower()
@@ -515,3 +619,71 @@ class TestTrainerCommandLine:
         external = config['real_audit_holdout']['external_test_results']
         assert external is not None
         assert external['n_curves'] == 85
+
+
+# ---------------------------------------------------------------------------
+# The model that actually ships (models/), as opposed to a model trained in a
+# fixture.  tests/synthetic/test_ml_training.py asserts the same property on a
+# freshly trained subset; this one asserts it of the artefact in the tree.
+# ---------------------------------------------------------------------------
+
+MODELS_DIR = REPO_ROOT / 'models'
+SHIPPED_CONFIG = MODELS_DIR / 'feature_config.json'
+
+
+@pytest.fixture(scope='module')
+def shipped():
+    if not SHIPPED_CONFIG.exists():
+        pytest.skip('models/feature_config.json not present')
+    return json.loads(SHIPPED_CONFIG.read_text())
+
+
+class TestShippedModel:
+
+    def test_no_constant_shipped_feature(self, shipped):
+        """A feature the model cannot split on is a feature it does not have.
+
+        The two metadata columns were NaN for every synthetic row, so the
+        shipped classifier carried features that could not move a prediction
+        while the model card counted them as inputs.  The trainer now records
+        the constant columns; the deployment lists must be empty, and where the
+        joblib files are present the estimator must agree.
+        """
+        constant = shipped['constant_features']
+        assert constant['prefit_deployment'] == [], constant['prefit_deployment']
+        assert constant['postfit_deployment'] == [], constant['postfit_deployment']
+
+        joblibs = [MODELS_DIR / 'prefit_gate.joblib',
+                   MODELS_DIR / 'postfit_classifier.joblib']
+        if not all(p.exists() for p in joblibs):
+            pytest.skip('models/*.joblib are untracked and not in this tree')
+
+        import joblib
+
+        for path, names_key in ((joblibs[0], 'prefit_feature_names'),
+                                (joblibs[1], 'postfit_feature_names')):
+            model = joblib.load(path)
+            estimator = getattr(model, 'named_steps', {}).get('clf', model)
+            bins = getattr(estimator, '_bin_mapper', None)
+            bins = getattr(bins, 'n_bins_non_missing_', None)
+            if bins is None:
+                continue                     # not a histogram-gradient model
+            names = shipped[names_key]
+            assert len(bins) == len(names), path.name
+            flat = [n for n, b in zip(names, bins) if b < 2]
+            assert flat == [], f'{path.name} ships constant feature(s): {flat}'
+
+    def test_the_model_card_names_its_truncation_mode_and_training_set(self, shipped):
+        """A classifier is only comparable against another of the same mode."""
+        assert shipped['truncation_mode'] in ('first_peak', 'adaptive', 'global_max')
+        assert shipped['trained_on'] == 'synthetic_only'
+        assert shipped['real_audit_holdout']['used_for_training'] is False
+        assert isinstance(shipped['n_training_samples'], int)
+        assert shipped['n_training_samples'] > 0
+
+    def test_the_shipped_model_was_trained_on_the_committed_truth_schema(self, shipped):
+        """The card records which truth schema and label rule it learned from."""
+        from src import truth
+
+        assert str(shipped['truth_schema_version']) == truth.TRUTH_SCHEMA_VERSION
+        assert str(shipped['label_rule_version']) == truth.LABEL_RULE_VERSION

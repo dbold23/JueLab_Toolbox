@@ -11,7 +11,7 @@ This module generates realistic synthetic OD600 growth curves covering every pos
 - **Multiple Growth Models**: Gompertz, Baranyi, Logistic, and Richards models
 - **Death Phase Modeling**: Exponential decay after stationary phase
 - **Realistic Noise**: OD-dependent, instrument-based, and RMSE-targeted noise
-- **Comprehensive Scenarios**: 64 scenarios / 1057 requested curves (about 1140 rows once artefact scenarios add their artefact-free twin), 10 good, 15 bad and 39 edge-case
+- **Comprehensive Scenarios**: 64 scenarios / 1057 requested curves (1139 rows at seed 42, once artefact scenarios add their artefact-free twin), 10 good, 15 bad and 39 edge-case
 - **Pipeline Validation**: Automated comparison of expected vs actual classifications
 - **TECAN-Compatible Output**: Generates CSV files matching the expected pipeline format
 
@@ -36,7 +36,7 @@ pip install -r requirements.txt
 ### 1. Generate Comprehensive Test Data
 
 ```bash
-# Generate the full suite (about 1140 rows at seed 42) covering all 64 scenarios
+# Generate the full suite (1139 rows at seed 42) covering all 64 scenarios
 python scripts/generate_comprehensive.py --output output/full_test
 
 # Quick test with fewer curves
@@ -79,8 +79,35 @@ The truncation mode comes from `run_settings.json`; pass
 `--truncation-mode first_peak|adaptive` when the run wrote no sidecar. The
 benchmark writes `report.json`, `per_curve.csv`, `per_scenario.csv`,
 `gate_attribution.csv`, `per_scenario_recovery.csv` and the comparison figures.
-`scripts/validation_summary.py` renders the human-readable markdown from a
-scored run; see its `--help` for the paths it takes.
+
+### 5. Render the markdown summary
+
+`scripts/validation_summary.py` renders `VALIDATION_SUMMARY.md` from one scored
+run. It reads that run's `report.json` and nothing else, so the markdown cannot
+disagree with the JSON, and it takes a single `--run-dir`:
+
+```bash
+# render the run make step-9 just produced
+python scripts/validation_summary.py --run-dir output/comprehensive_test/validation/first_peak
+
+# no arguments: the first run directory that exists, falling back to the
+# tracked copy of the published run (benchmark/v2)
+python scripts/validation_summary.py
+```
+
+Each truncation mode is a separate benchmark and gets its own rendering inside
+its own run directory: the rendering goes beside the `report.json` it came from
+(`<run-dir>/VALIDATION_SUMMARY.md`) unless `--output` says otherwise, so the
+renderer never writes outside the directory it was pointed at. Rendering a
+committed snapshot (`benchmark/v1`, `benchmark/v2`) writes to **stdout** rather
+than dropping an extra file into a snapshot whose `MANIFEST.json` enumerates it;
+pass `--output` to save it. `make validation-summary` does this for you.
+
+The rendered markdown is a build artefact and **no copy of it is committed**:
+render it when you want it, and cite `report.json` when you want to quote a
+number. That is why nothing in the repository can hold a stale summary. The one
+committed `VALIDATION_SUMMARY.md`, `benchmark/v1/VALIDATION_SUMMARY.md`, states
+the pre-rebuild v1 numbers and is labelled as history. Never hand-edit either.
 
 ## Project Structure
 
@@ -355,6 +382,34 @@ with its prevalence stated next to it.
 Every published number names its truncation mode, seed, dataset hash and git
 SHA; those come from the run's `run_settings.json` and the suite's
 `MANIFEST.json`.
+
+### The published headline
+
+First-peak truncation, seed 42, 1139 curves. The headline is scored over the
+960 curves the present gate set can decide fairly; the other 179 are scored
+separately, not dropped.
+
+| | full suite (n=960) | the original 32 scenarios (n=532) |
+|---|---:|---:|
+| balanced accuracy | 87.9 % | 96.8 % |
+| sensitivity | 85.6 % | 93.5 % |
+| specificity | 90.2 % | 100.0 % |
+| accuracy | 87.6 % | 96.1 % |
+| TP / TN / FP / FN | 463 / 378 / 41 / 78 | 304 / 207 / 0 / 21 |
+
+All 1139 curves under one flat rule, nothing excluded: 81.9 % accuracy, 81.3 %
+balanced.
+
+- `<run-dir>/VALIDATION_SUMMARY.md` -- the markdown summary of a run, rendered
+  from its `report.json` by `scripts/validation_summary.py`
+  (`make validation-summary`). A build artefact: rendered on demand, never
+  hand-edited and never committed, so no stale copy of it can exist here.
+- `benchmark/v2/` -- the tracked copy of the run itself (`report.json`,
+  `per_curve.csv`, `per_scenario.csv`, `gate_attribution.csv`, `HEADLINE.json`).
+- `benchmark/v1/` -- the frozen pre-rebuild baseline, kept so the older
+  published numbers stay checkable. Its numbers describe v1 data and are not
+  current.
+- `../docs/BENCHMARK_LEDGER.md` -- what moved between the two, and why.
 
 ## Usage Examples
 
