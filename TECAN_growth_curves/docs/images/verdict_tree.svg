@@ -1,0 +1,51 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 880 616' width='880' height='616' font-family='-apple-system, Segoe UI, Helvetica, Arial, sans-serif' font-size='14' fill='#1f2328'>
+<rect width='880' height='616' fill='#ffffff'/>
+<rect x='190' y='16' width='220' height='46' rx='10' fill='#2a78d6' fill-opacity='0.12' stroke='#2a78d6' stroke-width='2'/><text x='300.0' y='36.0' text-anchor='middle' font-size='12.5' font-weight='600' fill='#1f2328' >Rise above baseline?</text><text x='300.0' y='52.0' text-anchor='middle' font-size='12.5' font-weight='normal' fill='#1f2328' >SNR ≥ 3  or  Δ OD ≥ 0.5</text>
+<rect x='190' y='96' width='220' height='46' rx='10' fill='#2a78d6' fill-opacity='0.12' stroke='#2a78d6' stroke-width='2'/><text x='300.0' y='116.0' text-anchor='middle' font-size='12.5' font-weight='600' fill='#1f2328' >A usable window?</text><text x='300.0' y='132.0' text-anchor='middle' font-size='12.5' font-weight='normal' fill='#1f2328' >≥ 20 points, peak not at start</text>
+<rect x='190' y='176' width='220' height='46' rx='10' fill='#2a78d6' fill-opacity='0.12' stroke='#2a78d6' stroke-width='2'/><text x='300.0' y='196.0' text-anchor='middle' font-size='12.5' font-weight='600' fill='#1f2328' >Fit converged?</text><text x='300.0' y='212.0' text-anchor='middle' font-size='12.5' font-weight='normal' fill='#1f2328' >inside the allowed ranges</text>
+<rect x='190' y='256' width='220' height='62' rx='10' fill='#4a3aa7' fill-opacity='0.12' stroke='#4a3aa7' stroke-width='2'/><text x='300.0' y='276.0' text-anchor='middle' font-size='12.5' font-weight='600' fill='#1f2328' >Always-on gates</text><text x='300.0' y='292.0' text-anchor='middle' font-size='12.5' font-weight='normal' fill='#1f2328' >R² ≥ 0.95, A and μ error ≤ 20 %,</text><text x='300.0' y='308.0' text-anchor='middle' font-size='12.5' font-weight='normal' fill='#1f2328' >Δ OD ≥ 0.15, A ≥ 3 × noise</text>
+<rect x='190' y='352' width='220' height='46' rx='10' fill='#2a78d6' fill-opacity='0.12' stroke='#2a78d6' stroke-width='2'/><text x='300.0' y='372.0' text-anchor='middle' font-size='12.5' font-weight='600' fill='#1f2328' >Excellent fit?</text><text x='300.0' y='388.0' text-anchor='middle' font-size='12.5' font-weight='normal' fill='#1f2328' >R² ≥ 0.98</text>
+<rect x='190' y='432' width='220' height='62' rx='10' fill='#4a3aa7' fill-opacity='0.12' stroke='#4a3aa7' stroke-width='2'/><text x='300.0' y='452.0' text-anchor='middle' font-size='12.5' font-weight='600' fill='#1f2328' >Noise gates</text><text x='300.0' y='468.0' text-anchor='middle' font-size='12.5' font-weight='normal' fill='#1f2328' >SNR ≥ 5, Δ OD − 2σ ≥ 0.1,</text><text x='300.0' y='484.0' text-anchor='middle' font-size='12.5' font-weight='normal' fill='#1f2328' >monotone ≥ 0.55, autocorr ≤ 0.7</text>
+<rect x='240' y='530' width='120' height='40' rx='10' fill='#0ca30c' fill-opacity='0.12' stroke='#0ca30c' stroke-width='2'/><text x='300.0' y='555.0' text-anchor='middle' font-size='12.5' font-weight='600' fill='#1f2328' >GOOD</text>
+<rect x='640' y='16' width='200' height='46' rx='10' fill='#fab219' fill-opacity='0.12' stroke='#fab219' stroke-width='2'/><text x='740.0' y='36.0' text-anchor='middle' font-size='12.5' font-weight='600' fill='#1f2328' >NOT FITTED</text><text x='740.0' y='52.0' text-anchor='middle' font-size='12.5' font-weight='normal' fill='#1f2328' >too flat to fit</text>
+<rect x='640' y='96' width='200' height='46' rx='10' fill='#fab219' fill-opacity='0.12' stroke='#fab219' stroke-width='2'/><text x='740.0' y='116.0' text-anchor='middle' font-size='12.5' font-weight='600' fill='#1f2328' >NOT FITTED</text><text x='740.0' y='132.0' text-anchor='middle' font-size='12.5' font-weight='normal' fill='#1f2328' >no growth window</text>
+<rect x='640' y='176' width='200' height='46' rx='10' fill='#d03b3b' fill-opacity='0.12' stroke='#d03b3b' stroke-width='2'/><text x='740.0' y='196.0' text-anchor='middle' font-size='12.5' font-weight='600' fill='#1f2328' >BAD</text><text x='740.0' y='212.0' text-anchor='middle' font-size='12.5' font-weight='normal' fill='#1f2328' >fit failed</text>
+<rect x='640' y='264' width='200' height='46' rx='10' fill='#d03b3b' fill-opacity='0.12' stroke='#d03b3b' stroke-width='2'/><text x='740.0' y='284.0' text-anchor='middle' font-size='12.5' font-weight='600' fill='#1f2328' >BAD</text><text x='740.0' y='300.0' text-anchor='middle' font-size='12.5' font-weight='normal' fill='#1f2328' >with the gate that failed</text>
+<rect x='640' y='440' width='200' height='46' rx='10' fill='#d03b3b' fill-opacity='0.12' stroke='#d03b3b' stroke-width='2'/><text x='740.0' y='460.0' text-anchor='middle' font-size='12.5' font-weight='600' fill='#1f2328' >BAD</text><text x='740.0' y='476.0' text-anchor='middle' font-size='12.5' font-weight='normal' fill='#1f2328' >with the gate that failed</text>
+<line x1='300' y1='62' x2='300' y2='88' stroke='#6b7280' stroke-width='2'/>
+<polygon points='295,87 305,87 300,96' fill='#6b7280'/>
+<text x='312.0' y='79.0' text-anchor='start' font-size='11.5' font-weight='normal' fill='#6b7280' >yes</text>
+<line x1='300' y1='142' x2='300' y2='168' stroke='#6b7280' stroke-width='2'/>
+<polygon points='295,167 305,167 300,176' fill='#6b7280'/>
+<text x='312.0' y='159.0' text-anchor='start' font-size='11.5' font-weight='normal' fill='#6b7280' >yes</text>
+<line x1='300' y1='222' x2='300' y2='248' stroke='#6b7280' stroke-width='2'/>
+<polygon points='295,247 305,247 300,256' fill='#6b7280'/>
+<text x='312.0' y='239.0' text-anchor='start' font-size='11.5' font-weight='normal' fill='#6b7280' >yes</text>
+<line x1='300' y1='318' x2='300' y2='344' stroke='#6b7280' stroke-width='2'/>
+<polygon points='295,343 305,343 300,352' fill='#6b7280'/>
+<text x='312.0' y='335.0' text-anchor='start' font-size='11.5' font-weight='normal' fill='#6b7280' >all pass</text>
+<line x1='300' y1='398' x2='300' y2='424' stroke='#6b7280' stroke-width='2'/>
+<polygon points='295,423 305,423 300,432' fill='#6b7280'/>
+<text x='312.0' y='415.0' text-anchor='start' font-size='11.5' font-weight='normal' fill='#6b7280' >no</text>
+<line x1='300' y1='494' x2='300' y2='522' stroke='#6b7280' stroke-width='2'/>
+<polygon points='295,521 305,521 300,530' fill='#6b7280'/>
+<text x='312.0' y='512.0' text-anchor='start' font-size='11.5' font-weight='normal' fill='#6b7280' >all pass</text>
+<path d='M410,375 C 520,375 520,550 360,550' fill='none' stroke='#0ca30c' stroke-width='2' stroke-dasharray='6 4'/>
+<text x='384' y='556' text-anchor='start' font-size='11.5' font-weight='normal' fill='#0ca30c' >yes: noise gates skipped</text>
+<line x1='410' y1='39' x2='632' y2='39' stroke='#fab219' stroke-width='2'/>
+<polygon points='630,34 640,39 630,44' fill='#fab219'/>
+<text x='420' y='33' text-anchor='start' font-size='11.5' font-weight='normal' fill='#6b7280' >no</text>
+<line x1='410' y1='119' x2='632' y2='119' stroke='#fab219' stroke-width='2'/>
+<polygon points='630,114 640,119 630,124' fill='#fab219'/>
+<text x='420' y='113' text-anchor='start' font-size='11.5' font-weight='normal' fill='#6b7280' >no</text>
+<line x1='410' y1='199' x2='632' y2='199' stroke='#d03b3b' stroke-width='2'/>
+<polygon points='630,194 640,199 630,204' fill='#d03b3b'/>
+<text x='420' y='193' text-anchor='start' font-size='11.5' font-weight='normal' fill='#6b7280' >no</text>
+<line x1='410' y1='287' x2='632' y2='287' stroke='#d03b3b' stroke-width='2'/>
+<polygon points='630,282 640,287 630,292' fill='#d03b3b'/>
+<text x='420' y='281' text-anchor='start' font-size='11.5' font-weight='normal' fill='#6b7280' >any fails</text>
+<line x1='410' y1='463' x2='632' y2='463' stroke='#d03b3b' stroke-width='2'/>
+<polygon points='630,458 640,463 630,468' fill='#d03b3b'/>
+<text x='420' y='457' text-anchor='start' font-size='11.5' font-weight='normal' fill='#6b7280' >any fails</text>
+<text x='440.0' y='600' text-anchor='middle' font-size='11.5' font-weight='normal' fill='#6b7280' >Thresholds shown are the defaults; the sliders in the sidebar change them and the manual text follows.</text>
+</svg>

@@ -1,10 +1,25 @@
 """
 Tests for Gompertz model fitting and related functions.
 """
+import importlib.util
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from growth_models import GompertzModel
+
+
+@pytest.fixture(scope="module")
+def analysis():
+    """The validated numerical core (scripts/01_growth_curve_analysis.py)."""
+    spec = importlib.util.spec_from_file_location(
+        "analysis",
+        str(Path(__file__).parent.parent / "scripts" / "01_growth_curve_analysis.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 class TestGompertzModel:
@@ -59,18 +74,6 @@ class TestGompertzModel:
 class TestGompertzFit:
     """Test the pipeline's Gompertz fitting function (fit_gompertz)."""
 
-    @pytest.fixture(scope="class")
-    def analysis(self):
-        import importlib.util
-        from pathlib import Path
-        spec = importlib.util.spec_from_file_location(
-            "analysis",
-            str(Path(__file__).parent.parent / "scripts" / "01_growth_curve_analysis.py")
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
-
     def test_fit_good_curve_succeeds(self, analysis, good_growth_curve):
         """fit_gompertz should succeed and recover parameters on a clean growth curve."""
         time, noisy, clean = good_growth_curve
@@ -88,32 +91,42 @@ class TestGompertzFit:
         assert abs(result.mu_opt - 0.2) < 0.15
 
     def test_fit_flat_curve_poor_r2(self, analysis, flat_curve):
-        """fit_gompertz on flat data should produce poor R² or fail."""
+        """fit_gompertz on flat data must not look like a good fit."""
         time, od = flat_curve
         result = analysis.fit_gompertz(time, od)
-        # Either fails or has terrible R²
+        # Either fails outright, or converges with a terrible R²
         if result.success:
             assert result.r_squared < 0.5
 
+    def test_fit_flat_curve_not_classified_good(self, analysis, flat_curve):
+        """A flat no-growth curve must never be classified GOOD."""
+        time, od = flat_curve
+        result = analysis.fit_gompertz(time, od)
+        classification = analysis.classify_by_fit_quality(
+            result, time=time, od600=od
+        )
+        assert classification.is_good is False
+
     def test_fit_constant_data(self, analysis):
-        """Fitting constant OD data should not crash."""
+        """Constant OD has no growth to fit: fail cleanly, with a reason."""
         time = np.linspace(0, 24, 100)
         od = np.full_like(time, 0.1)
         result = analysis.fit_gompertz(time, od)
-        # Should not raise; may succeed with degenerate fit or fail gracefully
-        assert hasattr(result, 'success')
+        assert result.success is False
+        assert 'no measurable growth' in result.error_message.lower()
 
     def test_fit_very_short_array(self, analysis):
-        """Fitting with <5 points should not crash."""
+        """Too few points to constrain 3 parameters: fail cleanly."""
         time = np.array([0, 1, 2])
         od = np.array([0.1, 0.2, 0.3])
         result = analysis.fit_gompertz(time, od)
-        assert hasattr(result, 'success')
+        assert result.success is False
+        assert result.error_message
 
     def test_fit_duplicate_timestamps(self, analysis):
-        """Duplicate timestamps should not cause division by zero."""
+        """Duplicate timestamps are rejected instead of dividing by zero."""
         time = np.array([0, 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
         od = np.array([0.1, 0.15, 0.15, 0.3, 0.5, 0.7, 0.85, 0.9, 0.92, 0.93, 0.93, 0.93])
         result = analysis.fit_gompertz(time, od)
-        # Should not crash (was the C1 bug); may or may not converge
-        assert hasattr(result, 'success')
+        assert result.success is False
+        assert 'strictly increasing' in result.error_message.lower()

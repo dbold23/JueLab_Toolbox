@@ -8,16 +8,23 @@ Author: Generated for BIO380SP25 Research Project
 Date: December 2024
 """
 
+import hashlib
+import json
 import os
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+import re
+import subprocess
+import sys
+import time as _clock  # 'time' is a local variable name throughout this module
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from scipy.optimize import curve_fit
 
 
@@ -48,6 +55,114 @@ TRUNCATION_PARAMS = {
 
 
 # =============================================================================
+# Quality-gate vocabulary
+# =============================================================================
+# Every rejection the fit-based pipeline can make carries a stable, machine
+# readable id in addition to its human-readable sentence. The ids are the same
+# ones ``tecan_growth.analyze.build_gates`` already uses for the interface, so
+# a gate means the same thing in the CLI, the app and every report.
+
+#: Canonical gate ids of the fit-based pipeline (the ``failed_gates`` column).
+CANONICAL_GATE_IDS = (
+    'prefit_snr',          # rule-based pre-fit SNR gate rejected the curve
+    'prefit_rejected',     # ML pre-fit gate rejected the curve
+    'too_few_points',      # not enough points to fit (before or after truncation)
+    'fit_success',         # the Gompertz optimiser did not converge
+    'r_squared',           # R2 below min_r_squared
+    'a_err_pct',           # standard error of A above max_param_error_pct
+    'mu_err_pct',          # standard error of mu above max_param_error_pct
+    'snr',                 # signal-to-noise below min_snr
+    'delta_od_ci',         # delta-OD minus 2 sigma below min_delta_od_ci
+    'delta_od',            # absolute growth below min_absolute_delta_od
+    'amplitude_vs_noise',  # fitted A below 3x baseline noise
+    'monotone',            # rising fraction below min_monotone_fraction
+    'residual_autocorr',   # lag-1 residual autocorrelation above the maximum
+    'ml_p_good',           # ML post-fit classifier called it BAD/BORDERLINE
+)
+
+#: Ids for paths outside the fit-based vocabulary: the legacy OD-threshold
+#: classifier (``--od-based``) and the early-peak guard in validate_truncation.
+#: They never occur in a fit-based run, which is what every published number
+#: uses, so they are kept separate from CANONICAL_GATE_IDS.
+EXTRA_GATE_IDS = (
+    'max_od',              # OD-based: peak OD below min_max_od
+    'initial_od',          # OD-based: starting OD above max_initial_od
+    'peak_too_early',      # growth window peaks inside the first hour
+)
+
+#: Everything a failed_gates value may contain.
+KNOWN_GATE_IDS = CANONICAL_GATE_IDS + EXTRA_GATE_IDS
+
+#: How a rejection sentence maps back to a gate id. Needed to read results that
+#: were written before the failed_gates column existed; the sentences are the
+#: literal ones produced below, so this table and the appends stay in step.
+_REASON_PATTERNS = (
+    ('Rejected by ML pre-fit gate', 'prefit_rejected'),
+    ('Pre-fit SNR too low', 'prefit_snr'),
+    ('Too few points after truncation', 'too_few_points'),
+    ('Insufficient data points', 'too_few_points'),
+    ('Maximum too early in experiment', 'peak_too_early'),
+    ('Fit failed', 'fit_success'),
+    ('Low R', 'r_squared'),
+    ('High A error', 'a_err_pct'),
+    ('High mu error', 'mu_err_pct'),
+    ('Low SNR', 'snr'),
+    ('Low signal-to-noise', 'snr'),          # the OD-threshold classifier's wording
+    ('Delta OD not significant', 'delta_od_ci'),
+    ('Insufficient growth', 'delta_od'),
+    ('Insufficient OD change', 'delta_od'),
+    ('Growth amplitude below noise', 'amplitude_vs_noise'),
+    ('Non-monotonic signal', 'monotone'),
+    ('High residual autocorrelation', 'residual_autocorr'),
+    ('Maximum OD too low', 'max_od'),
+    ('High initial OD', 'initial_od'),
+)
+
+_ML_REASON_RE = re.compile(r'^(BAD|BORDERLINE|GOOD) \(ML\): P\(good\)=')
+
+
+def gate_ids_from_reason(reason: Optional[str]) -> Tuple[List[str], List[str]]:
+    """
+    Parse a ``classification_reason`` sentence back into gate ids.
+
+    Results written before the ``failed_gates`` column existed only carry the
+    sentence, so reports have to recover the ids from it. A clause that no
+    pattern matches is returned separately instead of being dropped or guessed.
+
+    Parameters
+    ----------
+    reason : str or None
+        The value of ``classification_reason``.
+
+    Returns
+    -------
+    (ids, unmapped) : (List[str], List[str])
+        ``ids`` are canonical gate ids in the order they appear; ``unmapped``
+        holds any clause the table does not know.
+    """
+    text = '' if reason is None else str(reason).strip()
+    if not text or text.upper().startswith('GOOD'):
+        return [], []
+    if _ML_REASON_RE.match(text):
+        return ([] if text.startswith('GOOD') else ['ml_p_good']), []
+    if text.startswith('BAD:'):
+        text = text[len('BAD:'):].strip()
+    ids: List[str] = []
+    unmapped: List[str] = []
+    for clause in text.split('; '):
+        clause = clause.strip()
+        if not clause:
+            continue
+        for prefix, gate_id in _REASON_PATTERNS:
+            if clause.startswith(prefix):
+                ids.append(gate_id)
+                break
+        else:
+            unmapped.append(clause)
+    return ids, unmapped
+
+
+# =============================================================================
 # Data Classes for Results
 # =============================================================================
 
@@ -57,6 +172,9 @@ class ClassificationResult:
     is_good: bool
     reason: str
     metrics: Dict[str, float]
+    #: Canonical ids of the gates this curve failed (empty when GOOD). The
+    #: machine-readable twin of ``reason``; see CANONICAL_GATE_IDS.
+    failed_gates: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -99,6 +217,11 @@ class ProcessingResult:
     classification: ClassificationResult
     truncation: Optional[TruncationResult]
     fit: Optional[FitResult]
+    # Diagnostics added by analyze_curve(); defaults keep older callers working.
+    stage: str = "classified"          # 'prefit_rejected' | 'truncation_invalid' | 'classified'
+    is_incomplete: bool = False        # curve still rising at the end of the run
+    best_model: str = "gompertz"       # model that produced `fit`
+    prefit_snr: float = float("nan")   # pre-fit signal-to-noise ratio
 
 
 @dataclass
@@ -181,23 +304,29 @@ def classify_growth_curve(
 
     # Apply classification criteria
     reasons = []
+    failed_gates = []
 
     if metrics['delta_od'] < thresholds['min_delta_od']:
         reasons.append(f"Insufficient OD change: {metrics['delta_od']:.3f} < {thresholds['min_delta_od']}")
+        failed_gates.append('delta_od')
 
     if metrics['max_od'] < thresholds['min_max_od']:
         reasons.append(f"Maximum OD too low: {metrics['max_od']:.3f} < {thresholds['min_max_od']}")
+        failed_gates.append('max_od')
 
     if metrics['snr'] < thresholds['min_snr']:
         reasons.append(f"Low signal-to-noise: {metrics['snr']:.1f} < {thresholds['min_snr']}")
+        failed_gates.append('snr')
 
     if metrics['initial_od'] > thresholds['max_initial_od']:
         reasons.append(f"High initial OD (contamination?): {metrics['initial_od']:.3f} > {thresholds['max_initial_od']}")
+        failed_gates.append('initial_od')
 
     is_good = len(reasons) == 0
     reason = "GOOD: All criteria passed" if is_good else "BAD: " + "; ".join(reasons)
 
-    return ClassificationResult(is_good=is_good, reason=reason, metrics=metrics)
+    return ClassificationResult(is_good=is_good, reason=reason, metrics=metrics,
+                                failed_gates=failed_gates)
 
 
 def classify_by_fit_quality(
@@ -205,7 +334,8 @@ def classify_by_fit_quality(
     thresholds: Optional[Dict[str, float]] = None,
     time: Optional[np.ndarray] = None,
     od600: Optional[np.ndarray] = None,
-    is_incomplete: bool = False
+    is_incomplete: bool = False,
+    fit_window: Optional[Tuple[int, int]] = None,
 ) -> ClassificationResult:
     """
     Classify a growth curve based on Gompertz fit quality.
@@ -238,37 +368,54 @@ def classify_by_fit_quality(
     if thresholds is None:
         thresholds = FIT_QUALITY_THRESHOLDS
 
+    def _err_pct(err: float, value: float) -> float:
+        # A standard error of exactly zero means the optimiser pinned the
+        # parameter to a bound (the covariance is meaningless there); a
+        # non-finite one means the covariance could not be estimated. Both
+        # are "unknown", not "perfect", so they must fail the error gate.
+        if value is None or not np.isfinite(value) or value <= 0:
+            return float('inf')
+        if err is None or not np.isfinite(err) or err <= 0:
+            return float('inf')
+        return float(err / value * 100)
+
     metrics = {
         'r_squared': fit_result.r_squared,
         'rmse': fit_result.rmse,
         'a_opt': fit_result.a_opt,
         'mu_opt': fit_result.mu_opt,
         'lambda_opt': fit_result.lambda_opt,
-        'a_err_pct': (fit_result.a_err / fit_result.a_opt * 100) if fit_result.a_opt > 0 else float('inf'),
-        'mu_err_pct': (fit_result.mu_err / fit_result.mu_opt * 100) if fit_result.mu_opt > 0 else float('inf'),
-        'lambda_err_pct': (fit_result.lambda_err / fit_result.lambda_opt * 100) if fit_result.lambda_opt > 0 else float('inf'),
+        'a_err_pct': _err_pct(fit_result.a_err, fit_result.a_opt),
+        'mu_err_pct': _err_pct(fit_result.mu_err, fit_result.mu_opt),
+        'lambda_err_pct': _err_pct(fit_result.lambda_err, fit_result.lambda_opt),
     }
 
     reasons = []
+    failed_gates = []
 
     # Check if fit failed entirely
     if not fit_result.success:
         return ClassificationResult(
             is_good=False,
             reason=f"BAD: Fit failed - {fit_result.error_message}",
-            metrics=metrics
+            metrics=metrics,
+            failed_gates=['fit_success'],
         )
 
     # Check R²
     if fit_result.r_squared < thresholds['min_r_squared']:
         reasons.append(f"Low R²: {fit_result.r_squared:.3f} < {thresholds['min_r_squared']}")
+        failed_gates.append('r_squared')
 
     # Check parameter errors (only A and mu - lambda can be tricky near zero)
     max_err = thresholds['max_param_error_pct']
-    if metrics['a_err_pct'] > max_err:
+    # 'not (x <= max)' so that NaN/inf (unknown error) fails rather than passes
+    if not (metrics['a_err_pct'] <= max_err):
         reasons.append(f"High A error: {metrics['a_err_pct']:.1f}% > {max_err}%")
-    if metrics['mu_err_pct'] > max_err:
+        failed_gates.append('a_err_pct')
+    if not (metrics['mu_err_pct'] <= max_err):
         reasons.append(f"High mu error: {metrics['mu_err_pct']:.1f}% > {max_err}%")
+        failed_gates.append('mu_err_pct')
 
     # =====================================================================
     # Secondary quality gates (require raw data)
@@ -283,7 +430,14 @@ def classify_by_fit_quality(
         n_baseline = min(10, len(od600) // 5)
         baseline = od600[:n_baseline]
         baseline_mean = float(np.mean(baseline))
-        baseline_std = float(np.std(baseline)) if float(np.std(baseline)) > 1e-8 else 1e-8
+        # Noise floor: blank subtraction clips values at zero, so a baseline can
+        # be exactly flat. A floor of ~0.002 OD (the reader's own resolution)
+        # keeps SNR meaningful instead of ~1e8; the old 1e-8 floor made the
+        # SNR, delta-OD-CI and flatness gates impossible to fail.
+        noise_floor = float(thresholds.get('noise_floor_od', 0.002))
+        baseline_std_raw = float(np.std(baseline))
+        baseline_clipped = baseline_std_raw <= 1e-8
+        baseline_std = max(baseline_std_raw, noise_floor)
         max_od = float(np.max(od600))
         delta_od = max_od - baseline_mean
 
@@ -301,67 +455,97 @@ def classify_by_fit_quality(
             min_snr = thresholds.get('min_snr', 5.0)
             if snr < min_snr:
                 reasons.append(f"Low SNR: {snr:.1f} < {min_snr}")
+                failed_gates.append('snr')
 
             # Delta-OD confidence interval: growth must be statistically significant
             min_delta_od_ci = thresholds.get('min_delta_od_ci', 0.1)
             if delta_od_ci_lower < min_delta_od_ci:
                 reasons.append(f"Delta OD not significant: CI lower={delta_od_ci_lower:.3f} < {min_delta_od_ci}")
+                failed_gates.append('delta_od_ci')
 
         # Absolute minimum delta-OD (always enforced, even for excellent fits)
         min_delta_od = thresholds.get('min_absolute_delta_od', 0.15)
         if delta_od < min_delta_od:
             reasons.append(f"Insufficient growth: delta_od={delta_od:.3f} < {min_delta_od}")
+            failed_gates.append('delta_od')
 
         # Flatness check: fitted A must exceed noise level (always enforced)
         if fit_result.a_opt < 3 * baseline_std:
             reasons.append(f"Growth amplitude below noise: A={fit_result.a_opt:.3f} < 3*noise={3*baseline_std:.3f}")
+            failed_gates.append('amplitude_vs_noise')
 
         # Monotonicity check: real growth curves have sustained upward trends.
-        # Compute fraction of consecutive smoothed points that increase over
-        # the first 60% of data (lag + exponential phase). Pure noise is ~50%.
+        # Fraction of consecutive smoothed points that rise inside the growth
+        # window that was fitted (when known), otherwise over the first 60% of
+        # the run. Pure noise is ~50%. Judging a 100 h run on its plateau and
+        # decline phases would penalise perfectly good curves.
         smoothed_check = pd.Series(od600).rolling(
             window=5, center=True, min_periods=1
         ).mean().values
-        check_end = max(10, int(len(smoothed_check) * 0.6))
-        diffs = np.diff(smoothed_check[:check_end])
-        monotone_frac = float(np.sum(diffs > 0) / max(len(diffs), 1))
+        if fit_window is not None:
+            w0 = max(0, int(fit_window[0]))
+            w1 = min(len(smoothed_check) - 1, int(fit_window[1]))
+            segment = smoothed_check[w0:w1 + 1]
+            if len(segment) < 10:
+                segment = smoothed_check[:max(10, int(len(smoothed_check) * 0.6))]
+        else:
+            check_end = max(10, int(len(smoothed_check) * 0.6))
+            segment = smoothed_check[:check_end]
+        diffs = np.diff(segment)
+        # ties (>= 0) only arise from values clipped to zero; they are not declines
+        monotone_frac = float(np.sum(diffs >= 0) / max(len(diffs), 1))
         min_monotone = thresholds.get('min_monotone_fraction', 0.55)
         if monotone_frac < min_monotone and not fit_is_excellent:
             reasons.append(
                 f"Non-monotonic signal: {monotone_frac:.2f} < {min_monotone}"
             )
+            failed_gates.append('monotone')
 
         # Residual autocorrelation check: structured residuals indicate the
         # Gompertz model is fitting noise rather than real sigmoid growth.
+        # The lag is a fixed span of time (1 h by default), not one sample:
+        # at one sample the statistic mostly measures how densely the run
+        # was sampled and trips on nearly every 15-minute curve.
         if fit_result.success and len(fit_result.residuals) > 10:
             resid = fit_result.residuals
             n_res = len(resid)
+            lag_h = float(thresholds.get('autocorr_lag_hours', 1.0))
+            if time is not None and len(time) > 1:
+                dt = float(np.median(np.diff(np.asarray(time, dtype=float))))
+                lag = int(round(lag_h / dt)) if dt > 0 else 1
+            else:
+                lag = 1
+            lag = int(min(max(lag, 1), max(1, n_res // 4)))
             resid_mean = np.mean(resid)
             c0 = np.sum((resid - resid_mean) ** 2) / n_res
             if c0 > 1e-12:
                 c1 = np.sum(
-                    (resid[:-1] - resid_mean) * (resid[1:] - resid_mean)
+                    (resid[:-lag] - resid_mean) * (resid[lag:] - resid_mean)
                 ) / n_res
                 lag1_autocorr = c1 / c0
             else:
                 lag1_autocorr = 0.0
+            metrics['residual_autocorr_lag'] = lag
             max_autocorr = thresholds.get('max_residual_autocorr', 0.7)
             if lag1_autocorr > max_autocorr and not fit_is_excellent and not is_incomplete:
                 reasons.append(
                     f"High residual autocorrelation: {lag1_autocorr:.2f} > {max_autocorr}"
                 )
+                failed_gates.append('residual_autocorr')
             metrics['residual_autocorr'] = lag1_autocorr
 
         metrics['snr'] = snr
         metrics['delta_od'] = delta_od
         metrics['baseline_std'] = baseline_std
+        metrics['baseline_clipped'] = baseline_clipped
         metrics['monotone_fraction'] = monotone_frac
         metrics['delta_od_ci_lower'] = delta_od_ci_lower
 
     is_good = len(reasons) == 0
     reason = "GOOD: Fit quality passed" if is_good else "BAD: " + "; ".join(reasons)
 
-    return ClassificationResult(is_good=is_good, reason=reason, metrics=metrics)
+    return ClassificationResult(is_good=is_good, reason=reason, metrics=metrics,
+                                failed_gates=failed_gates)
 
 
 # =============================================================================
@@ -442,11 +626,17 @@ def detect_incomplete_curve(
     return is_incomplete, metadata
 
 
+#: Fraction of a curve's maximum growth rate below which primary growth is
+#: considered over (see find_first_local_maximum).
+PEAK_RATE_FRACTION = 0.25
+
+
 def find_first_local_maximum(
     od600: np.ndarray,
     smoothed_od: np.ndarray,
     min_growth_threshold: float = 0.1,
-    plateau_window: int = 10
+    plateau_window: int = 10,
+    time: Optional[np.ndarray] = None,
 ) -> int:
     """
     Find the FIRST local maximum after exponential growth phase.
@@ -472,8 +662,28 @@ def find_first_local_maximum(
     int
         Index of the first local maximum
     """
-    # Calculate derivative of smoothed data
-    derivative = np.diff(smoothed_od)
+    # Derivative of the smoothed data. With `time` given it is in OD per hour
+    # and the plateau test is relative to the curve's own fastest rate, so the
+    # rule does not depend on how often the reader sampled or how fast the
+    # strain grows. The peak is where the rate crosses PEAK_RATE_FRACTION of
+    # the maximum rate on the way down: the mean rate over the previous five
+    # steps was above it and the mean over the next `plateau_window` steps is
+    # at or below it. On an ideal Gompertz curve that crossing sits at ~90 %
+    # of A. Calibrated against the human-audited adaptive verdicts of the four
+    # project plates (validation_audit.csv): 25 % agrees on 83/85 conditions
+    # with a median cut 3 h from the cross-validated one; 10 % left curves
+    # with a slow secondary drift uncut and agreed on only 75/85. Without
+    # `time` the legacy per-sample thresholds apply.
+    if time is not None and len(time) == len(smoothed_od):
+        dt = np.maximum(np.diff(np.asarray(time, dtype=float)), 1e-6)
+        derivative = np.diff(smoothed_od) / dt
+        max_rate = float(np.max(derivative)) if len(derivative) else 0.0
+        rising_threshold = PEAK_RATE_FRACTION * max_rate
+        flat_threshold = PEAK_RATE_FRACTION * max_rate
+    else:
+        derivative = np.diff(smoothed_od)
+        rising_threshold = 0.001
+        flat_threshold = 0.005
 
     # Find where growth has meaningfully started (above threshold)
     # This avoids detecting noise in the lag phase as a "peak"
@@ -503,7 +713,7 @@ def find_first_local_maximum(
         upcoming_trend = np.mean(derivative[i:i+plateau_window])
 
         # Detect peak: was growing, now flattening/declining
-        if recent_growth > 0.001 and upcoming_trend <= 0.005:
+        if recent_growth > rising_threshold and upcoming_trend <= flat_threshold:
             # Verify this is a meaningful peak (not just noise)
             # The OD at this point should be at least 50% of max OD
             if smoothed_od[i] > 0.5 * np.max(smoothed_od):
@@ -945,11 +1155,21 @@ def find_optimal_truncation_v2(
     """
     n_points = len(time)
 
+    # Too few points for any scan: use everything (the smoothing below needs >= 5)
+    if n_points < max(5, min_points):
+        return TruncationLandscape(
+            best_start_idx=0, best_end_idx=n_points - 1,
+            best_end_time=float(time[-1]), best_cv_score=0.0,
+            best_model='gompertz', candidates=[], confidence=0.0,
+            bio_estimate_idx=n_points - 1
+        )
+
     # Find growth start
     if trim_noisy_start:
         start_idx, _ = find_growth_start(time, od600)
     else:
         start_idx = 0
+    observed_max_od = float(np.max(od600))
 
     # Early exit for flat / no-growth curves (skip expensive MCCV)
     signal_range = float(np.max(od600) - np.min(od600))
@@ -1044,8 +1264,9 @@ def find_optimal_truncation_v2(
                             seed=42 + end_idx)
             phase1_futures[f] = end_idx
 
-        for f in as_completed(phase1_futures):
-            end_idx = phase1_futures[f]
+        # Collect in submission order (not completion order) so results never
+        # depend on thread timing.
+        for f, end_idx in phase1_futures.items():
             cv_mean, cv_std, raw_r2, params = f.result()
             evaluated[end_idx] = _make_gompertz_candidate(
                 end_idx, cv_mean, cv_std, raw_r2, params)
@@ -1060,7 +1281,7 @@ def find_optimal_truncation_v2(
 
         # ---- Phase 2: Fine-tune around top candidates (parallel) ----
         sorted_candidates = sorted(evaluated.values(),
-                                   key=lambda c: c.cv_score, reverse=True)
+                                   key=lambda c: (-c.cv_score, c.end_idx))
         top_indices = [c.end_idx for c in sorted_candidates[:n_fine_top]]
 
         phase2_futures = {}
@@ -1080,8 +1301,7 @@ def find_optimal_truncation_v2(
                                 seed=42 + end_idx)
                 phase2_futures[f] = end_idx
 
-        for f in as_completed(phase2_futures):
-            end_idx = phase2_futures[f]
+        for f, end_idx in phase2_futures.items():
             cv_mean, cv_std, raw_r2, params = f.result()
             evaluated[end_idx] = _make_gompertz_candidate(
                 end_idx, cv_mean, cv_std, raw_r2, params)
@@ -1090,7 +1310,7 @@ def find_optimal_truncation_v2(
         if try_multi_model:
             models = _get_mccv_models()
             sorted_candidates = sorted(evaluated.values(),
-                                       key=lambda c: c.cv_score, reverse=True)
+                                       key=lambda c: (-c.cv_score, c.end_idx))
             top_for_mm = [c.end_idx for c in sorted_candidates[:3]]
 
             phase3_futures = {}
@@ -1107,8 +1327,7 @@ def find_optimal_truncation_v2(
                                     seed=42 + end_idx)
                     phase3_futures[f] = (end_idx, model_name)
 
-            for f in as_completed(phase3_futures):
-                end_idx, model_name = phase3_futures[f]
+            for f, (end_idx, model_name) in phase3_futures.items():
                 cv_mean, cv_std, raw_r2, params = f.result()
                 if cv_mean > evaluated[end_idx].cv_score:
                     p_dict = {}
@@ -1127,20 +1346,38 @@ def find_optimal_truncation_v2(
                     )
 
     # ---- Find best and compute confidence ----
-    all_candidates = sorted(evaluated.values(), key=lambda c: c.cv_score,
-                            reverse=True)
-    best = all_candidates[0]
+    all_candidates = sorted(evaluated.values(),
+                            key=lambda c: (-c.cv_score, c.end_idx))
 
-    # Confidence: how peaked is the landscape?
+    # Guard against the shortest-window collapse: a steep 30-point segment of
+    # the exponential phase can score a near-perfect hold-out R^2 while its
+    # fitted A extrapolates far above anything that was measured. Candidates
+    # whose A exceeds the observed maximum OD by more than `max_a_overshoot`
+    # describe a curve that does not exist in the data, so they are dropped
+    # when any other candidate remains. Among the candidates whose scores are
+    # statistically indistinguishable from the best (within `score_tol`), the
+    # window ending closest to the biological plateau estimate wins, so the
+    # cut lands at the end of primary growth rather than at whichever segment
+    # happened to score a hair higher.
+    max_a_overshoot = 1.15
+    score_tol = 0.002
+    plausible = [c for c in all_candidates
+                 if not c.params or c.params.get('a', 0.0) <= max_a_overshoot * observed_max_od]
+    if plausible:
+        top = plausible[0].cv_score
+        near = [c for c in plausible if c.cv_score >= top - score_tol]
+        best = min(near, key=lambda c: (abs(c.end_idx - bio_idx), -c.cv_score))
+    else:
+        best = all_candidates[0]
+
+    # Confidence: how peaked is the landscape? Zero when nothing fits at all;
+    # otherwise the fraction of candidates that are clearly worse than the best.
     scores = np.array([c.cv_score for c in all_candidates if c.cv_score > -0.5])
-    if len(scores) >= 3:
-        best_score = scores[0]
-        score_range = best_score - np.min(scores)
-        if score_range > 1e-6:
-            near_best = np.sum(scores >= 0.95 * best_score) / len(scores)
-            confidence = float(np.clip(1.0 - near_best / 0.5, 0.0, 1.0))
-        else:
-            confidence = 0.0
+    if best.cv_score <= 0 or len(scores) == 0:
+        confidence = 0.0
+    elif len(scores) >= 3:
+        near_best = float(np.sum(scores >= best.cv_score - score_tol) / len(scores))
+        confidence = float(np.clip(1.0 - near_best, 0.0, 1.0))
     else:
         confidence = 0.5
 
@@ -1171,12 +1408,15 @@ def find_optimal_truncation_v2(
                                 seed=42 + s)
                 start_futures[f] = s
 
-            for f in as_completed(start_futures):
-                s = start_futures[f]
+            # Deterministic: evaluate in ascending start order and only move the
+            # threshold when a candidate actually beats the best so far.
+            # (Previously the threshold was overwritten by every candidate in
+            # thread-completion order, so the chosen start depended on timing.)
+            for f, s in sorted(start_futures.items(), key=lambda kv: kv[1]):
                 cv_mean, _, _, _ = f.result()
                 if cv_mean > best_start_cv:
                     best_start = s
-                best_start_cv = cv_mean
+                    best_start_cv = cv_mean
     else:
         best_start = 0
 
@@ -1437,10 +1677,10 @@ def truncate_at_max(
         landscape = find_optimal_truncation_v2(time, od600)
         start_idx = landscape.best_start_idx
         truncation_idx = landscape.best_end_idx
-        actual_max_idx = np.argmax(od600[start_idx:truncation_idx]) + start_idx if truncation_idx > start_idx else start_idx
+        actual_max_idx = np.argmax(od600[start_idx:truncation_idx + 1]) + start_idx if truncation_idx >= start_idx else start_idx
     elif use_first_peak:
         # Find FIRST local maximum (scientifically appropriate for Gompertz)
-        max_idx_smoothed = find_first_local_maximum(od600, smoothed_od)
+        max_idx_smoothed = find_first_local_maximum(od600, smoothed_od, time=time)
 
         # Find actual maximum within a small window around the detected peak
         search_start = max(0, max_idx_smoothed - smoothing_window)
@@ -1480,6 +1720,76 @@ def truncate_at_max(
     )
 
 
+def truncation_from_indices(
+    time: np.ndarray,
+    od600: np.ndarray,
+    start_idx: int,
+    end_idx: int,
+    smoothing_window: int = 5
+) -> TruncationResult:
+    """
+    Build a TruncationResult from a hand-picked window (manual truncation).
+
+    Used when a person overrides the automatic cut in the lab interface: the
+    window ``[start_idx, end_idx]`` is taken as given and everything the fit
+    and the classification use -- the kept time/OD arrays, the smoothed curve,
+    the copies of the originals -- is computed exactly as ``truncate_at_max``
+    computes it, so the downstream analysis cannot tell the two apart.
+
+    The one field that can differ is the reported ``max_od``: here it is the
+    highest measured OD inside the chosen window, while ``truncate_at_max``
+    reports the peak it detected before adding its buffer points. ``max_od``
+    is only shown in plots; no gate and no fitted parameter depends on it.
+
+    Parameters
+    ----------
+    time : np.ndarray
+        Time values in hours (NaNs already removed).
+    od600 : np.ndarray
+        OD600 values matching ``time``.
+    start_idx, end_idx : int
+        Inclusive index bounds of the window to keep. They are clipped into
+        the valid range and ordered, so a slider cannot produce an empty cut.
+    smoothing_window : int
+        Rolling average window, only used for the displayed smoothed curve.
+
+    Returns
+    -------
+    TruncationResult
+        Same shape as the output of ``truncate_at_max``.
+    """
+    n = len(od600)
+    if n == 0:
+        raise ValueError("Cannot truncate an empty curve")
+    start_idx = int(min(max(int(start_idx), 0), n - 1))
+    end_idx = int(min(max(int(end_idx), start_idx), n - 1))
+
+    smoothed_od = pd.Series(od600).rolling(
+        window=smoothing_window,
+        center=True,
+        min_periods=1
+    ).mean().values
+
+    actual_max_idx = start_idx + int(np.argmax(od600[start_idx:end_idx + 1]))
+
+    return TruncationResult(
+        truncation_index=end_idx,
+        truncation_time=time[end_idx],
+        max_od=od600[actual_max_idx],
+        time_truncated=time[start_idx:end_idx + 1].copy(),
+        od_truncated=od600[start_idx:end_idx + 1].copy(),
+        time_original=time.copy(),
+        od_original=od600.copy(),
+        smoothed_od=smoothed_od,
+        start_index=start_idx
+    )
+
+
+#: A growth window whose peak comes earlier than this (hours after the first
+#: reading) is rejected as a start-of-run artefact (see validate_truncation).
+MIN_HOURS_TO_PEAK = 1.0
+
+
 def validate_truncation(result: TruncationResult, min_points: int = 20) -> Tuple[bool, str]:
     """
     Validate that truncation result is usable.
@@ -1499,12 +1809,12 @@ def validate_truncation(result: TruncationResult, min_points: int = 20) -> Tuple
     if len(result.od_truncated) < min_points:
         return False, f"Too few points after truncation: {len(result.od_truncated)} < {min_points}"
 
-    # Check if max is too early (might indicate contamination or error)
-    total_duration = result.time_original[-1] - result.time_original[0]
-    time_to_max_ratio = result.truncation_time / total_duration if total_duration > 0 else 0
-
-    if time_to_max_ratio < 0.05:  # Max within first 5% of experiment
-        return False, f"Maximum too early in experiment: {time_to_max_ratio:.1%} of total duration"
+    # A peak in the first hour is a spike or a contaminated well, not growth.
+    # This used to be 5 % of the run, which rejected legitimate fast growers
+    # (peak at 4-5 h) whenever the reader was left running for 100 h.
+    time_to_max = float(result.truncation_time - result.time_original[0])
+    if time_to_max < MIN_HOURS_TO_PEAK:
+        return False, f"Maximum too early in experiment: {time_to_max:.2f} h < {MIN_HOURS_TO_PEAK:g} h"
 
     return True, "Truncation valid"
 
@@ -1606,7 +1916,9 @@ def richards_model(t: np.ndarray, A: float, k: float, t_mid: float, nu: float) -
         Shape parameter (asymmetry)
     """
     if abs(nu) < 1e-6:
-        return gompertz_model(t, A, k * A / np.e, t_mid - A / (k * np.e))
+        # nu -> 0 limit of the Richards curve is the Gompertz curve with
+        # mu = k*A/e and lag = t_mid - 1/k
+        return gompertz_model(t, A, k * A / np.e, t_mid - 1.0 / k)
     with np.errstate(over='ignore', invalid='ignore'):
         base = np.clip(1 + nu * np.exp(-k * (t - t_mid)), 1e-10, None)
         y = A * np.power(base, -1.0 / nu)
@@ -1636,19 +1948,32 @@ def fit_gompertz(
         Contains optimized parameters, errors, and fit quality metrics
     """
     try:
-        # Initial parameter estimates
-        a_init = np.max(od600)
+        time = np.asarray(time, dtype=float)
+        od600 = np.asarray(od600, dtype=float)
+        # ---- input validation: fail with a clear message, never with a stack trace
+        if len(time) != len(od600) or len(od600) < 4:
+            raise ValueError(f"need at least 4 points, got {len(od600)}")
+        if not (np.all(np.isfinite(time)) and np.all(np.isfinite(od600))):
+            raise ValueError("time and OD must be finite (remove NaN/inf first)")
+        if np.any(np.diff(time) <= 0):
+            raise ValueError("time must be strictly increasing (sort and drop duplicate time stamps)")
+        if np.max(od600) <= 0 or (np.max(od600) - np.min(od600)) < 1e-6:
+            raise ValueError("no measurable growth (flat or non-positive curve)")
+
+        # Initial parameter estimates (kept inside the bounds below)
+        a_init = max(float(np.max(od600)), 0.02)
 
         # Estimate mu from maximum growth region
         diff = np.diff(od600)
-        dt = np.maximum(np.diff(time), 1e-6)
+        dt = np.diff(time)
         growth_rates = diff / dt
-        mu_init = np.max(growth_rates) if len(growth_rates) > 0 else 0.1
+        mu_init = float(np.max(growth_rates)) if len(growth_rates) > 0 else 0.1
         mu_init = max(mu_init, 0.01)  # Ensure positive
 
         # Estimate lambda (lag phase) - find where growth accelerates
-        max_growth_idx = np.argmax(growth_rates)
-        lambda_init = time[max_growth_idx] if max_growth_idx > 0 else time[0]
+        max_growth_idx = int(np.argmax(growth_rates))
+        lambda_init = float(time[max_growth_idx]) if max_growth_idx > 0 else float(time[0])
+        lambda_init = float(np.clip(lambda_init, 0.0, time[-1]))
 
         p0 = [a_init, mu_init, lambda_init]
 
@@ -1670,8 +1995,18 @@ def fit_gompertz(
 
         a_opt, mu_opt, lambda_opt = popt
 
-        # Calculate standard errors from covariance matrix
-        perr = np.sqrt(np.diag(pcov))
+        # Standard errors from the covariance matrix. A parameter that ended on
+        # a bound has no valid covariance (the Jacobian column vanishes and the
+        # reported error is exactly 0), so its error is marked unknown (inf)
+        # and the classification's error gate rejects it.
+        with np.errstate(invalid='ignore'):
+            perr = np.sqrt(np.diag(pcov))
+        lower, upper = bounds
+        for k in range(3):
+            span = max(abs(upper[k] - lower[k]), 1e-12)
+            at_bound = (abs(popt[k] - lower[k]) <= 1e-6 * span) or (abs(popt[k] - upper[k]) <= 1e-6 * span)
+            if at_bound or not np.isfinite(perr[k]) or perr[k] <= 0:
+                perr[k] = float('inf')
         a_err, mu_err, lambda_err = perr
 
         # Calculate fit quality metrics
@@ -1822,43 +2157,40 @@ def try_alternative_models(
             if r2 > best_r2:
                 perr = np.sqrt(np.diag(pcov))
 
-                # Map params to Gompertz-equivalent fields for FitResult
-                # Each model parameterizes growth rate differently;
-                # convert to Gompertz mu = max absolute growth rate
-                # (dy/dt at inflection) so parameters are comparable.
+                # Map the fitted curve onto Gompertz-style quantities in a way
+                # that is the same for every model: mu is the steepest slope of
+                # the fitted curve (OD/h), lambda is where that tangent line
+                # crosses OD = 0 (the classic geometric lag), A is the model's
+                # plateau. Errors are propagated by the relative error of the
+                # model's own rate/plateau parameters.
+                t_dense = np.linspace(float(time[0]), float(time[-1]), 2001)
+                y_dense = model_func(t_dense, *popt)
+                slope = np.gradient(y_dense, t_dense)
+                i_star = int(np.argmax(slope))
+                mu_opt = float(slope[i_star])
+                t_star, y_star = float(t_dense[i_star]), float(y_dense[i_star])
+                lambda_opt = float(t_star - y_star / mu_opt) if mu_opt > 0 else float('nan')
                 if model_name == 'logistic':
-                    # Logistic: y = A/(1+exp(-k*(t-t_mid)))
-                    # Max slope = A*k/4 at t=t_mid
-                    # Gompertz mu = A*mu_e/A*(e) => mu = max_slope
-                    A_raw, k_raw, tmid_raw = popt[0], popt[1], popt[2]
+                    A_raw, k_raw = popt[0], popt[1]
                     a_opt = A_raw
-                    mu_opt = A_raw * k_raw / 4.0  # max absolute growth rate
-                    lambda_opt = tmid_raw - 2.0 / max(k_raw, 1e-6)  # approx lag
                     a_err = perr[0]
-                    mu_err = perr[1] * A_raw / 4.0  # scale error
+                    rel_rate = perr[1] / abs(k_raw) if k_raw else float('inf')
                     lambda_err = perr[2]
                 elif model_name == 'baranyi':
-                    # Baranyi: mu_max = max specific growth rate (1/t units)
-                    # Gompertz mu = A * mu_max / e (max absolute rate)
-                    y0_raw, ymax_raw, mumax_raw, h0_raw = popt
+                    ymax_raw, mumax_raw = popt[1], popt[2]
                     a_opt = ymax_raw
-                    mu_opt = ymax_raw * mumax_raw / np.e  # convert to Gompertz mu
-                    lambda_opt = h0_raw / max(mumax_raw, 1e-6)  # h0/mu_max ≈ lag
                     a_err = perr[1]
-                    mu_err = perr[2] * ymax_raw / np.e  # scale error
-                    lambda_err = perr[3]
+                    rel_rate = perr[2] / abs(mumax_raw) if mumax_raw else float('inf')
+                    lambda_err = perr[3] / max(abs(mumax_raw), 1e-6)
                 elif model_name == 'richards':
-                    # Richards: y = A*(1+nu*exp(-k*(t-t_mid)))^(-1/nu)
-                    # Max slope = A*k*nu^(1/(1+nu))/(1+nu)
-                    A_raw, k_raw, tmid_raw, nu_raw = popt
+                    A_raw, k_raw = popt[0], popt[1]
                     a_opt = A_raw
-                    mu_opt = A_raw * k_raw * nu_raw**(1.0/(1.0+nu_raw)) / (1.0+nu_raw)
-                    lambda_opt = tmid_raw - np.log(1.0 + nu_raw) / max(k_raw, 1e-6)
                     a_err = perr[0]
-                    mu_err = perr[1] * A_raw * nu_raw**(1.0/(1.0+nu_raw)) / (1.0+nu_raw)
+                    rel_rate = perr[1] / abs(k_raw) if k_raw else float('inf')
                     lambda_err = perr[2]
                 else:
                     continue
+                mu_err = float(abs(mu_opt) * rel_rate)
 
                 mae = float(np.mean(np.abs(residuals)))
                 mse = float(np.mean(residuals ** 2))
@@ -2328,6 +2660,276 @@ def plot_classification_summary(
 # Main Pipeline
 # =============================================================================
 
+def analyze_curve(
+    time: np.ndarray,
+    od600: np.ndarray,
+    strain_name: str = "curve",
+    fit_quality_thresholds: Optional[Dict] = None,
+    truncation_params: Optional[Dict] = None,
+    prefit_gate=None,
+    postfit_clf=None,
+    verbose: bool = False,
+    truncation_override: Optional[Tuple[int, int]] = None,
+) -> ProcessingResult:
+    """
+    Analyse ONE blank-corrected growth curve: pre-fit gate -> truncation ->
+    Gompertz fit -> post-fit classification.
+
+    This is the exact per-curve logic of the fit-first pipeline, factored out
+    so the CLI (``process_growth_curves``) and the lab interface share it.
+
+    Parameters
+    ----------
+    time, od600 : np.ndarray
+        Time in hours and blanked OD600, NaNs already removed.
+    strain_name : str
+        Curve identifier (used for messages and ML metadata features).
+    fit_quality_thresholds, truncation_params : dict, optional
+        Threshold dictionaries as built by ``main()``; defaults are the module
+        constants (FIT_QUALITY_THRESHOLDS / TRUNCATION_PARAMS).
+    prefit_gate, postfit_clf : optional
+        ML classifier objects from ``ml_classifier``; ``None`` -> rule-based gates.
+    verbose : bool
+        Print the per-curve progress lines.
+    truncation_override : Optional[Tuple[int, int]]
+        Manual ``(start_index, end_index)`` window into ``time``/``od600``
+        (inclusive, indices of the arrays passed in). When given, the
+        automatic cut is skipped and this window is used instead; it is
+        validated by ``validate_truncation`` like any other cut. ``None``
+        (default) keeps the automatic behaviour unchanged.
+
+    Returns
+    -------
+    ProcessingResult
+        ``stage`` tells which exit was taken: 'prefit_rejected',
+        'truncation_invalid' or 'classified'.
+    """
+    if fit_quality_thresholds is None:
+        fit_quality_thresholds = FIT_QUALITY_THRESHOLDS
+    if truncation_params is None:
+        truncation_params = TRUNCATION_PARAMS
+    time_clean = np.asarray(time, dtype=float)
+    od600_clean = np.asarray(od600, dtype=float)
+
+    # Compute pre-fit signal metrics (used by both ML and rule-based)
+    n_baseline = min(15, len(od600_clean) // 5)
+    noise_std = float(np.std(od600_clean[:n_baseline])) if n_baseline > 2 else 1e-8
+    signal_range = float(np.max(od600_clean) - np.mean(od600_clean[:min(5, len(od600_clean))]))
+    pre_fit_snr = signal_range / max(noise_std, 1e-8)
+
+    # ─── PRE-FIT GATE ───────────────────────────────────
+    # ML pre-fit gate is primary when available;
+    # rule-based SNR check is fallback only
+    prefit_rejected = False
+    reject_gates: List[str] = []
+
+    if prefit_gate is not None:
+        # ML decides whether to skip fitting
+        if prefit_gate.should_skip(time_clean, od600_clean, strain_name=strain_name):
+            prefit_rejected = True
+            reject_gates = ['prefit_rejected']
+            reject_reason = "BAD: Rejected by ML pre-fit gate"
+            reject_metrics = {'delta_od': signal_range,
+                              'max_od': float(np.max(od600_clean)),
+                              'snr': pre_fit_snr,
+                              'ml_classification': 'BAD',
+                              'p_good': 0.0}
+            if verbose:
+                print(f"  {strain_name}: BAD (ML pre-fit gate)")
+    else:
+        # No ML model → fall back to rule-based SNR check
+        snr_thresh = fit_quality_thresholds.get('pre_fit_snr_threshold', 3.0)
+        od_override = fit_quality_thresholds.get('pre_fit_delta_od_override', 0.5)
+        if pre_fit_snr < snr_thresh and signal_range < od_override:
+            prefit_rejected = True
+            reject_gates = ['prefit_snr']
+            reject_reason = "BAD: Pre-fit SNR too low ({:.1f} < {:.1f})".format(pre_fit_snr, snr_thresh)
+            reject_metrics = {'snr': pre_fit_snr, 'delta_od': signal_range,
+                              'max_od': float(np.max(od600_clean))}
+            if verbose:
+                print(f"  {strain_name}: BAD (pre-fit SNR={pre_fit_snr:.1f})")
+
+    if prefit_rejected:
+        classification = ClassificationResult(
+            is_good=False, reason=reject_reason, metrics=reject_metrics,
+            failed_gates=list(reject_gates),
+        )
+        truncation = TruncationResult(
+            truncation_index=len(od600_clean)-1,
+            truncation_time=float(time_clean[-1]),
+            max_od=float(np.max(od600_clean)),
+            time_truncated=time_clean, od_truncated=od600_clean,
+            time_original=time_clean, od_original=od600_clean,
+            smoothed_od=od600_clean
+        )
+        fit = FitResult(
+            success=False, a_opt=0, mu_opt=0, lambda_opt=0,
+            a_err=0, mu_err=0, lambda_err=0,
+            mae=0, mse=0, rmse=0, r_squared=0,
+            predicted=np.array([]), residuals=np.array([]),
+            error_message=reject_reason
+        )
+        return ProcessingResult(
+            strain_name=strain_name,
+            classification=classification,
+            truncation=truncation,
+            fit=fit,
+            stage="prefit_rejected",
+            prefit_snr=pre_fit_snr,
+        )
+
+    # ─── TRUNCATION ─────────────────────────────────────
+    is_incomplete, _ = detect_incomplete_curve(time_clean, od600_clean)
+
+    if truncation_override is not None:
+        truncation = truncation_from_indices(
+            time_clean, od600_clean,
+            start_idx=truncation_override[0],
+            end_idx=truncation_override[1],
+            smoothing_window=truncation_params['smoothing_window']
+        )
+    else:
+        truncation = truncate_at_max(
+            time_clean, od600_clean,
+            smoothing_window=truncation_params['smoothing_window'],
+            buffer_points=truncation_params['buffer_points'],
+            use_first_peak=truncation_params.get('use_first_peak', True),
+            use_adaptive=truncation_params.get('use_adaptive', False)
+        )
+
+    trunc_valid, trunc_reason = validate_truncation(
+        truncation,
+        min_points=truncation_params['min_points_for_fit']
+    )
+
+    if not trunc_valid:
+        if verbose:
+            print(f"    Truncation invalid: {trunc_reason}")
+        classification = ClassificationResult(
+            is_good=False,
+            reason=f"BAD: {trunc_reason}",
+            metrics={'delta_od': float(np.max(od600_clean) - np.mean(od600_clean[:5])),
+                     'max_od': float(np.max(od600_clean))},
+            failed_gates=gate_ids_from_reason(trunc_reason)[0],
+        )
+        fit = FitResult(
+            success=False, a_opt=0, mu_opt=0, lambda_opt=0,
+            a_err=0, mu_err=0, lambda_err=0,
+            mae=0, mse=0, rmse=0, r_squared=0,
+            predicted=np.array([]), residuals=np.array([]),
+            error_message=trunc_reason
+        )
+        return ProcessingResult(
+            strain_name=strain_name,
+            classification=classification,
+            truncation=truncation,
+            fit=fit,
+            stage="truncation_invalid",
+            is_incomplete=is_incomplete,
+            prefit_snr=pre_fit_snr,
+        )
+
+    # ─── GOMPERTZ FIT ───────────────────────────────────
+    fit = fit_gompertz(
+        truncation.time_truncated,
+        truncation.od_truncated
+    )
+
+    # Multi-model fallback (disabled by default)
+    best_model_name = 'gompertz'
+    use_multi_model = truncation_params.get('try_multi_model', False)
+
+    if use_multi_model and fit.r_squared < fit_quality_thresholds.get('min_r_squared', 0.95):
+        gompertz_r2_val = fit.r_squared
+        alt_fit, alt_model = try_alternative_models(
+            truncation.time_truncated,
+            truncation.od_truncated,
+            gompertz_r2=gompertz_r2_val
+        )
+        if alt_fit is not None:
+            fit = alt_fit
+            best_model_name = alt_model
+            if verbose:
+                print(f"    Multi-model: {alt_model} R²={alt_fit.r_squared:.3f} "
+                      f"(Gompertz was {gompertz_r2_val:.3f})")
+
+    # ─── POST-FIT CLASSIFICATION ────────────────────────
+    # ML post-fit classifier is primary when available;
+    # rule-based classify_by_fit_quality() is fallback only
+    if postfit_clf is not None:
+        # ML is the primary classifier — compute metrics
+        # for export but let the model decide GOOD/BAD
+        rule_classification = classify_by_fit_quality(
+            fit, fit_quality_thresholds,
+            time=time_clean, od600=od600_clean,
+            is_incomplete=is_incomplete,
+            fit_window=(int(truncation.start_index), int(truncation.truncation_index)),
+        )
+        # Ensure OD metrics are present for ML feature extraction
+        if 'delta_od' not in rule_classification.metrics:
+            rule_classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
+        rule_classification.metrics['max_od'] = np.max(od600_clean)
+        rule_classification.metrics['best_model'] = best_model_name
+
+        ml_result = postfit_clf.classify(
+            fit_result=fit,
+            classification_metrics=rule_classification.metrics,
+            truncation_time=truncation.truncation_time,
+            points_used=len(truncation.od_truncated),
+            strain_name=strain_name,
+        )
+        if ml_result is not None:
+            # ML makes the call; store rule-based for audit trail
+            classification_metrics = rule_classification.metrics.copy()
+            classification_metrics['p_good'] = ml_result['p_good']
+            classification_metrics['ml_classification'] = ml_result['ml_classification']
+            classification_metrics['rule_based_result'] = rule_classification.is_good
+            classification_metrics['rule_based_reason'] = rule_classification.reason
+            classification = ClassificationResult(
+                is_good=ml_result['is_good'],
+                reason=ml_result['reason'],
+                metrics=classification_metrics,
+                # The ML probability is what decided this curve; the rule-based
+                # gates it also failed stay in `rule_based_reason`.
+                failed_gates=[] if ml_result['is_good'] else ['ml_p_good'],
+            )
+        else:
+            # ML returned None (error) — fall back to rules
+            classification = rule_classification
+    else:
+        # No ML model → rule-based classification
+        classification = classify_by_fit_quality(
+            fit, fit_quality_thresholds,
+            time=time_clean, od600=od600_clean,
+            is_incomplete=is_incomplete,
+            fit_window=(int(truncation.start_index), int(truncation.truncation_index)),
+        )
+        if 'delta_od' not in classification.metrics:
+            classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
+        classification.metrics['max_od'] = np.max(od600_clean)
+        classification.metrics['best_model'] = best_model_name
+
+    if verbose:
+        status = "GOOD" if classification.is_good else "BAD"
+        r2 = fit.r_squared if fit.success else 0
+        model_tag = f" [{best_model_name}]" if best_model_name != 'gompertz' else ""
+        ml_tag = " [ML]" if postfit_clf is not None else ""
+        print(f"  {strain_name}: {status} (R²={r2:.3f}, A={fit.a_opt:.3f}){model_tag}{ml_tag}")
+        if not classification.is_good:
+            print(f"    Reason: {classification.reason}")
+
+    return ProcessingResult(
+        strain_name=strain_name,
+        classification=classification,
+        truncation=truncation,
+        fit=fit,
+        stage="classified",
+        is_incomplete=is_incomplete,
+        best_model=best_model_name,
+        prefit_snr=pre_fit_snr,
+    )
+
+
 def process_growth_curves(
     data_dir: str,
     output_dir: str,
@@ -2338,7 +2940,9 @@ def process_growth_curves(
     use_ml_classifier: bool = False,
     ml_classifier_config: Optional[Dict] = None,
     verbose: bool = True,
-    no_plots: bool = False
+    no_plots: bool = False,
+    config_path: Optional[str] = None,
+    mccv_config: Optional[Dict] = None,
 ) -> Dict[str, ProcessingResult]:
     """
     Main pipeline function to process all growth curves in a directory.
@@ -2360,12 +2964,20 @@ def process_growth_curves(
         If False, use OD-threshold-based classification.
     verbose : bool
         Print progress messages
+    config_path : Optional[str]
+        The config.yaml this run resolved its settings from, recorded (with its
+        SHA-256) in run_settings.json. None when no config file was used.
+    mccv_config : Optional[Dict]
+        The ``truncation.mccv`` block as read from config.yaml, recorded in
+        run_settings.json next to the MCCV settings actually in effect.
 
     Returns
     -------
     Dict[str, ProcessingResult]
         Results for each processed strain
     """
+    run_started = _clock.time()
+
     # Use defaults if not provided
     if classification_thresholds is None:
         classification_thresholds = CLASSIFICATION_THRESHOLDS
@@ -2423,17 +3035,31 @@ def process_growth_curves(
         if verbose:
             print(f"\nProcessing: {csv_file.name}")
 
-        # Load data
-        df = pd.read_csv(csv_file)
+        # Load data (round_trip parsing keeps every float exactly as written, so
+        # results do not depend on the CSV parser's rounding)
+        df = pd.read_csv(csv_file, float_precision="round_trip")
 
-        # Extract time column
-        time_cols = [c for c in df.columns if 'TIME' in c.upper()]
+        # Refuse raw plate exports (Cycle Nr., A1..H12 columns): they must be
+        # blank-corrected and averaged first (02_preprocess / the interface).
+        import re as _re
+        well_like = [c for c in df.columns if _re.match(r'^[A-Ha-h]\s*0?(1[0-2]|[1-9])$', str(c).strip())]
+        if any(str(c).strip().lower().startswith('cycle') for c in df.columns) or len(well_like) >= 8:
+            print(f"  Warning: {csv_file.name} looks like a raw plate export "
+                  f"({len(well_like)} well columns); preprocess it first. Skipping")
+            continue
+
+        # Extract time column (name starts with 'time', case-insensitive)
+        time_cols = [c for c in df.columns if _re.match(r'^\s*time\b', str(c), _re.IGNORECASE)]
         if not time_cols:
             print(f"  Warning: No TIME column found in {csv_file.name}, skipping")
             continue
 
         time_col = time_cols[0]
-        time = df[time_col].values
+        time = df[time_col].values.astype(float)
+        if len(time) and np.nanmax(time) > 1000:
+            print(f"  Warning: {time_col} in {csv_file.name} looks like seconds (max {np.nanmax(time):.0f}); "
+                  "converting to hours")
+            time = time / 3600.0
 
         # Process each strain column
         strain_cols = [c for c in df.columns if c != time_col]
@@ -2458,200 +3084,18 @@ def process_growth_curves(
             # Rule-based gates are only used as fallback when ML is absent.
             # =================================================================
             if use_fit_based_classification:
-
-                # Compute pre-fit signal metrics (used by both ML and rule-based)
-                n_baseline = min(15, len(od600_clean) // 5)
-                noise_std = float(np.std(od600_clean[:n_baseline])) if n_baseline > 2 else 1e-8
-                signal_range = float(np.max(od600_clean) - np.mean(od600_clean[:min(5, len(od600_clean))]))
-                pre_fit_snr = signal_range / max(noise_std, 1e-8)
-
-                # ─── PRE-FIT GATE ───────────────────────────────────
-                # ML pre-fit gate is primary when available;
-                # rule-based SNR check is fallback only
-                prefit_rejected = False
-
-                if prefit_gate is not None:
-                    # ML decides whether to skip fitting
-                    if prefit_gate.should_skip(time_clean, od600_clean, strain_name=strain_name):
-                        prefit_rejected = True
-                        reject_reason = "BAD: Rejected by ML pre-fit gate"
-                        reject_metrics = {'delta_od': signal_range,
-                                          'max_od': float(np.max(od600_clean)),
-                                          'snr': pre_fit_snr,
-                                          'ml_classification': 'BAD',
-                                          'p_good': 0.0}
-                        if verbose:
-                            print(f"  {strain_name}: BAD (ML pre-fit gate)")
-                else:
-                    # No ML model → fall back to rule-based SNR check
-                    snr_thresh = fit_quality_thresholds.get('pre_fit_snr_threshold', 3.0)
-                    od_override = fit_quality_thresholds.get('pre_fit_delta_od_override', 0.5)
-                    if pre_fit_snr < snr_thresh and signal_range < od_override:
-                        prefit_rejected = True
-                        reject_reason = "BAD: Pre-fit SNR too low ({:.1f} < {:.1f})".format(pre_fit_snr, snr_thresh)
-                        reject_metrics = {'snr': pre_fit_snr, 'delta_od': signal_range,
-                                          'max_od': float(np.max(od600_clean))}
-                        if verbose:
-                            print(f"  {strain_name}: BAD (pre-fit SNR={pre_fit_snr:.1f})")
-
-                if prefit_rejected:
-                    classification = ClassificationResult(
-                        is_good=False, reason=reject_reason, metrics=reject_metrics
-                    )
-                    truncation = TruncationResult(
-                        truncation_index=len(od600_clean)-1,
-                        truncation_time=float(time_clean[-1]),
-                        max_od=float(np.max(od600_clean)),
-                        time_truncated=time_clean, od_truncated=od600_clean,
-                        time_original=time_clean, od_original=od600_clean,
-                        smoothed_od=od600_clean
-                    )
-                    fit = FitResult(
-                        success=False, a_opt=0, mu_opt=0, lambda_opt=0,
-                        a_err=0, mu_err=0, lambda_err=0,
-                        mae=0, mse=0, rmse=0, r_squared=0,
-                        predicted=np.array([]), residuals=np.array([]),
-                        error_message=reject_reason
-                    )
-                    if not no_plots:
-                        plot_bad_curve_with_fit(
-                            time_clean, od600_clean, truncation, fit,
-                            classification, strain_name, plots_dir
-                        )
-                    results[strain_name] = ProcessingResult(
-                        strain_name=strain_name,
-                        classification=classification,
-                        truncation=truncation,
-                        fit=fit
-                    )
-                    continue
-
-                # ─── TRUNCATION ─────────────────────────────────────
-                is_incomplete, _ = detect_incomplete_curve(time_clean, od600_clean)
-
-                truncation = truncate_at_max(
-                    time_clean, od600_clean,
-                    smoothing_window=truncation_params['smoothing_window'],
-                    buffer_points=truncation_params['buffer_points'],
-                    use_first_peak=truncation_params.get('use_first_peak', True),
-                    use_adaptive=truncation_params.get('use_adaptive', False)
+                result = analyze_curve(
+                    time_clean, od600_clean, strain_name,
+                    fit_quality_thresholds=fit_quality_thresholds,
+                    truncation_params=truncation_params,
+                    prefit_gate=prefit_gate,
+                    postfit_clf=postfit_clf,
+                    verbose=verbose,
                 )
+                classification, truncation, fit = result.classification, result.truncation, result.fit
 
-                trunc_valid, trunc_reason = validate_truncation(
-                    truncation,
-                    min_points=truncation_params['min_points_for_fit']
-                )
-
-                if not trunc_valid:
-                    if verbose:
-                        print(f"    Truncation invalid: {trunc_reason}")
-                    classification = ClassificationResult(
-                        is_good=False,
-                        reason=f"BAD: {trunc_reason}",
-                        metrics={'delta_od': float(np.max(od600_clean) - np.mean(od600_clean[:5])),
-                                 'max_od': float(np.max(od600_clean))}
-                    )
-                    fit = FitResult(
-                        success=False, a_opt=0, mu_opt=0, lambda_opt=0,
-                        a_err=0, mu_err=0, lambda_err=0,
-                        mae=0, mse=0, rmse=0, r_squared=0,
-                        predicted=np.array([]), residuals=np.array([]),
-                        error_message=trunc_reason
-                    )
-                    results[strain_name] = ProcessingResult(
-                        strain_name=strain_name,
-                        classification=classification,
-                        truncation=truncation,
-                        fit=fit
-                    )
-                    continue
-
-                # ─── GOMPERTZ FIT ───────────────────────────────────
-                fit = fit_gompertz(
-                    truncation.time_truncated,
-                    truncation.od_truncated
-                )
-
-                # Multi-model fallback (disabled by default)
-                best_model_name = 'gompertz'
-                use_multi_model = truncation_params.get('try_multi_model', False)
-
-                if use_multi_model and fit.r_squared < fit_quality_thresholds.get('min_r_squared', 0.95):
-                    gompertz_r2_val = fit.r_squared
-                    alt_fit, alt_model = try_alternative_models(
-                        truncation.time_truncated,
-                        truncation.od_truncated,
-                        gompertz_r2=gompertz_r2_val
-                    )
-                    if alt_fit is not None:
-                        fit = alt_fit
-                        best_model_name = alt_model
-                        if verbose:
-                            print(f"    Multi-model: {alt_model} R²={alt_fit.r_squared:.3f} "
-                                  f"(Gompertz was {gompertz_r2_val:.3f})")
-
-                # ─── POST-FIT CLASSIFICATION ────────────────────────
-                # ML post-fit classifier is primary when available;
-                # rule-based classify_by_fit_quality() is fallback only
-                if postfit_clf is not None:
-                    # ML is the primary classifier — compute metrics
-                    # for export but let the model decide GOOD/BAD
-                    rule_classification = classify_by_fit_quality(
-                        fit, fit_quality_thresholds,
-                        time=time_clean, od600=od600_clean,
-                        is_incomplete=is_incomplete
-                    )
-                    # Ensure OD metrics are present for ML feature extraction
-                    if 'delta_od' not in rule_classification.metrics:
-                        rule_classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
-                    rule_classification.metrics['max_od'] = np.max(od600_clean)
-                    rule_classification.metrics['best_model'] = best_model_name
-
-                    ml_result = postfit_clf.classify(
-                        fit_result=fit,
-                        classification_metrics=rule_classification.metrics,
-                        truncation_time=truncation.truncation_time,
-                        points_used=len(truncation.od_truncated),
-                        strain_name=strain_name,
-                    )
-                    if ml_result is not None:
-                        # ML makes the call; store rule-based for audit trail
-                        classification_metrics = rule_classification.metrics.copy()
-                        classification_metrics['p_good'] = ml_result['p_good']
-                        classification_metrics['ml_classification'] = ml_result['ml_classification']
-                        classification_metrics['rule_based_result'] = rule_classification.is_good
-                        classification_metrics['rule_based_reason'] = rule_classification.reason
-                        classification = ClassificationResult(
-                            is_good=ml_result['is_good'],
-                            reason=ml_result['reason'],
-                            metrics=classification_metrics,
-                        )
-                    else:
-                        # ML returned None (error) — fall back to rules
-                        classification = rule_classification
-                else:
-                    # No ML model → rule-based classification
-                    classification = classify_by_fit_quality(
-                        fit, fit_quality_thresholds,
-                        time=time_clean, od600=od600_clean,
-                        is_incomplete=is_incomplete
-                    )
-                    if 'delta_od' not in classification.metrics:
-                        classification.metrics['delta_od'] = np.max(od600_clean) - np.mean(od600_clean[:5])
-                    classification.metrics['max_od'] = np.max(od600_clean)
-                    classification.metrics['best_model'] = best_model_name
-
-                if verbose:
-                    status = "GOOD" if classification.is_good else "BAD"
-                    r2 = fit.r_squared if fit.success else 0
-                    model_tag = f" [{best_model_name}]" if best_model_name != 'gompertz' else ""
-                    ml_tag = " [ML]" if postfit_clf is not None else ""
-                    print(f"  {strain_name}: {status} (R²={r2:.3f}, A={fit.a_opt:.3f}){model_tag}{ml_tag}")
-                    if not classification.is_good:
-                        print(f"    Reason: {classification.reason}")
-
-                # Generate visualization
-                if not no_plots:
+                # Generate visualization (invalid truncations produce no plot, as before)
+                if not no_plots and result.stage != "truncation_invalid":
                     if classification.is_good:
                         plot_truncation_comparison(
                             truncation, fit, strain_name,
@@ -2664,6 +3108,9 @@ def process_growth_curves(
                             classification, strain_name,
                             plots_dir
                         )
+
+                results[strain_name] = result
+                continue
 
             # =================================================================
             # OD-THRESHOLD APPROACH (Original)
@@ -2741,13 +3188,197 @@ def process_growth_curves(
         classifications = {k: v.classification for k, v in results.items()}
         plot_classification_summary(classifications, output_dir)
 
-    # Export results to CSV
-    export_results_to_csv(results, output_dir)
+    # Export results to CSV, together with the settings that produced them
+    run_settings = build_run_settings(
+        data_dir=data_dir,
+        truncation_params=truncation_params,
+        fit_quality_thresholds=fit_quality_thresholds,
+        classification_thresholds=classification_thresholds,
+        use_fit_based_classification=use_fit_based_classification,
+        ml_classify=use_ml_classifier,
+        config_path=config_path,
+        mccv_config=mccv_config,
+        n_curves=len(results),
+        wall_clock_s=_clock.time() - run_started,
+    )
+    export_results_to_csv(results, output_dir, run_settings=run_settings)
 
     return results
 
 
-def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str) -> str:
+# =============================================================================
+# Run provenance (run_settings.json)
+# =============================================================================
+# Every results table is written together with the exact settings that produced
+# it. Without this, a processing_results.csv does not say which truncation mode,
+# thresholds, code revision or input files it came from -- and adaptive and
+# first-peak truncation give different numbers for the same plate.
+
+#: Keys of run_settings.json, in the order they are written.
+RUN_SETTINGS_KEYS = (
+    'truncation_mode', 'use_adaptive', 'use_first_peak', 'smoothing_window',
+    'buffer_points', 'min_points_for_fit', 'quality_gates', 'mccv',
+    'ml_classify', 'config_path', 'config_sha256', 'git_sha', 'git_dirty',
+    'data_dir', 'dataset_sha256', 'n_curves', 'wall_clock_s', 'timestamp_utc',
+    'argv',
+)
+
+#: Effective MCCV settings of adaptive truncation. find_optimal_truncation_v2
+#: is called with its own defaults (scripts/config.yaml truncation.mccv is not
+#: plumbed through to it), so the effective values are recorded here and the
+#: config block is recorded next to them for comparison.
+_MCCV_DEFAULT_KEYS = ('min_points', 'n_coarse', 'n_cv_folds', 'cv_holdout',
+                      'n_fine_top', 'fine_window', 'try_multi_model')
+
+#: Threshold -> value used when fit_quality_thresholds does not carry it.
+#: These are the .get() defaults inside classify_by_fit_quality/analyze_curve.
+_EFFECTIVE_GATE_DEFAULTS = {
+    'min_r_squared': FIT_QUALITY_THRESHOLDS['min_r_squared'],
+    'max_param_error_pct': FIT_QUALITY_THRESHOLDS['max_param_error_pct'],
+    'min_points_for_fit': FIT_QUALITY_THRESHOLDS['min_points_for_fit'],
+    'min_snr': 5.0,
+    'min_delta_od_ci': 0.1,
+    'min_absolute_delta_od': 0.15,
+    'pre_fit_snr_threshold': 3.0,
+    'pre_fit_delta_od_override': 0.5,
+    'excellent_r2_threshold': 0.98,
+    'min_monotone_fraction': 0.55,
+    'max_residual_autocorr': 0.7,
+    'noise_floor_od': 0.002,
+    'autocorr_lag_hours': 1.0,
+}
+
+
+def truncation_mode_name(truncation_params: Optional[Dict] = None) -> str:
+    """'adaptive', 'first_peak' or 'global_max' for a truncation_params dict."""
+    tp = TRUNCATION_PARAMS if truncation_params is None else truncation_params
+    if tp.get('use_adaptive', False):
+        return 'adaptive'
+    return 'first_peak' if tp.get('use_first_peak', True) else 'global_max'
+
+
+def _sha256_of_file(path) -> Optional[str]:
+    """SHA-256 of one file, or None if it cannot be read."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except Exception:
+        return None
+
+
+def dataset_sha256(data_dir) -> Optional[str]:
+    """
+    SHA-256 over the contents of the ``*_DATA.csv`` files of a directory,
+    concatenated in sorted filename order. None when the directory holds none.
+    """
+    try:
+        files = sorted(Path(data_dir).glob('*_DATA.csv'), key=lambda q: q.name)
+    except Exception:
+        return None
+    if not files:
+        return None
+    h = hashlib.sha256()
+    for f in files:
+        try:
+            h.update(f.read_bytes())
+        except Exception:
+            return None
+    return h.hexdigest()
+
+
+def _git_info() -> Tuple[Optional[str], Optional[bool]]:
+    """(commit sha, working-tree-dirty) of the repository, or (None, None)."""
+    repo = Path(__file__).resolve().parent.parent
+    try:
+        sha = subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD'],
+                             capture_output=True, text=True, timeout=15)
+        if sha.returncode != 0:
+            return None, None
+        status = subprocess.run(['git', '-C', str(repo), 'status', '--porcelain'],
+                                capture_output=True, text=True, timeout=30)
+        dirty = None if status.returncode != 0 else bool(status.stdout.strip())
+        return sha.stdout.strip(), dirty
+    except Exception:
+        return None, None
+
+
+def build_run_settings(
+    data_dir: str,
+    truncation_params: Dict,
+    fit_quality_thresholds: Dict,
+    classification_thresholds: Optional[Dict] = None,
+    use_fit_based_classification: bool = True,
+    ml_classify: bool = False,
+    config_path: Optional[str] = None,
+    mccv_config: Optional[Dict] = None,
+    n_curves: Optional[int] = None,
+    wall_clock_s: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Collect everything needed to reproduce a run into one dict.
+
+    ``ml_classify`` is the resolved setting the run was given, not a guess from
+    whether model files happen to exist on disk.
+    """
+    use_adaptive = bool(truncation_params.get('use_adaptive', False))
+
+    gates: Dict[str, Any] = dict(fit_quality_thresholds)
+    # The values the gates fall back to when the caller's dict is silent (the
+    # literal .get() defaults of classify_by_fit_quality and analyze_curve), so
+    # the record is of the thresholds in force, not of the dict that was passed.
+    for key, value in _EFFECTIVE_GATE_DEFAULTS.items():
+        gates.setdefault(key, value)
+    gates['min_hours_to_peak'] = MIN_HOURS_TO_PEAK
+    gates['classification'] = 'fit_quality' if use_fit_based_classification else 'od_thresholds'
+    gates['od_thresholds'] = dict(classification_thresholds or CLASSIFICATION_THRESHOLDS)
+
+    mccv: Optional[Dict[str, Any]] = None
+    if use_adaptive:
+        import inspect
+        defaults = inspect.signature(find_optimal_truncation_v2).parameters
+        mccv = {k: defaults[k].default for k in _MCCV_DEFAULT_KEYS if k in defaults}
+        mccv['source'] = ('find_optimal_truncation_v2 defaults; scripts/config.yaml '
+                          'truncation.mccv is not passed to it')
+        mccv['config_values'] = dict(mccv_config) if mccv_config else None
+
+    git_sha, git_dirty = _git_info()
+    settings = {
+        'truncation_mode': truncation_mode_name(truncation_params),
+        'use_adaptive': use_adaptive,
+        'use_first_peak': bool(truncation_params.get('use_first_peak', True)),
+        'smoothing_window': truncation_params.get('smoothing_window'),
+        'buffer_points': truncation_params.get('buffer_points'),
+        'min_points_for_fit': truncation_params.get('min_points_for_fit'),
+        'quality_gates': gates,
+        'mccv': mccv,
+        'ml_classify': bool(ml_classify),
+        'config_path': None if config_path is None else str(config_path),
+        'config_sha256': None if config_path is None else _sha256_of_file(config_path),
+        'git_sha': git_sha,
+        'git_dirty': git_dirty,
+        'data_dir': str(data_dir),
+        'dataset_sha256': dataset_sha256(data_dir),
+        'n_curves': None if n_curves is None else int(n_curves),
+        'wall_clock_s': None if wall_clock_s is None else round(float(wall_clock_s), 3),
+        'timestamp_utc': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'argv': list(sys.argv),
+    }
+    return {k: settings[k] for k in RUN_SETTINGS_KEYS}
+
+
+def write_run_settings(run_settings: Dict[str, Any], output_dir: str) -> str:
+    """Write ``run_settings.json`` beside processing_results.csv."""
+    path = os.path.join(output_dir, 'run_settings.json')
+    with open(path, 'w') as fh:
+        json.dump(run_settings, fh, indent=2, default=str)
+        fh.write('\n')
+    return path
+
+
+def export_results_to_csv(
+    results: Dict[str, ProcessingResult],
+    output_dir: str,
+    run_settings: Optional[Dict[str, Any]] = None,
+) -> str:
     """
     Export all results to a summary CSV file.
 
@@ -2757,6 +3388,11 @@ def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str)
         Processing results for all strains
     output_dir : str
         Output directory
+    run_settings : Optional[Dict]
+        Provenance of the run (see :func:`build_run_settings`). When given it is
+        written to ``run_settings.json`` beside the CSV, so the table always
+        says which truncation mode, thresholds, code revision and input files
+        produced it.
 
     Returns
     -------
@@ -2829,11 +3465,20 @@ def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str)
             'ml_classification': metrics.get('ml_classification'),
         })
 
+        # Machine-readable twin of classification_reason. Appended last so that
+        # every existing column keeps its position.
+        row['failed_gates'] = ';'.join(
+            getattr(result.classification, 'failed_gates', None) or []
+        )
+
         rows.append(row)
 
     df = pd.DataFrame(rows)
     output_path = f"{output_dir}/processing_results.csv"
     df.to_csv(output_path, index=False)
+
+    if run_settings is not None:
+        write_run_settings(run_settings, output_dir)
 
     return output_path
 
@@ -2845,6 +3490,7 @@ def export_results_to_csv(results: Dict[str, ProcessingResult], output_dir: str)
 def main():
     """Main entry point for command line usage."""
     import argparse
+    import sys
 
     parser = argparse.ArgumentParser(
         description='Process bacterial growth curves: classify, truncate at max, and fit Gompertz model.'
@@ -2858,35 +3504,48 @@ def main():
         default='./output',
         help='Output directory for results (default: ./output)'
     )
+    # Threshold options default to None so that "not given on the command line"
+    # can be told apart from "given the same value as the config file". The
+    # resolution order below is: CLI value > config.yaml value > module default.
+    parser.add_argument(
+        '--config',
+        default=None,
+        help='Path to config.yaml (default: the config.yaml next to this script)'
+    )
     parser.add_argument(
         '--min-delta-od',
         type=float,
-        default=0.3,
-        help='Minimum OD600 change for good classification (default: 0.3)'
+        default=None,
+        help=f"Minimum OD600 change for good classification "
+             f"(default: od_thresholds.min_delta_od, else {CLASSIFICATION_THRESHOLDS['min_delta_od']})"
     )
     parser.add_argument(
         '--min-max-od',
         type=float,
-        default=0.5,
-        help='Minimum peak OD600 for good classification (default: 0.5)'
+        default=None,
+        help=f"Minimum peak OD600 for good classification "
+             f"(default: od_thresholds.min_max_od, else {CLASSIFICATION_THRESHOLDS['min_max_od']})"
     )
     parser.add_argument(
         '--min-snr',
         type=float,
-        default=5.0,
-        help='Minimum signal-to-noise ratio (default: 5.0)'
+        default=None,
+        help=f"Minimum signal-to-noise ratio "
+             f"(default: od_thresholds.min_snr, else {CLASSIFICATION_THRESHOLDS['min_snr']})"
     )
     parser.add_argument(
         '--smoothing-window',
         type=int,
-        default=5,
-        help='Rolling average window for peak detection (default: 5)'
+        default=None,
+        help=f"Rolling average window for peak detection "
+             f"(default: truncation.smoothing_window, else {TRUNCATION_PARAMS['smoothing_window']})"
     )
     parser.add_argument(
         '--buffer-points',
         type=int,
-        default=3,
-        help='Points to keep after max for fit stability (default: 3)'
+        default=None,
+        help=f"Points to keep after max for fit stability "
+             f"(default: truncation.buffer_points, else {TRUNCATION_PARAMS['buffer_points']})"
     )
     parser.add_argument(
         '-q', '--quiet',
@@ -2895,13 +3554,30 @@ def main():
     )
     parser.add_argument(
         '--global-max',
+        dest='global_max',
         action='store_true',
-        help='Truncate at global maximum instead of first local maximum (default: first peak)'
+        default=None,
+        help='Truncate at global maximum instead of first local maximum '
+             '(default: truncation.use_first_peak, else first peak)'
+    )
+    parser.add_argument(
+        '--first-peak',
+        dest='global_max',
+        action='store_false',
+        help='Truncate at the first local maximum (overrides truncation.use_first_peak: false)'
     )
     parser.add_argument(
         '--adaptive',
+        dest='adaptive',
         action='store_true',
+        default=None,
         help='Use adaptive truncation that optimizes for best R² (overrides --global-max)'
+    )
+    parser.add_argument(
+        '--no-adaptive',
+        dest='adaptive',
+        action='store_false',
+        help='Disable adaptive truncation even if truncation.use_adaptive is true in config.yaml'
     )
     parser.add_argument(
         '--od-based',
@@ -2911,14 +3587,16 @@ def main():
     parser.add_argument(
         '--min-r2',
         type=float,
-        default=0.95,
-        help='Minimum R² for good fit classification (default: 0.95)'
+        default=None,
+        help=f"Minimum R² for good fit classification "
+             f"(default: classification.min_r_squared, else {FIT_QUALITY_THRESHOLDS['min_r_squared']})"
     )
     parser.add_argument(
         '--max-param-error',
         type=float,
-        default=20.0,
-        help='Maximum parameter error %% for good fit (default: 20.0)'
+        default=None,
+        help=f"Maximum parameter error %% for good fit "
+             f"(default: classification.max_param_error_pct, else {FIT_QUALITY_THRESHOLDS['max_param_error_pct']})"
     )
     parser.add_argument(
         '--no-plots',
@@ -2933,34 +3611,52 @@ def main():
 
     args = parser.parse_args()
 
-    # Load config.yaml for ML classifier settings
+    # Load config.yaml (thresholds, quality gates, truncation, ML settings)
     config = {}
-    config_path = Path(__file__).parent / 'config.yaml'
+    if args.config is not None:
+        config_path = Path(args.config)
+        if not config_path.exists():
+            print(f"ERROR: config file not found: {config_path}", file=sys.stderr)
+            sys.exit(2)
+    else:
+        config_path = Path(__file__).parent / 'config.yaml'
     if config_path.exists():
         import yaml
         with open(config_path) as f:
             config = yaml.safe_load(f) or {}
 
-    # Merge config.yaml values with CLI args (CLI overrides config)
-    cfg_class = config.get('classification', {})
-    cfg_gates = config.get('quality_gates', {})
-    cfg_trunc = config.get('truncation', {})
-    cfg_od = config.get('od_thresholds', {})
+    cfg_class = config.get('classification') or {}
+    cfg_gates = config.get('quality_gates') or {}
+    cfg_trunc = config.get('truncation') or {}
+    cfg_od = config.get('od_thresholds') or {}
+
+    def resolve(cli_value, cfg_section, cfg_key, module_default):
+        """CLI value if given, else the config.yaml value, else the module default."""
+        if cli_value is not None:
+            return cli_value
+        value = cfg_section.get(cfg_key)
+        return module_default if value is None else value
 
     # Build threshold dict for OD-based classification
     thresholds = {
-        'min_delta_od': args.min_delta_od,
-        'min_max_od': args.min_max_od,
-        'min_snr': args.min_snr,
-        'max_initial_od': cfg_od.get('max_initial_od', 0.15),
+        'min_delta_od': resolve(args.min_delta_od, cfg_od, 'min_delta_od',
+                                CLASSIFICATION_THRESHOLDS['min_delta_od']),
+        'min_max_od': resolve(args.min_max_od, cfg_od, 'min_max_od',
+                              CLASSIFICATION_THRESHOLDS['min_max_od']),
+        'min_snr': resolve(args.min_snr, cfg_od, 'min_snr',
+                           CLASSIFICATION_THRESHOLDS['min_snr']),
+        'max_initial_od': cfg_od.get('max_initial_od', CLASSIFICATION_THRESHOLDS['max_initial_od']),
     }
 
     # Build threshold dict for fit-based classification
     # Includes secondary quality gates from config.yaml
     fit_thresholds = {
-        'min_r_squared': args.min_r2,
-        'max_param_error_pct': args.max_param_error,
-        'min_points_for_fit': cfg_class.get('min_points_for_fit', 15),
+        'min_r_squared': resolve(args.min_r2, cfg_class, 'min_r_squared',
+                                 FIT_QUALITY_THRESHOLDS['min_r_squared']),
+        'max_param_error_pct': resolve(args.max_param_error, cfg_class, 'max_param_error_pct',
+                                       FIT_QUALITY_THRESHOLDS['max_param_error_pct']),
+        'min_points_for_fit': cfg_class.get('min_points_for_fit',
+                                            FIT_QUALITY_THRESHOLDS['min_points_for_fit']),
         # Secondary quality gates (from config.yaml quality_gates section)
         'min_snr': cfg_gates.get('min_snr', 5.0),
         'min_delta_od_ci': cfg_gates.get('min_delta_od_ci', 0.1),
@@ -2972,24 +3668,38 @@ def main():
         'max_residual_autocorr': cfg_gates.get('max_residual_autocorr', 0.7),
     }
 
+    # Truncation: --global-max/--first-peak and --adaptive/--no-adaptive win over
+    # config.yaml; without either, config.yaml wins over the module defaults
+    # (first peak, no adaptive).
+    if args.global_max is None:
+        use_first_peak = bool(cfg_trunc.get('use_first_peak', True))
+    else:
+        use_first_peak = not args.global_max
+    use_adaptive = bool(resolve(args.adaptive, cfg_trunc, 'use_adaptive', False))
+
     truncation_params = {
-        'smoothing_window': args.smoothing_window,
-        'buffer_points': args.buffer_points,
-        'min_points_for_fit': cfg_trunc.get('min_points_for_fit', 20),
-        'use_first_peak': not args.global_max,  # Default: use first peak
-        'use_adaptive': args.adaptive,  # Adaptive overrides other truncation methods
+        'smoothing_window': resolve(args.smoothing_window, cfg_trunc, 'smoothing_window',
+                                    TRUNCATION_PARAMS['smoothing_window']),
+        'buffer_points': resolve(args.buffer_points, cfg_trunc, 'buffer_points',
+                                 TRUNCATION_PARAMS['buffer_points']),
+        'min_points_for_fit': cfg_trunc.get('min_points_for_fit',
+                                            TRUNCATION_PARAMS['min_points_for_fit']),
+        'use_first_peak': use_first_peak,
+        'use_adaptive': use_adaptive,  # Adaptive overrides other truncation methods
     }
 
     # Run pipeline
     use_fit_based = not args.od_based
     if use_fit_based:
         print("Using FIT-BASED classification (R², parameter errors)")
+        print(f"  min R²: {fit_thresholds['min_r_squared']}, "
+              f"max parameter error: {fit_thresholds['max_param_error_pct']}%")
     else:
         print("Using OD-THRESHOLD classification (delta_od, max_od, snr)")
 
-    if args.adaptive:
+    if use_adaptive:
         print("Using ADAPTIVE truncation (optimizes R²)")
-    elif args.global_max:
+    elif not use_first_peak:
         print("Using GLOBAL MAX truncation")
     else:
         print("Using FIRST PEAK truncation")
@@ -3010,7 +3720,9 @@ def main():
         use_ml_classifier=args.ml_classify,
         ml_classifier_config=ml_config,
         verbose=not args.quiet,
-        no_plots=args.no_plots
+        no_plots=args.no_plots,
+        config_path=str(config_path) if config_path.exists() else None,
+        mccv_config=cfg_trunc.get('mccv'),
     )
 
     # Print summary
@@ -3026,6 +3738,7 @@ def main():
     print(f"Successful fits: {fit_count}")
     print(f"\nResults saved to: {args.output}/")
     print(f"  - processing_results.csv")
+    print(f"  - run_settings.json")
     print(f"  - classification_summary.png")
     print(f"  - plots/ (individual strain plots)")
 

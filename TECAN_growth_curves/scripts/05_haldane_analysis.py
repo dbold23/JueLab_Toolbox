@@ -36,7 +36,20 @@ from matplotlib.gridspec import GridSpec
 from scipy.integrate import solve_ivp
 from scipy.optimize import minimize
 
+# The package next to scripts/ holds the shared helpers (curve lookup) and the
+# loader for the validated core in 01_growth_curve_analysis.py.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from tecan_growth.legacy_data import find_curve  # noqa: E402
+from tecan_growth.legacy import growth_curve_analysis as _load_gca  # noqa: E402
+
 warnings.filterwarnings('ignore', category=RuntimeWarning)
+
+
+def _gca():
+    """The validated core (01_growth_curve_analysis.py), loaded once on demand."""
+    return _load_gca()
 
 
 # =============================================================================
@@ -67,8 +80,22 @@ def haldane_ode(t, y, mu_max, Ks, Ki, X_max, q):
     return [dXdt, dSdt]
 
 
-def solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0):
-    """Solve the Haldane ODE system. Returns X(t), S(t)."""
+def solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0, return_status=False,
+                  rtol=1e-8, atol=1e-10, max_step=0.5):
+    """
+    Solve the Haldane ODE system. Returns X(t), S(t).
+
+    When the integrator fails, flat curves at the initial conditions are
+    returned. That fallback is indistinguishable from a genuinely flat
+    solution, which is how a failed solve used to be reported as a successful
+    fit; pass ``return_status=True`` to get a third value that is False
+    whenever the fallback is what you are holding.
+
+    The solver accuracy is exposed so a fitting loop can run at a tolerance
+    suited to OD data (see FIT_SOLVER_OPTIONS) instead of paying for eight
+    digits on every one of thousands of trial solutions. The defaults are
+    unchanged, so every existing caller integrates exactly as before.
+    """
     try:
         sol = solve_ivp(
             haldane_ode,
@@ -77,31 +104,80 @@ def solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0):
             args=(mu_max, Ks, Ki, X_max, q),
             t_eval=time,
             method='RK45',
-            max_step=0.5,
-            rtol=1e-8,
-            atol=1e-10
+            max_step=max_step,
+            rtol=rtol,
+            atol=atol
         )
-        if sol.success:
-            return sol.y[0], sol.y[1]
+        if sol.success and sol.y.shape[1] == len(time):
+            return (sol.y[0], sol.y[1], True) if return_status else (sol.y[0], sol.y[1])
     except Exception as e:
         import warnings
         warnings.warn(f"Haldane ODE solver failed: {e}")
-    return np.full_like(time, X0, dtype=float), np.full_like(time, S0, dtype=float)
+    flat = (np.full_like(time, X0, dtype=float), np.full_like(time, S0, dtype=float))
+    return flat + (False,) if return_status else flat
 
 
-def fit_haldane(time, od, S0=1.0, gompertz_params=None):
+# Multi-start values for Ki. L-BFGS-B on this objective barely moves Ki away
+# from where it starts, so a single start reports its own initial guess.
+KI_MULTISTART = (0.3, 1.0, 3.0, 10.0, 30.0, 100.0)
+
+# ODE accuracy used while searching (the reported fit is re-solved at the
+# default tolerances). 1e-6 relative is four orders of magnitude finer than the
+# OD noise these curves carry and integrates about three times faster, which is
+# what makes a multi-start plus a profile affordable.
+FIT_SOLVER_OPTIONS = {'rtol': 1e-6, 'atol': 1e-9, 'max_step': np.inf}
+
+# Added to the SSE when the ODE solver fell back to a flat curve, so a failed
+# solve can never win the optimisation.
+SOLVER_FAILURE_PENALTY = 1e6
+
+# Ki counts as identified only if the SSE moves by at least this much (percent)
+# across the profile over 0.1x-10x the fitted value.
+KI_PROFILE_MIN_SSE_CHANGE_PCT = 1.0
+
+
+def fit_haldane(time, od, S0=1.0, gompertz_params=None,
+                ki_starts=KI_MULTISTART, profile_ki=True):
     """
-    Fit the Haldane model to OD data via least-squares.
+    Fit the Haldane model to OD data by least squares, with S0 held FIXED.
+
+    S0 used to be fitted alongside the other six parameters, which makes Ki
+    unidentifiable: the curve only ever samples mu(S) along one trajectory, so
+    a change in Ki can be absorbed by rescaling S0 (with Ks and q). Every
+    strain came back with Ki within a hair of the initial guess of 10.0 and the
+    per-pesticide "inhibition ranking" ranked nothing. S0 is the experiment's
+    dosing unit, known up to the arbitrary scale the whole model is written in,
+    so it is fixed at the value passed in (--s0) and six parameters are fitted.
+
+    The search itself runs on log(parameter) — with a linear Ki the optimiser's
+    finite-difference step is far too small to move a parameter of size 10, so
+    Ki never left its starting value at all (see the comment on log_bounds).
+
+    Ki is still only weakly constrained by some curves, so the fit is repeated
+    from several Ki starting values (best SSE wins) and the winner is profiled:
+    Ki is pinned across 0.1x-10x its fitted value with everything else
+    re-optimised. If the SSE never moves by 1%, the data cannot distinguish
+    those values -- ``Ki_identified`` is False and ``Ki`` is NaN, because
+    reporting the number the optimiser happened to stop at would be inventing
+    a measurement. ``Ki_fitted`` keeps that number for the audit trail.
 
     Args:
         time: Time array (hours)
         od: OD600 values
-        S0: Initial substrate concentration (arbitrary units)
-        gompertz_params: Dict with 'a', 'mu', 'lambda' from Gompertz fit
+        S0: Initial substrate concentration (arbitrary units), held fixed
+        gompertz_params: Dict with 'mu' (and optionally 'a', 'lambda') used
+            only to seed mu_max
+        ki_starts: Ki values to start the optimiser from
+        profile_ki: Run the identifiability profile (set False to skip its cost)
 
     Returns:
-        Dict with fit results
+        Dict with fit results. 'success' is False when the fit failed *or* when
+        the ODE solver fell back to a flat curve at the optimum.
     """
+    time = np.asarray(time, dtype=float)
+    od = np.asarray(od, dtype=float)
+    S0 = float(S0)
+
     X0_init = max(float(np.mean(od[:3])), 0.001)
     X_max_init = float(np.max(od)) * 1.1
 
@@ -112,9 +188,7 @@ def fit_haldane(time, od, S0=1.0, gompertz_params=None):
         dt = np.diff(time)
         mu_init = max(float(np.max(diff / np.maximum(dt, 1e-6))), 0.01) * 2.0
 
-    # Initial guesses
-    p0 = np.array([mu_init, 0.1, 10.0, X_max_init, 0.1, X0_init, S0])
-
+    # Free parameters: mu_max, Ks, Ki, X_max, q, X0  (S0 is fixed)
     bounds = [
         (0.001, 5.0),    # mu_max
         (0.001, 10.0),   # Ks
@@ -122,55 +196,214 @@ def fit_haldane(time, od, S0=1.0, gompertz_params=None):
         (0.05, 5.0),     # X_max
         (0.001, 10.0),   # q
         (1e-6, 0.5),     # X0
-        (0.01, 100.0),   # S0
     ]
+    KI = 2  # index of Ki in the parameter vector
 
-    def objective(params):
-        mu_max, Ks, Ki, X_max, q, X0, S0_fit = params
-        X_pred, _ = solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0_fit)
-        residuals = od - X_pred
-        return np.sum(residuals**2)
+    # Every parameter is positive and they span very different scales (Ki alone
+    # runs 0.1-1000), so the search runs on log(parameter). L-BFGS-B takes its
+    # finite differences with an ABSOLUTE step of ~1e-8: on a linear Ki of 10
+    # that is a relative step of 1e-9, the gradient underflows to zero and the
+    # optimiser leaves Ki exactly where it started -- which is why every strain
+    # reported Ki = 10.0, the initial guess. In log space the same step is a
+    # 1e-8 relative move for every parameter.
+    log_bounds = [(float(np.log(lo)), float(np.log(hi))) for lo, hi in bounds]
+
+    def _clip_log(params):
+        return np.array([
+            float(np.clip(np.log(v), lo, hi))
+            for v, (lo, hi) in zip(params, log_bounds)
+        ])
+
+    def _predict(params, **solver_options):
+        mu_max, Ks, Ki, X_max, q, X0 = params
+        return solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0,
+                             return_status=True, **solver_options)
+
+    def objective(log_params):
+        params = np.exp(np.asarray(log_params, dtype=float))
+        X_pred, _S_pred, solved = _predict(params, **FIT_SOLVER_OPTIONS)
+        sse = float(np.sum((od - X_pred) ** 2))
+        return sse if solved else sse + SOLVER_FAILURE_PENALTY
+
+    def _minimise(x0, maxiter=5000):
+        return minimize(objective, _clip_log(x0), method='L-BFGS-B',
+                        bounds=log_bounds, options={'maxiter': maxiter})
 
     try:
-        result = minimize(
-            objective, p0,
-            method='L-BFGS-B',
-            bounds=bounds,
-            options={'maxiter': 5000}
-        )
+        # ---- Multi-start over Ki -------------------------------------------
+        best = None
+        for ki0 in ki_starts:
+            x0 = [mu_init, 0.1, float(ki0), X_max_init, 0.1, X0_init]
+            try:
+                result = _minimise(x0)
+            except Exception:
+                continue
+            if not np.isfinite(result.fun):
+                continue
+            if best is None or result.fun < best.fun:
+                best = result
 
-        if result.success or result.fun < 1e10:
-            mu_max, Ks, Ki, X_max, q, X0_fit, S0_fit = result.x
-            X_pred, S_pred = solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0_fit, S0_fit)
+        if best is None:
+            return {'success': False, 'r_squared': float('nan'),
+                    'aic': np.inf, 'bic': np.inf,
+                    'Ki_identified': False,
+                    'error': 'all Ki starts failed'}
 
-            residuals = od - X_pred
-            ss_res = np.sum(residuals**2)
-            ss_tot = np.sum((od - np.mean(od))**2)
-            r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+        best_params = np.exp(best.x)
+        mu_max, Ks, Ki, X_max, q, X0_fit = best_params
+        X_pred, S_pred, solved = _predict(best_params)
 
-            n = len(od)
-            k = 7  # number of parameters
-            aic = n * np.log(ss_res / n) + 2 * k
-            # Small-sample correction (AICc) — important for k=7 with moderate n
-            if n - k - 1 > 0:
-                aic += 2 * k * (k + 1) / (n - k - 1)
-            bic = n * np.log(ss_res / n) + k * np.log(n)
+        if not solved:
+            # The ODE solver fell back to a flat curve at the optimum: there is
+            # no fitted model here, however small the residuals happen to be.
+            return {'success': False, 'r_squared': float('nan'),
+                    'aic': np.inf, 'bic': np.inf,
+                    'Ki_identified': False,
+                    'error': 'ODE solver failed at the optimum'}
 
-            return {
-                'success': True,
-                'mu_max': mu_max, 'Ks': Ks, 'Ki': Ki,
-                'X_max': X_max, 'q': q, 'X0': X0_fit, 'S0': S0_fit,
-                'r_squared': r_squared,
-                'aic': aic, 'bic': bic,
-                'rmse': np.sqrt(np.mean(residuals**2)),
-                'predicted_od': X_pred,
-                'predicted_substrate': S_pred,
-            }
+        ki_centre = float(Ki)  # the Ki the profile below is centred on
+
+        # ---- Profile likelihood over Ki ------------------------------------
+        found_better_on_profile = False
+        # Ki is pinned at a grid of values spanning 0.1x-10x the fitted one and
+        # everything else is re-optimised. The SSE has to climb on BOTH sides:
+        # a profile that only rises towards small Ki means the data set a lower
+        # bound on the inhibition constant and nothing more, which is not a
+        # measurement of Ki however confidently the optimiser stopped there.
+        ki_identified = False
+        profile_range_pct = float('nan')
+        profile = []
+        if profile_ki:
+            free_bounds = [b for i, b in enumerate(log_bounds) if i != KI]
+            free_best = np.delete(best.x, KI)
+            lo = max(bounds[KI][0], 0.1 * ki_centre)
+            hi = min(bounds[KI][1], 10.0 * ki_centre)
+
+            def _profile_point(ki_fixed, warm_start):
+                """Re-optimise everything but Ki, warm-started. Returns (sse, x)."""
+                log_ki = float(np.log(ki_fixed))
+
+                def objective_at_ki(free):
+                    return objective(np.insert(free, KI, log_ki))
+
+                try:
+                    res = minimize(objective_at_ki, warm_start, method='L-BFGS-B',
+                                   bounds=free_bounds, options={'maxiter': 500})
+                except Exception:
+                    return None, warm_start
+                if not np.isfinite(res.fun) or res.fun >= SOLVER_FAILURE_PENALTY:
+                    return None, warm_start
+                return float(res.fun), res.x
+
+            if hi > lo:
+                # Walk outwards from the optimum in both directions, warm
+                # starting each step from the neighbour that was just solved.
+                # Re-optimising every point from the optimum instead makes far
+                # points look worse than they are and turns a flat profile into
+                # a false claim of identifiability.
+                grid = list(np.geomspace(lo, hi, 5))
+                downhill = sorted([k for k in grid if k < ki_centre], reverse=True)
+                uphill = sorted([k for k in grid if k > ki_centre])
+                for direction in (downhill, uphill):
+                    warm = free_best
+                    for ki_fixed in direction:
+                        sse_here, warm = _profile_point(ki_fixed, warm)
+                        if sse_here is not None:
+                            profile.append((float(ki_fixed), sse_here))
+                            # A profile point that beats the multi-start
+                            # optimum means the search stopped in a local
+                            # minimum; take the better fit.
+                            if sse_here < float(best.fun):
+                                best_params = np.exp(np.insert(warm, KI, np.log(ki_fixed)))
+                                best.x = np.log(best_params)
+                                best.fun = sse_here
+                                found_better_on_profile = True
+
+            if profile:
+                # Reference: the best SSE seen anywhere on the profile, so a
+                # profile point that beats the multi-start optimum (a local
+                # minimum) does not make Ki look identified.
+                # Compared against the search-tolerance SSE at the optimum,
+                # so profile and optimum are measured on the same solver.
+                sse_ref = min(float(best.fun), min(s for _, s in profile))
+                if sse_ref > 0:
+                    rises = {
+                        ki_fixed: (sse - sse_ref) / sse_ref * 100.0
+                        for ki_fixed, sse in profile
+                    }
+                    below = [r for ki_fixed, r in rises.items() if ki_fixed < ki_centre * 0.999]
+                    above = [r for ki_fixed, r in rises.items() if ki_fixed > ki_centre * 1.001]
+                    profile_range_pct = float(max(rises.values()))
+                    ki_identified = bool(
+                        below and above
+                        and max(below) >= KI_PROFILE_MIN_SSE_CHANGE_PCT
+                        and max(above) >= KI_PROFILE_MIN_SSE_CHANGE_PCT
+                        # The profile is only evidence about the point it is
+                        # centred on; if it found a better fit elsewhere, that
+                        # centre was wrong and nothing here is established.
+                        and not found_better_on_profile
+                    )
+                else:
+                    profile_range_pct = 0.0
+
+        # The reported fit is whichever optimum survived (the multi-start one,
+        # or a better one the profile walked into), re-solved at the default
+        # solver accuracy.
+        mu_max, Ks, Ki, X_max, q, X0_fit = best_params
+        X_pred, S_pred, solved = _predict(best_params)
+        if not solved:
+            return {'success': False, 'r_squared': float('nan'),
+                    'aic': np.inf, 'bic': np.inf,
+                    'Ki_identified': False,
+                    'error': 'ODE solver failed at the optimum'}
+
+        residuals = od - X_pred
+        ss_res = float(np.sum(residuals ** 2))
+        ss_tot = float(np.sum((od - np.mean(od)) ** 2))
+        r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+
+        n = len(od)
+        k = len(bounds)  # free parameters (S0 is fixed, so it does not count)
+        aic = n * np.log(ss_res / n) + 2 * k
+        # Small-sample correction (AICc) -- important for k=6 with moderate n
+        if n - k - 1 > 0:
+            aic += 2 * k * (k + 1) / (n - k - 1)
+        bic = n * np.log(ss_res / n) + k * np.log(n)
+
+        # Parameters the optimiser pushed onto a bound are not estimates: the
+        # audit found mu_max pinned at 5.0 for 15 of 22 strains, which is the
+        # model telling you it cannot describe the curve.
+        names = ['mu_max', 'Ks', 'Ki', 'X_max', 'q', 'X0']
+        at_bounds = [
+            name for name, value, (lo, hi) in zip(names, best_params, bounds)
+            if np.isclose(value, lo, rtol=1e-6, atol=1e-12)
+            or np.isclose(value, hi, rtol=1e-6, atol=1e-12)
+        ]
+
+        return {
+            'success': True,
+            'params_at_bounds': at_bounds,
+            'mu_max': mu_max, 'Ks': Ks,
+            'Ki': Ki if ki_identified else float('nan'),
+            'Ki_fitted': Ki,
+            'Ki_identified': bool(ki_identified),
+            'Ki_profile_sse_range_pct': profile_range_pct,
+            'Ki_profile': profile,
+            'X_max': X_max, 'q': q, 'X0': X0_fit, 'S0': S0,
+            'r_squared': r_squared,
+            'aic': aic, 'bic': bic,
+            'rmse': float(np.sqrt(np.mean(residuals ** 2))),
+            'sse': ss_res,
+            'n_points': n,
+            'predicted_od': X_pred,
+            'predicted_substrate': S_pred,
+        }
     except Exception as e:
         import warnings
         warnings.warn(f"Haldane fitting failed: {e}")
 
-    return {'success': False, 'r_squared': float('nan'), 'aic': np.inf, 'bic': np.inf}
+    return {'success': False, 'r_squared': float('nan'), 'aic': np.inf,
+            'bic': np.inf, 'Ki_identified': False}
 
 
 # =============================================================================
@@ -180,6 +413,58 @@ def fit_haldane(time, od, S0=1.0, gompertz_params=None):
 def gompertz_model(t, A, mu, lambda_):
     """Modified Gompertz growth model."""
     return A * np.exp(-np.exp((mu * np.e / A) * (lambda_ - t) + 1))
+
+
+def _gompertz_sse(time, od, params):
+    """Sum of squared residuals of a Gompertz parameter set on this window."""
+    pred = gompertz_model(time, params['a'], params['mu'], params['lambda'])
+    if not np.all(np.isfinite(pred)):
+        return float('inf')
+    return float(np.sum((od - pred) ** 2))
+
+
+def gompertz_on_window(time, od, fallback_params=None):
+    """
+    Fit the Gompertz model on the window the Haldane fit is scored on.
+
+    The AICc comparison used to score the parameters 01 fitted on its
+    *truncated* growth window against the *full* curve, while Haldane was
+    refitted to that full curve. On any curve with a plateau or a decline the
+    Gompertz R² then went negative and "Haldane preferred" was a foregone
+    conclusion — the mechanistic model had simply been allowed to see the data
+    the other one was denied. Both models are fitted to the same points now.
+
+    The refit is compared against the pipeline's own parameters on this same
+    window and the lower-SSE one wins, so the comparison always uses the best
+    Gompertz description of the window that either route found (curve_fit can
+    land in a poor local optimum on a curve with a long decline).
+
+    Returns ``(params, source)`` where source is 'refit' or 'pipeline'.
+    """
+    candidates = []
+    try:
+        fit = _gca().fit_gompertz(time, od)
+        if fit.success and np.isfinite(fit.r_squared):
+            candidates.append(('refit', {
+                'a': float(fit.a_opt),
+                'mu': float(fit.mu_opt),
+                'lambda': float(fit.lambda_opt),
+            }))
+    except Exception as e:
+        warnings.warn(f"Gompertz refit on the comparison window failed: {e}")
+
+    if fallback_params:
+        candidates.append(('pipeline', {
+            'a': float(fallback_params.get('a', 1.0)),
+            'mu': float(fallback_params.get('mu', 0.15)),
+            'lambda': float(fallback_params.get('lambda', 3.0)),
+        }))
+
+    if not candidates:
+        return {'a': 1.0, 'mu': 0.15, 'lambda': 3.0}, 'default'
+
+    source, params = min(candidates, key=lambda c: _gompertz_sse(time, od, c[1]))
+    return params, source
 
 
 def gompertz_aic(time, od, A, mu, lambda_):
@@ -223,6 +508,48 @@ def extract_pesticide_name(strain):
     return 'UNKNOWN'
 
 
+#: Where each group's processed *_DATA.csv files live, relative to data/raw.
+#: Only used when config.yaml has no ``groups`` section.
+FALLBACK_GROUP_DIRS = {
+    'Group1': 'Group1/Group_1_DATA',
+    'Group2': 'Group 2/Group_2_DATA',
+    'Group3': 'Group 3/Group_3_DATA',
+    'Group4': 'Group 4/Group4_DATA',
+}
+
+
+def resolve_group_dir(data_dir, group, config=None):
+    """
+    Directory holding a group's processed ``*_DATA.csv`` files.
+
+    Read from ``config.yaml`` (``groups.<Group>.data_dir``) so that renaming a
+    group's folder in one place is enough; ``FALLBACK_GROUP_DIRS`` is used only
+    when the config has no ``groups`` section. A ``data_dir`` that sits under
+    ``paths.raw_data`` is re-anchored on the ``data_dir`` argument, so
+    ``--data-dir`` keeps working on a copy of the tree.
+    """
+    if config is None:
+        import yaml
+        cfg_path = Path(__file__).resolve().parent / 'config.yaml'
+        try:
+            with open(cfg_path) as f:
+                config = yaml.safe_load(f) or {}
+        except (OSError, yaml.YAMLError):
+            config = {}
+
+    entry = ((config.get('groups') or {}).get(group) or {})
+    configured = entry.get('data_dir')
+    if not configured:
+        return Path(data_dir) / FALLBACK_GROUP_DIRS.get(group, group)
+
+    configured = Path(configured)
+    raw_base = Path((config.get('paths') or {}).get('raw_data', 'data/raw'))
+    try:
+        return Path(data_dir) / configured.relative_to(raw_base)
+    except ValueError:
+        return configured if configured.is_absolute() else _REPO_ROOT / configured
+
+
 def load_raw_data(data_dir, strain_name, group):
     """
     Load raw time-series data for a specific strain.
@@ -235,55 +562,15 @@ def load_raw_data(data_dir, strain_name, group):
     Returns:
         (time, od) arrays or (None, None) if not found
     """
-    # Map group names to directory structures
-    group_dirs = {
-        'Group1': 'Group1/Group_1_DATA',
-        'Group2': 'Group 2/Group_2_DATA',
-        'Group3': 'Group 3/Group_3_DATA',
-        'Group4': 'Group 4/Group4_DATA',
-    }
-
-    group_path = data_dir / group_dirs.get(group, group)
+    group_path = resolve_group_dir(data_dir, group)
     if not group_path.exists():
         return None, None
 
-    # Search for the CSV file containing this strain
-    csv_files = list(group_path.glob("*_DATA.csv"))
-
-    for csv_path in csv_files:
-        try:
-            df = pd.read_csv(csv_path)
-            time_col = [c for c in df.columns if 'TIME' in c.upper()]
-            if not time_col:
-                continue
-
-            time = df[time_col[0]].values
-
-            # Look for a column matching this strain
-            for col in df.columns:
-                clean_col = col.replace('_blanked', '').replace('_', '-')
-                if clean_col.upper() == strain_name.upper().replace('-', '_').replace('_blanked', ''):
-                    return time, df[col].values
-
-                # Also try with underscore-to-dash conversion
-                col_normalized = col.replace('_blanked', '').replace('_', '-')
-                strain_normalized = strain_name.replace('_', '-')
-                if col_normalized.upper() == strain_normalized.upper():
-                    return time, df[col].values
-
-                # Partial match: column contains the strain key parts
-                strain_parts = strain_name.upper().split('-')
-                col_upper = col.upper().replace('_BLANKED', '')
-                if len(strain_parts) >= 2:
-                    prefix = strain_parts[0].replace('-', '')
-                    suffix = strain_parts[-1]
-                    if prefix in col_upper and suffix in col_upper:
-                        return time, df[col].values
-
-        except Exception:
-            continue
-
-    return None, None
+    # Exact, index-based column lookup (see tecan_growth.legacy_data): the old
+    # glob-order scan with a substring "partial match" loaded 33 of 92 strains
+    # from another strain's column.
+    time, od, _csv_path, _column = find_curve(group_path, strain_name)
+    return time, od
 
 
 # =============================================================================
@@ -398,19 +685,25 @@ def plot_overview_dashboard(comparison_df, output_path):
 
     df['pesticide'] = df['strain'].apply(extract_pesticide_name)
 
-    # Panel 1: Ki by pesticide (boxplot)
+    # Panel 1: Ki by pesticide (boxplot) — only strains whose Ki is identified
     ax1 = fig.add_subplot(gs[0, 0])
-    pesticides = df.groupby('pesticide')['haldane_Ki'].median().sort_values().index.tolist()
-    ki_data = [df[df['pesticide'] == p]['haldane_Ki'].values for p in pesticides]
+    ki_df = df[df['haldane_Ki'].notna()]
+    pesticides = ki_df.groupby('pesticide')['haldane_Ki'].median().sort_values().index.tolist()
+    ki_data = [ki_df[ki_df['pesticide'] == p]['haldane_Ki'].values for p in pesticides]
     if ki_data:
         bp = ax1.boxplot(ki_data, tick_labels=pesticides, patch_artist=True, vert=True)
         colors = plt.cm.RdYlGn(np.linspace(0.2, 0.8, len(pesticides)))
         for patch, color in zip(bp['boxes'], colors):
             patch.set_facecolor(color)
             patch.set_alpha(0.7)
+    else:
+        ax1.text(0.5, 0.5, 'Ki not identified for any strain',
+                 ha='center', va='center', fontsize=12, color='red')
     ax1.set_ylabel('Ki (Inhibition Constant)', fontsize=11)
-    ax1.set_title('Substrate Inhibition by Pesticide\n(lower Ki = stronger inhibition)',
-                   fontsize=12, fontweight='bold')
+    ax1.set_title(
+        f'Substrate Inhibition by Pesticide\n'
+        f'(lower Ki = stronger inhibition; {len(ki_df)}/{len(df)} strains identified)',
+        fontsize=12, fontweight='bold')
     ax1.tick_params(axis='x', rotation=45)
     ax1.grid(True, alpha=0.3, axis='y')
 
@@ -449,10 +742,12 @@ def plot_overview_dashboard(comparison_df, output_path):
     # Panel 4: Effective growth rate under inhibition
     ax4 = fig.add_subplot(gs[1, 1])
     # mu_effective = mu_max * S0 / (Ks + S0 + S0^2/Ki)
+    # Uses the fitted Ki (not the NaN-when-unidentified one), because mu at S0
+    # is a property of the fitted curve even where Ki alone is not pinned down.
     df['mu_effective'] = df.apply(
         lambda r: r['haldane_mu_max'] * r['haldane_S0'] / (
-            r['haldane_Ks'] + r['haldane_S0'] + r['haldane_S0']**2 / r['haldane_Ki']
-        ) if r['haldane_Ki'] > 0 else 0,
+            r['haldane_Ks'] + r['haldane_S0'] + r['haldane_S0']**2 / r['haldane_Ki_fitted']
+        ) if r.get('haldane_Ki_fitted', float('nan')) > 0 else 0,
         axis=1
     )
     pest_mu = df.groupby('pesticide')['mu_effective'].agg(['mean', 'std']).sort_values('mean')
@@ -599,18 +894,22 @@ Key outputs:
                 print("SKIPPED (too few points)")
             continue
 
-        # Get Gompertz parameters from pipeline results
-        gompertz_params = {
+        # Gompertz parameters as the pipeline fitted them (on its truncated
+        # window) — kept for the audit trail, not used for the AICc comparison
+        pipeline_gompertz = {
             'a': row.get('gompertz_a', 1.0),
             'mu': row.get('gompertz_mu', 0.15),
             'lambda': row.get('gompertz_lambda', 3.0),
             'r2': row.get('fit_r_squared', row.get('r_squared', 0)),
         }
 
-        # Compute Gompertz AIC on full (non-truncated) data for fair comparison
+        # Refit Gompertz on exactly the window the Haldane fit sees, then score
+        # both models on those same points.
+        gompertz_params, gomp_params_source = gompertz_on_window(time, od, pipeline_gompertz)
         gomp_aic, gomp_bic, gomp_r2_full, gomp_rmse = gompertz_aic(
             time, od, gompertz_params['a'], gompertz_params['mu'], gompertz_params['lambda']
         )
+        gompertz_params['r2'] = gomp_r2_full
 
         # Fit Haldane model
         haldane = fit_haldane(
@@ -639,6 +938,12 @@ Key outputs:
             'gompertz_aic': gomp_aic,
             'gompertz_bic': gomp_bic,
             'gompertz_rmse': gomp_rmse,
+            'gompertz_params_source': gomp_params_source,
+            # Gompertz as the pipeline fitted it (truncated window)
+            'pipeline_gompertz_a': pipeline_gompertz['a'],
+            'pipeline_gompertz_mu': pipeline_gompertz['mu'],
+            'pipeline_gompertz_lambda': pipeline_gompertz['lambda'],
+            'pipeline_gompertz_r2': pipeline_gompertz['r2'],
             # Haldane
             'haldane_success': haldane['success'],
             'haldane_r2': haldane.get('r_squared', float('nan')),
@@ -648,10 +953,17 @@ Key outputs:
             'haldane_mu_max': haldane.get('mu_max', float('nan')),
             'haldane_Ks': haldane.get('Ks', float('nan')),
             'haldane_Ki': haldane.get('Ki', float('nan')),
+            'haldane_Ki_fitted': haldane.get('Ki_fitted', float('nan')),
+            'haldane_Ki_identified': haldane.get('Ki_identified', False),
+            'haldane_Ki_profile_sse_range_pct': haldane.get(
+                'Ki_profile_sse_range_pct', float('nan')),
             'haldane_X_max': haldane.get('X_max', float('nan')),
             'haldane_q': haldane.get('q', float('nan')),
             'haldane_S0': haldane.get('S0', float('nan')),
-            # Comparison
+            # Comparison — both models fitted on exactly these points
+            'comparison_n_points': int(len(time)),
+            'comparison_t_start': float(time[0]),
+            'comparison_t_end': float(time[-1]),
             'delta_aic': delta_aic,
             'preferred_model': preferred,
         }
@@ -659,7 +971,9 @@ Key outputs:
 
         if not args.quiet:
             if haldane['success']:
-                print(f"Haldane R²={haldane['r_squared']:.4f} Ki={haldane['Ki']:.1f} "
+                ki_txt = (f"Ki={haldane['Ki']:.2f}" if haldane.get('Ki_identified')
+                          else f"Ki=unidentified (best {haldane.get('Ki_fitted', float('nan')):.2f})")
+                print(f"Haldane R²={haldane['r_squared']:.4f} {ki_txt} "
                       f"| Gompertz R²={gomp_r2_full:.4f} | {preferred} (ΔAIC={delta_aic:+.1f})")
             else:
                 print(f"Haldane FAILED | Gompertz R²={gomp_r2_full:.4f}")
@@ -684,11 +998,14 @@ Key outputs:
     haldane_ok = comparison_df[comparison_df['haldane_success']].copy()
 
     if len(haldane_ok) > 0:
+        # Ki statistics cover only the strains whose Ki is identified: the
+        # unidentified ones carry NaN, which pandas skips in the aggregates,
+        # and n_Ki_identified says how many strains each Ki number rests on.
         summary = haldane_ok.groupby('pesticide').agg({
             'haldane_Ki': ['median', 'mean', 'std', 'count'],
+            'haldane_r2': ['count', 'median', 'mean'],
             'haldane_mu_max': ['median', 'mean'],
             'haldane_Ks': ['median', 'mean'],
-            'haldane_r2': ['median', 'mean'],
             'gompertz_r2': ['median', 'mean'],
             'preferred_model': lambda x: (x == 'Haldane').sum(),
         }).reset_index()
@@ -696,14 +1013,14 @@ Key outputs:
         # Flatten column names
         summary.columns = [
             'pesticide',
-            'Ki_median', 'Ki_mean', 'Ki_std', 'n_strains',
+            'Ki_median', 'Ki_mean', 'Ki_std', 'n_Ki_identified',
+            'n_strains', 'haldane_r2_median', 'haldane_r2_mean',
             'mu_max_median', 'mu_max_mean',
             'Ks_median', 'Ks_mean',
-            'haldane_r2_median', 'haldane_r2_mean',
             'gompertz_r2_median', 'gompertz_r2_mean',
             'n_haldane_preferred',
         ]
-        summary = summary.sort_values('Ki_median')
+        summary = summary.sort_values('Ki_median', na_position='last')
         summary.to_csv(output_dir / 'haldane_summary.csv', index=False)
         print(f"Saved summary to {output_dir / 'haldane_summary.csv'}")
 
@@ -726,16 +1043,25 @@ Key outputs:
         print(f"    Gompertz:   {n_gomp_pref}")
         print(f"    Equivalent: {n_equiv}")
 
+        n_ki = int(comparison_df.get('haldane_Ki_identified', pd.Series(dtype=bool)).sum())
+        print(f"  Strains with an identified Ki: {n_ki}/{len(haldane_ok)}")
+
         print(f"\n  Inhibition Ranking (lower Ki = stronger inhibition):")
         for _, srow in summary.iterrows():
-            print(f"    {srow['pesticide']:<30s} Ki={srow['Ki_median']:.1f} "
-                  f"(n={int(srow['n_strains'])})")
+            n_id = int(srow['n_Ki_identified'])
+            ki_txt = f"Ki={srow['Ki_median']:.2f}" if n_id else "Ki=unidentified"
+            print(f"    {srow['pesticide']:<30s} {ki_txt} "
+                  f"(n={n_id}/{int(srow['n_strains'])} identified)")
 
+        # Only rank pesticides whose Ki the data actually pinned down —
+        # ordering NaNs would be ranking the optimiser's starting points.
+        ranked = summary[summary['Ki_median'].notna()]
         print(f"\n  Biological Interpretation:")
-        most_inhibitory = summary.iloc[0]['pesticide']
-        least_inhibitory = summary.iloc[-1]['pesticide']
-        print(f"    Most inhibitory pesticide:  {most_inhibitory} (lowest Ki)")
-        print(f"    Least inhibitory pesticide: {least_inhibitory} (highest Ki)")
+        if len(ranked) >= 2:
+            print(f"    Most inhibitory pesticide:  {ranked.iloc[0]['pesticide']} (lowest Ki)")
+            print(f"    Least inhibitory pesticide: {ranked.iloc[-1]['pesticide']} (highest Ki)")
+        else:
+            print("    Not enough identified Ki values to rank pesticides.")
     print(f"{'='*60}")
 
     print(f"\nAll results saved to: {output_dir}")

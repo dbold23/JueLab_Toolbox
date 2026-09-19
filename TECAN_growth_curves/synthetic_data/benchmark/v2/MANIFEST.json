@@ -1,0 +1,45 @@
+{
+  "dataset_version": "v2",
+  "files": {
+    "HEADLINE.json": {
+      "sha256": "46e1898e8e20c99ff978f389f2cad85f5e798f4a9d8c180452978a1f6d917525",
+      "bytes": 2384
+    },
+    "README.md": {
+      "sha256": "eebd844aa148effcfbc987ce75e01032cace177520ce04795142dc8e7edfb0a0",
+      "bytes": 2132
+    },
+    "classification_summary.png": {
+      "sha256": "e68ec95203408c190921c3979af88b722ccf89bdb01b481b73e80f448ce21041",
+      "bytes": 167688
+    },
+    "gate_attribution.csv": {
+      "sha256": "6187b7b67474fdc1f79e47c93c65d71111eb52182d419fc484493c82b14b83b3",
+      "bytes": 56197
+    },
+    "per_curve.csv": {
+      "sha256": "40e52bd971c3e6e707a97bf56f0ffa7082c66ca2fbc48f83a1386fb80f6b698e",
+      "bytes": 683134
+    },
+    "per_scenario.csv": {
+      "sha256": "607abbf76b58a39160ab5e7c21fef0b2aad5ffcb28aded64d53a0073d1b8b7af",
+      "bytes": 2564
+    },
+    "per_scenario_recovery.csv": {
+      "sha256": "80095824c503d5adbab2d6d300b081534cc847ab56435a7d52e6edeae2088c32",
+      "bytes": 58904
+    },
+    "processing_results.csv": {
+      "sha256": "30e8ddae76926b82ccdf1ca48493dca9728e7e6f8e28d16e20951d5a5ece2e63",
+      "bytes": 518848
+    },
+    "report.json": {
+      "sha256": "575302e8d686d137e2f4b3882edaee31667cc37f1f615149bcb6d95ab2c87171",
+      "bytes": 125832
+    },
+    "run_settings.json": {
+      "sha256": "187649043696773c60c5ddfb14bac507b1fbe6c3faecce68673a0edac63f0ac4",
+      "bytes": 1789
+    }
+  }
+}

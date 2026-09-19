@@ -56,7 +56,7 @@ TECAN_growth_curves/
 │   ├── Group{1-4}_Results/              # Per-group results + diagnostic plots
 │   ├── Haldane_Analysis/                # Haldane feedback inhibition results
 │   └── Advanced_Analysis/               # GP, Bayesian, Bootstrap, Comparison results
-├── synthetic_data/                      # Validation test suite (480 synthetic curves)
+├── synthetic_data/                      # Validation test suite (1139 synthetic curves, 64 scenarios)
 ├── tests/                               # pytest test suite
 ├── Makefile                             # Build/run automation
 └── .github/workflows/test.yml           # CI/CD pipeline
@@ -383,8 +383,8 @@ When you run the pipeline, you should see approximately:
 | Group 1 | 24 | 12 | 12 |
 | Group 2 | 24 | 11 | 13 |
 | Group 3 | 24 | 12 | 12 |
-| Group 4 | 20 | 9 | 11 |
-| **Total** | **92** | **44** | **48** |
+| Group 4 | 20 | 10 | 10 |
+| **Total** | **92** | **45** | **47** |
 
 **Key findings:**
 - LB controls show excellent growth (R² > 0.97)
@@ -394,34 +394,40 @@ When you run the pipeline, you should see approximately:
 
 ### Validation Metrics
 
-**Rule-based (480 synthetic curves):**
+**Rule-based (synthetic suite, 1139 curves over 64 scenarios, first-peak rule, seed 42).** The headline is scored over the 960 curves the present gate set can decide fairly; the other 179 are scored separately, not dropped.
 
-| Metric | Value |
-|--------|-------|
-| Accuracy | 99.6% |
-| Precision | 100% |
-| Recall | 99.4% |
-| F1 Score | 99.7% |
+| Metric | Full suite (n=960) | The original 32 scenarios (n=532) |
+|--------|-------|-------|
+| Balanced accuracy | 87.9% | 96.8% |
+| Sensitivity | 85.6% | 93.5% |
+| Specificity | 90.2% | 100.0% |
+| Accuracy | 87.6% | 96.1% |
+| Precision | 91.9% | 100.0% |
+| MCC | 0.753 | 0.922 |
+| TP / TN / FP / FN | 463 / 378 / 41 / 78 | 304 / 207 / 0 / 21 |
 
-**ML Classifier (held-out 30% test, 170 curves -- synthetic + real mixed):**
+Over all 1139 curves under one flat rule, ignoring the scoring policy: 81.9% accuracy, 81.3% balanced. The two held-out blocks are `a_not_identifiable` (80 curves whose run stops before the plateau) at 85.0% and `preprocessing_blind` (99 curves carrying a per-well artefact the preprocessing step averages away before the pipeline sees it) at 24.2%. Both held-out figures are flat-rule figures: correct means the accept/reject verdict matched the truth. `report.json` scores `a_not_identifiable` under a second, stricter block rule as well (correct if the curve was rejected, or the fitted A is within 15 % of the observed final OD and no more than 1.20 x the last observed point), which it passes 12 times out of 80 -- 15.0 %. The verdict is right on 68 of the 80 while the reported amplitude is supportable on 12, which is the whole reason the block is outside the headline. `docs/BENCHMARK_LEDGER.md` and the rendered summary both carry the pair.
 
-| Metric | Value |
-|--------|-------|
-| Accuracy | 95.9% |
-| Precision | 97.4% |
-| Recall | 96.6% |
-| F1 Score | 97.0% |
-| Specificity | 94.3% |
+**ML Classifier (5-fold CV on the synthetic suite; the 85 audited real curves are an external test set, never trained on):**
 
-25/32 test scenarios achieve 100% accuracy. Manual audit of 92 real curves: 91.3% validated correct.
+| Metric | Synthetic CV (post-fit) | Real audit set (66 fitted) |
+|--------|-------|-------|
+| Accuracy | 91.9% | 81.8% |
+| Precision | 91.3% | 100.0% |
+| Recall | 94.9% | 78.2% |
+| Specificity | 87.9% | 100.0% |
 
-### Truncation Method Comparison (44 good strains)
+Retraining on the rebuilt suite made the model markedly more conservative: on the real audit curves it now makes no false-GOOD calls at all (specificity 1.00 against 0.91 before) at the cost of calling 12 real GOOD curves BAD, and accuracy fell from 90.9% to 81.8%. That is a regression in accuracy and is published as one; the deployed thresholds (0.70 / 0.30) were not changed. Before/after on identical rows is in `models/feature_config.json` and section 9 of `docs/BENCHMARK_LEDGER.md`.
 
-The weighted-median consensus achieves the highest mean R². All top-5 methods perform within 0.002 of each other. Candidate bad strains may be rescued by alternative truncation methods.
+47 of the 64 synthetic scenarios are classified 100% correctly; every scenario, every miss and the gate that fired on it are in `synthetic_data/benchmark/v2/report.json` and in the markdown summary `make validation-summary` renders from it (a build artefact, rendered into the run directory on demand, never hand-edited and never committed). Of the 85 confident calls in the visual audit (recorded against an earlier pipeline version), the first-peak rule reproduces 74 and the adaptive rule 73; almost every difference is a well with a 0.05-0.13 OD rise that the present 0.15 OD growth gate rejects.
+
+### Truncation Method Comparison
+
+Methods are ranked by median R² across the GOOD strains, with failure counts alongside, in `results/tables/Advanced_Analysis/truncation_comparison/method_summary.csv`. A BAD strain counts as rescued only when its refit passes every quality gate of the main pipeline.
 
 ### Haldane Analysis Results
 
-The Haldane model was preferred over Gompertz for **16/21** (76%) pesticide+LB strains by AIC, confirming substrate inhibition kinetics are present. All 6 pesticides tested (Bifenthrin, Flupyradifurone, Imidacloprid, Lambda-Cyhalothrin, Malathion, Permethrin) show measurable inhibition constants (Ki).
+With S0 held fixed and a profile-likelihood identifiability test, **no strain (0/22) constrains Ki**; the Ki values reported before (all close to 10) were the optimiser's starting point. Haldane is preferred by AICc for 7/22 strains, all of them compared on the whole 95-100 h run where a single Gompertz cannot describe the decline phase. The data do not support a substrate-inhibition claim.
 
 ---
 
@@ -512,7 +518,7 @@ Trains a two-stage ML classifier for growth curve quality classification:
 1. **Pre-fit gate** (8 raw features + 2 metadata) — rejects obvious junk before expensive truncation/fitting
 2. **Post-fit classifier** (22 fit features + 2 metadata) — three-class output: GOOD / BORDERLINE / BAD
 
-Features include biological metadata (`is_control`, `concentration_numeric`) parsed from strain names, enabling the model to learn that water/LB controls with growth signals are suspicious.
+Features include biological metadata (`is_control`, `concentration_numeric`) parsed from strain names. On synthetic training data those two columns are constant, so the model cannot learn anything from them there, and on the real audit set the metadata features carry no discriminative signal; they are kept for real-plate training, not because they are doing work today.
 
 ```bash
 # Train with 70/30 holdout validation
@@ -525,8 +531,8 @@ python 09_train_classifier.py --compare
 python 01_growth_curve_analysis.py DATA_DIR -o OUTPUT_DIR --ml-classify
 ```
 
-**Training data:** 480 synthetic + 85 real audited curves (7 "unsure" excluded).
-**Held-out test (30%):** 95.9% accuracy, 94.3% specificity, 96.6% recall.
+**Training data:** 1059 synthetic curves enter training (565 GOOD / 494 BAD), 936 of them reaching the post-fit stage. 80 curves are excluded as not trainable (their asymptote is not identifiable from the observed window) and 15 train-split rows are dropped by the label-agreement guard, from `short_experiment` and `short_lag`. The 85 audited real curves (7 "unsure" excluded) are an external test set and are never trained on.
+**Held-out test (30%) and real-data metrics:** written to `models/feature_config.json` by the training run.
 
 ### `ml_classifier.py` - ML Classifier Runtime Module
 

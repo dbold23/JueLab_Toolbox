@@ -301,14 +301,30 @@ class TruncationValidator:
                 continue
 
             y_fit = gompertz_model(t_fine, A, mu, lam)
-            mask_fit = t_fine <= trunc_time
-            mask_extrap = t_fine >= trunc_time
+
+            # Methods that trim a noisy baseline (adaptive_r2) start their
+            # window after t=0; everything outside [start_time, trunc_time] is
+            # extrapolation and is drawn dotted, so the curve you are judging
+            # is the part that was actually fitted.
+            start_time = float(t_fine.min())
+            start_idx = row.get('start_idx')
+            if t is not None and start_idx is not None and not pd.isna(start_idx):
+                si = int(min(max(int(start_idx), 0), len(t) - 1))
+                start_time = float(t[si])
+
+            mask_fit = (t_fine >= start_time) & (t_fine <= trunc_time)
+            mask_before = t_fine <= start_time
+            mask_after = t_fine >= trunc_time
 
             lw = 2.5 if method == 'consensus' else 1.8
             ax.plot(t_fine[mask_fit], y_fit[mask_fit], color=color, linewidth=lw,
                     linestyle='-', zorder=3)
-            ax.plot(t_fine[mask_extrap], y_fit[mask_extrap], color=color, linewidth=lw * 0.7,
-                    linestyle=':', alpha=0.5, zorder=2)
+            for extrap in (mask_before, mask_after):
+                if np.any(extrap):
+                    ax.plot(t_fine[extrap], y_fit[extrap], color=color,
+                            linewidth=lw * 0.7, linestyle=':', alpha=0.5, zorder=2)
+            if start_time > float(t_fine.min()):
+                ax.axvline(x=start_time, color=color, linestyle=':', alpha=0.4, linewidth=0.8)
             ax.axvline(x=trunc_time, color=color, linestyle='--', alpha=0.4, linewidth=0.8)
 
             # Key number for the method

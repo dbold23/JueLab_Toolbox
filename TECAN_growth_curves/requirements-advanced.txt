@@ -1,0 +1,6 @@
+# Optional: Bayesian hierarchical models used by scripts/06_advanced_fitting.py
+# (steps 5 and 7 of the batch pipeline). Heavy to install; the app and the
+# core pipeline do not need them.
+-r requirements.txt
+pymc>=5.10.0
+arviz>=0.17.0
