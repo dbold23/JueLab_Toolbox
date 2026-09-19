@@ -34,7 +34,7 @@ This pipeline analyzes bacterial growth curves from **TECAN plate reader** exper
 **What the pipeline does (10 steps):**
 
 0. Preprocesses raw 96-well plate reader output into clean, blank-subtracted time series
-1. Trains a two-stage ML classifier (pre-fit gate + post-fit HistGBT) on 565 curves with metadata features
+1. Trains a two-stage ML classifier (pre-fit gate + post-fit HistGBT) on the synthetic suite only (1059 curves enter training); the 85 audited real curves are an external test set
 2. Truncates, fits modified Gompertz growth model, and classifies each curve as "GOOD" or "BAD" (per group)
 3. Combines per-group results into a consolidated master results file
 4. Fits a mechanistic Haldane substrate-inhibition model to pesticide-treated strains
@@ -42,7 +42,7 @@ This pipeline analyzes bacterial growth curves from **TECAN plate reader** exper
 6. Performs statistical analysis and generates publication-quality figures
 7. Compares 5 truncation methods via Gompertz fit quality, rescues misclassified bad strains
 8. Exports clean CSV files and methodology documentation for collaboration
-9. Validates the entire pipeline against 480 synthetic ground-truth curves
+9. Validates the entire pipeline against 1139 synthetic ground-truth curves
 
 **Scale:** 92 bacterial strains across 4 experimental groups, each tested in multiple media conditions (LB, pesticide+LB, pesticide-only, H2O control).
 
@@ -104,7 +104,7 @@ TECAN_growth_curves/
 │   │   ├── curve_scenarios.py            # 32 test scenarios
 │   │   └── data_generator.py             # Orchestrator
 │   ├── validation/                       # Validation metrics & reporting
-│   └── output/comprehensive_test/        # 480 synthetic curves + validation reports
+│   └── output/comprehensive_test/        # 1139 synthetic curves + validation reports
 │
 ├── tests/                                # ──── UNIT & INTEGRATION TESTS ────
 │   ├── test_gompertz.py
@@ -134,7 +134,7 @@ TECAN_growth_curves/
 | `06_advanced_fitting.py` | GP, Bayesian, Bootstrap, Ensemble methods | Results CSV + raw data | Advanced analysis outputs |
 | `07_compare_truncation_methods.py` | Truncation method comparison & bad strain rescue | Ensemble results + raw data | Method rankings, overlay plots, rescued strains |
 | `08_validate_truncation.py` | Interactive truncation method validator | `method_comparison.csv` + raw data | `truncation_validation_audit.csv` |
-| `09_train_classifier.py` | Train ML classifier (70/30 holdout) | Synthetic + real audited curves | `models/*.joblib` + `feature_config.json` |
+| `09_train_classifier.py` | Train ML classifier (70/30 holdout) | Synthetic curves (real audited curves held out as an external test set) | `models/*.joblib` + `feature_config.json` |
 | `ml_classifier.py` | ML runtime (feature extraction, gates) | Raw OD data + fit results | Classification with probabilities |
 
 ---
@@ -175,7 +175,8 @@ Step 9: Synthetic validation       → accuracy / recall / F1 metrics
                                    ▼
   ┌─────────────────────────────────────────────────────────────────────┐
   │  STEP 1: TRAIN ML CLASSIFIER  (09_train_classifier.py)             │
-  │  • 480 synthetic + 85 real audited curves = 565 total              │
+  │  • 1059 synthetic curves train it; 85 real audited curves are      │
+  │    an external test set and are never trained on                   │
   │  • Two-stage: PreFitGate + PostFitClassifier (HistGBT)             │
   │  • Output: models/*.joblib + feature_config.json                   │
   └────────────────────────────────┬────────────────────────────────────┘
@@ -221,7 +222,7 @@ Step 9: Synthetic validation       → accuracy / recall / F1 metrics
   │  (07_compare_truncation_methods.py / 08_validate_truncation.py)    │
   │  • Compare 5 methods + consensus via per-strain Gompertz R²        │
   │  • Overlay plots: raw data + 6 Gompertz curves per strain          │
-  │  • Bad strain rescue: re-truncate failed strains, recover 17/22    │
+  │  • Bad strain rescue: refit BAD strains, keep only gate-passing     │
   │  • Interactive validator: human review of method selections         │
   └────────────────────────────────┬────────────────────────────────────┘
                                    │
@@ -235,9 +236,10 @@ Step 9: Synthetic validation       → accuracy / recall / F1 metrics
                                    ▼
   ┌─────────────────────────────────────────────────────────────────────┐
   │  STEP 9: SYNTHETIC VALIDATION  (synthetic_data/)                   │
-  │  • 480 synthetic ground-truth curves across 32 scenarios           │
-  │  • Accuracy 99.6%, Precision 100%, Recall 99.4%, F1 99.7%         │
-  │  • Manual audit of real data: 91.3% agreement                      │
+  │  • 1139 synthetic ground-truth curves across 64 scenarios          │
+  │  • First-peak rule, 960 scored: balanced accuracy 87.9%,           │
+  │    sensitivity 85.6%, specificity 90.2%, accuracy 87.6%            │
+  │  • Visual audit of real data: 74/85 confident calls reproduced     │
   └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -813,37 +815,46 @@ def solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0):
 
 ### 8.5 Fitting procedure
 
-The Haldane model is fitted using **L-BFGS-B** (bounded Limited-memory BFGS), a quasi-Newton optimizer suitable for bounded parameter spaces:
+The Haldane model is fitted using **L-BFGS-B** (bounded Limited-memory BFGS) on
+**log(parameter)**, with **S0 held fixed** at the dosing unit passed in (`--s0`),
+so six parameters are free. Three details matter:
+
+* **S0 is not fitted.** The curve samples μ(S) along a single trajectory, so a
+  change in Ki can be absorbed by rescaling S0 (with Ks and q). With S0 free,
+  every strain came back at the Ki initial guess and the "inhibition ranking"
+  ranked nothing.
+* **The search is in log space.** L-BFGS-B takes finite differences with an
+  absolute step of ~1e-8; on a linear Ki of 10 that is a 1e-9 relative step, the
+  gradient underflows and Ki never moves. In log space every parameter gets the
+  same relative step.
+* **Ki is multi-started and profiled.** The fit is repeated from several Ki
+  starting values (best SSE wins) and the winner is profiled over 0.1x–10x its
+  value. Unless the SSE rises on *both* sides, the data cannot distinguish those
+  values: `Ki_identified` is False and `Ki` is reported as NaN (the raw optimum
+  is kept as `Ki_fitted`).
 
 ```python
-# From 05_haldane_analysis.py, lines 91-168
-def fit_haldane(time, od, S0=1.0, gompertz_params=None):
-    # Use Gompertz parameters to inform initial guesses
-    X0_init = max(float(np.mean(od[:3])), 0.001)
-    X_max_init = float(np.max(od)) * 1.1
+# From 05_haldane_analysis.py, fit_haldane()
+bounds = [
+    (0.001, 5.0),    # mu_max
+    (0.001, 10.0),   # Ks
+    (0.1, 1000.0),   # Ki
+    (0.05, 5.0),     # X_max
+    (0.001, 10.0),   # q
+    (1e-6, 0.5),     # X0
+]                    # S0 is FIXED, not fitted
+log_bounds = [(np.log(lo), np.log(hi)) for lo, hi in bounds]
 
-    if gompertz_params:
-        mu_init = gompertz_params.get('mu', 0.2) * 2.0   # Haldane μ_max > Gompertz μ
+def objective(log_params):
+    mu_max, Ks, Ki, X_max, q, X0 = np.exp(log_params)
+    X_pred, _S, solved = solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0,
+                                       return_status=True)
+    sse = np.sum((od - X_pred)**2)
+    return sse if solved else sse + SOLVER_FAILURE_PENALTY   # flat fallback is not a fit
 
-    p0 = np.array([mu_init, 0.1, 10.0, X_max_init, 0.1, X0_init, S0])
-
-    bounds = [
-        (0.001, 5.0),    # mu_max
-        (0.001, 10.0),   # Ks
-        (0.1, 1000.0),   # Ki
-        (0.05, 5.0),     # X_max
-        (0.001, 10.0),   # q
-        (1e-6, 0.5),     # X0
-        (0.01, 100.0),   # S0
-    ]
-
-    def objective(params):
-        mu_max, Ks, Ki, X_max, q, X0, S0_fit = params
-        X_pred, _ = solve_haldane(time, mu_max, Ks, Ki, X_max, q, X0, S0_fit)
-        return np.sum((od - X_pred)**2)    # Sum of squared residuals
-
-    result = minimize(objective, p0, method='L-BFGS-B', bounds=bounds,
-                      options={'maxiter': 5000})
+best = min((minimize(objective, clip_log(start(ki0)), method='L-BFGS-B',
+                     bounds=log_bounds, options={'maxiter': 5000})
+            for ki0 in KI_MULTISTART), key=lambda r: r.fun)
 ```
 
 ### 8.6 Gompertz vs. Haldane comparison (AIC)
@@ -855,15 +866,15 @@ AIC = n × ln(SS_res / n) + 2k
 
 where:
   n = number of data points
-  k = number of free parameters (3 for Gompertz, 7 for Haldane)
+  k = number of free parameters (3 for Gompertz, 6 for Haldane — S0 is fixed)
 ```
 
-Lower AIC is better. The Haldane model has 4 more parameters, so it must explain substantially more variance to justify its added complexity.
+Lower AIC is better. The Haldane model has 3 more parameters, so it must explain substantially more variance to justify its added complexity. Both models are scored on **the same window**: the Gompertz model is refitted on the points the Haldane fit sees (the pipeline's own parameters are kept if they describe that window better), because scoring truncated-window parameters against the full curve made "Haldane preferred" a foregone conclusion.
 
 ```python
-# From 05_haldane_analysis.py, lines 150-153
+# From 05_haldane_analysis.py
 n = len(od)
-k = 7  # Haldane has 7 parameters
+k = 6  # Haldane has 6 free parameters (S0 is held fixed)
 aic = n * np.log(ss_res / n) + 2 * k
 bic = n * np.log(ss_res / n) + k * np.log(n)
 ```
@@ -876,7 +887,10 @@ k = 3  # Gompertz has 3 parameters
 aic = n * np.log(ss_res / n) + 2 * k
 ```
 
-**Result:** 16/21 (76%) pesticide+LB strains preferred the Haldane model over Gompertz by AICc, confirming that substrate inhibition kinetics are at play.
+**Result:** see `results/tables/Haldane_Analysis/haldane_comparison.csv`. The
+16/21 (76%) "Haldane preferred" figure quoted here previously was produced
+before the same-window comparison and the S0/Ki fixes above, and does not
+describe the current code.
 
 ---
 
@@ -1144,7 +1158,7 @@ When invoked with `--include-bad`, the script attempts to rescue strains that we
 | MALATHION-MAL1 | Group2 | First Peak | 0.999 | Low R²: 0.919 |
 | MALATHION-MAL8 | Group2 | First Peak | 0.999 | Low R²: -0.323; High A error |
 
-**17 of 22 candidate bad strains were rescued** -- their poor original fits were caused by suboptimal truncation, not by lack of growth.
+A strain now counts as rescued only when the refit passes every quality gate of the main pipeline (R², parameter errors, growth, noise and residual gates), not merely when its R² improves. The table above predates that rule; the current rescues are listed in `results/tables/Advanced_Analysis/truncation_comparison/rescued_strains.csv`.
 
 ### 10.5 Interactive truncation validator
 
@@ -1180,7 +1194,17 @@ This enables systematic comparison of human expert judgment against the automate
 
 ### 11.1 Purpose
 
-To validate the pipeline's accuracy, we generated 480 synthetic growth curves with **known ground-truth parameters**, ran the pipeline on them, and measured how well it recovered the true classifications and parameters.
+To validate the pipeline's accuracy, we generate 1139 synthetic growth curves
+across 64 scenarios with **known ground-truth parameters**, run the pipeline on
+them, and measure how well it recovers the true classifications and parameters.
+
+The ground truth describes the curve that was actually written, not the
+sampler's request: `true_A`, `true_mu` and `true_lambda` are measured on the
+emitted trace, while the sampled targets are kept alongside as `requested_*`.
+`label_rule` records where each label came from (`scenario`, asserted by the
+catalog, or `oracle`, decided per curve by whether A and mu are recoverable),
+and `scoring_mode` carries the difficulty policy so `expected_class` stays a
+plain binary GOOD/BAD.
 
 ### 11.2 Growth models available for synthetic data
 
@@ -1224,98 +1248,146 @@ class HaldaneModel:
 
 ### 11.3 Noise models
 
-Four noise types simulate different real-world noise sources:
+`synthetic_data/src/noise_models.py` builds every trace's error term from
+components that are each anchored to a measured quantity on the four plates in
+this study, rather than to a chosen multiplier:
 
-```python
-# From synthetic_data/src/noise_models.py
+* **`ColoredNoise`** — white noise plus a fast (`tau_fast_h=0.5`) and a slow
+  (`tau_slow_h=7.5`) correlated component. Real TECAN residuals are correlated
+  in time; white residuals made the pipeline's lag-1 autocorrelation gate
+  almost impossible to fire, which flattered the benchmark.
+* **`RMSEBasedNoise`** — solves for the component that delivers a requested RMSE
+  exactly, so a scenario can ask for a target R² and get it.
+* **`BlankModel`** — samples a blank trace per media, so blank subtraction is
+  exercised rather than assumed.
+* **`inject_spikes` / `apply_signed_drift`** — bubble artefacts and evaporation
+  or condensation drift, at the magnitudes and rates measured on real wells.
+* **`InstrumentNoise` / `GaussianNoise` / `ODDependentNoise`** — kept for the
+  simpler scenarios and for backwards compatibility.
 
-# 1. Gaussian: constant σ across all OD values
-noise = np.random.normal(0, sigma, len(clean_curve))
+Nothing in the module calls `np.random.seed`; every generator takes an explicit
+`rng`, which is what makes the suite reproducible scenario by scenario.
 
-# 2. OD-Dependent: noise scales with signal (heteroscedastic)
-noise = np.random.normal(0, sigma_base + sigma_scale * clean_curve)
+Noise presets (`NOISE_PRESETS`, names unchanged). Each is a real well, named:
 
-# 3. Instrument noise: combines baseline, proportional, drift, and outliers
-noise = (baseline_noise +                           # constant floor
-         proportional_noise * clean_curve +          # scales with signal
-         drift * np.linspace(0, 1, n) +             # systematic drift
-         outlier_spikes)                              # rare large errors
+| Preset | Anchored to | Baseline σ | RMSE range |
+|--------|-------------|-----------|------------|
+| very_low | cleanest real well (Group 3 A1, σ̂ 0.00036) | 0.0003 | 0.0006–0.0012 |
+| low | p10 real well (σ̂ 0.00073, Group 3 B2) | 0.0005 | 0.0010–0.0020 |
+| medium | median of 96 Group 3 wells (σ̂ 0.00127) | 0.0009 | 0.0018–0.0036 |
+| high | p90 real well (σ̂ 0.00200, Group 3 C1) | 0.0020 | 0.0040–0.0080 |
+| very_high | noisiest well observed in 96 real wells (Group 3 H12) | 0.0020 | see the module |
 
-# 4. RMSE-Based: adjusts noise σ iteratively to achieve a target R²
-while abs(achieved_r2 - target_r2) > tolerance:
-    sigma = adjust(sigma, achieved_r2, target_r2)
-```
+The `very_high` preset is the noisiest *well* observed, not a multiple of the
+worst curve: the worst real condition-average whole-curve σ̂ is 0.00443.
 
-Noise presets (from `synthetic_data/config/default_config.yaml`):
+### 11.4 The 64 test scenarios
 
-| Preset | σ | Target R² | Description |
-|--------|---|-----------|-------------|
-| very_low | 0.002 | 0.995 | Clean instrument data |
-| low | 0.005 | 0.985 | Typical TECAN data |
-| medium | 0.015 | 0.96 | Moderate noise |
-| high | 0.03 | 0.92 | Noisy conditions |
-| very_high | 0.06 | 0.85 | Extreme noise |
+The scenarios are defined in `synthetic_data/src/curve_scenarios.py`, which is
+the only definition of what each one generates. They fall into three catalog
+buckets:
 
-### 11.4 The 32 test scenarios
+| Bucket | Scenarios | What it holds |
+|--------|-----------|---------------|
+| `GOOD_GROWTH_SCENARIOS` | 10 | plain growth the pipeline should accept |
+| `BAD_CURVE_SCENARIOS` | 15 | curves it should reject — dead wells, contamination, replicate artefacts, and curves whose fit is not recoverable |
+| `EDGE_CASE_SCENARIOS` | 39 | awkward but mostly legitimate curves: multi-phase shapes, decline and recovery, run-length geometries, model mismatch, noise ladders |
 
-The scenarios are defined in `synthetic_data/src/curve_scenarios.py` and fall into three categories:
+The full per-scenario table, with parameter ranges and per-scenario counts, is
+in `synthetic_data/README.md` and is generated from the catalog itself
+(`python scripts/generate_comprehensive.py --print-readme-tables`); it is not
+duplicated here, so it cannot go stale in two places at once.
 
-**Good growth scenarios (7 types, 105 curves):**
+A `scoring_mode` other than `standard` marks a block the present gate set
+cannot decide fairly, and those curves are scored separately from the headline
+rather than folded into it:
 
-| Scenario | A range | μ range | λ range | Purpose |
-|----------|---------|---------|---------|---------|
-| standard | 0.8–1.5 | 0.1–0.3 | 2–8h | Typical LB growth |
-| high_A | 1.5–2.0 | 0.1–0.3 | 2–8h | Dense culture |
-| low_A | 0.15–0.35 | 0.05–0.15 | 2–8h | Minimal but valid |
-| fast_growth | 0.5–1.2 | 0.4–0.75 | 1–3h | Rapid growers |
-| slow_growth | 0.3–0.8 | 0.02–0.08 | 5–15h | Slow growers |
-| short_lag | 0.5–1.5 | 0.1–0.3 | 0.1–1h | No lag phase |
-| long_lag | 0.3–1.0 | 0.05–0.2 | 20–50h | Extended lag |
-
-**Bad curve scenarios (8 types, 120 curves):**
-
-| Scenario | Expected classification | Description |
-|----------|----------------------|-------------|
-| flat_no_growth | BAD | H₂O control — no growth at all |
-| contamination | BAD | High initial OD (0.15–0.4) |
-| minimal_growth | BAD | ΔOD < 0.05 |
-| high_noise | BAD | Valid growth obscured by noise (R² < 0.90) |
-| erratic | BAD | Random non-biological pattern |
-| declining | BAD | Only decreasing OD |
-| sparse_data | BAD | Only 20 time points |
-| truncated_early | BAD | 15h experiment (no stationary phase) |
-
-**Edge cases (17 types, 255 curves):**
-
-| Scenario | Challenge for the pipeline |
-|----------|---------------------------|
-| borderline_r2 | R² exactly near the 0.95 threshold |
-| truncation_challenge | Multiple local maxima |
-| death_phase | Clear decline after plateau |
-| diauxic_growth | Two distinct growth phases |
-| baranyi_generated | Non-Gompertz growth model |
-| logistic_generated | Symmetric instead of asymmetric sigmoid |
+| `scoring_mode` | n | Why it is held out |
+|---|---:|---|
+| `standard` | 867 | in the headline |
+| `model_mismatch` | 93 | in the headline; flagged because the generating model is not Gompertz |
+| `preprocessing_blind` | 99 | the preprocessing step hands the pipeline the replicate mean only, so a per-well artefact is invisible to it |
+| `a_not_identifiable` | 80 | the run stops before the plateau, so the asymptote is not identifiable from the data |
 
 ### 11.5 Validation metrics
 
-The pipeline was run on all 480 synthetic curves and compared against ground truth:
+`make step-9` runs the ordinary pipeline over the generated plates and scores
+the resulting `processing_results.csv` against `ground_truth.csv` with
+`synthetic_data/validation/benchmark.py`, which writes `report.json` and the
+per-curve, per-scenario, per-scenario-recovery and gate-attribution tables.
 
-| Metric | Value | Interpretation |
-|--------|-------|----------------|
-| **Accuracy** | 99.6% | Correct classifications / total |
-| **Precision** | 100% | True GOOD / (True GOOD + False GOOD) |
-| **Recall (Sensitivity)** | 99.4% | True GOOD / All actually GOOD |
-| **F1 Score** | 99.7% | Harmonic mean of precision and recall |
+The headline below is first-peak truncation (the interactive default), seed 42,
+scored over the 960 curves the present gate set can decide fairly. Because the
+suite is deliberately unbalanced, balanced accuracy leads and raw accuracy is
+reported with its prevalence:
+
+| Metric | Full suite (n=960) | The original 32 scenarios (n=532) |
+|--------|-------|-------|
+| **Balanced accuracy** | 87.9% | 96.8% |
+| **Sensitivity** | 85.6% | 93.5% |
+| **Specificity** | 90.2% | 100.0% |
+| Accuracy (prevalence 56.4% GOOD) | 87.6% | 96.1% |
+| Precision | 91.9% | 100.0% |
+| F1 | 88.6% | 96.7% |
+| MCC | 0.753 | 0.922 |
+| TP / TN / FP / FN | 463 / 378 / 41 / 78 | 304 / 207 / 0 / 21 |
+
+Over all 1139 curves under one flat rule, ignoring the scoring policy: 81.9%
+accuracy, 81.3% balanced. The two held-out blocks score 85.0%
+(`a_not_identifiable`, 80 curves) and 24.2% (`preprocessing_blind`, 99 curves).
+Both are flat-rule figures -- correct means the accept/reject verdict matched
+the truth. `report.json` also scores `a_not_identifiable` under a stricter
+block rule (correct if the curve was rejected, or the fitted A is within 15 %
+of the observed final OD and no more than 1.20 x the last observed point),
+which it passes 12 times out of 80 -- 15.0 %: the verdict is right on 68 of
+the 80 while the reported amplitude is supportable on 12, and that gap is why
+the block is held out. Both numbers appear together in
+`docs/BENCHMARK_LEDGER.md` and in the rendered summary.
+The right-hand column is the subset comparable with the number this document
+used to quote for a 480-curve suite; `docs/BENCHMARK_LEDGER.md` decomposes the
+difference between the two, and no number in this section is typed by hand —
+they are all in `synthetic_data/benchmark/v2/report.json`, which
+`synthetic_data/scripts/validation_summary.py` renders into a markdown summary
+on demand (`make validation-summary`; the rendering is a build artefact and is
+not committed).
+
+The misses concentrate in: hourly-sampled and fast-growing curves that fall
+under the 20-point window minimum; curves whose residuals are correlated enough
+to trip the 0.7 autocorrelation gate (the residuals became coloured when the
+noise model was recalibrated, and the gate now fires on 17% of fitted curves
+against 5.8% before, with the threshold untouched); diauxic curves whose second
+phase the Gompertz shape cannot absorb; and contamination at the measured
+acceptance boundary, which the pipeline accepts outright.
 
 ### 11.6 Parameter recovery accuracy
 
-For the 327 correctly classified GOOD curves, how well did the pipeline recover the true parameters?
+Pooled over the curves the pipeline accepted and the truth calls GOOD, against
+the **measured** parameters of the emitted curve:
 
-| Parameter | R² | RMSE | Mean Bias | Interpretation |
-|-----------|-----|------|-----------|----------------|
-| A (max OD) | 0.989 | 0.034 | +0.023 | Excellent — slight overestimate |
-| μ (growth rate) | 0.914 | 0.029 | -0.007 | Good — slight underestimate |
-| λ (lag time) | 0.986 | 0.931h | -0.320h | Excellent — slight early estimate |
+| Set | n | A R² | A RMSE | μ R² | μ RMSE | λ R² | λ RMSE |
+|-----|--:|-----:|-------:|-----:|-------:|-----:|-------:|
+| The original 32 scenarios | 304 | 0.919 | 0.101 | 0.987 | 0.0093 | 0.999 | 0.306 |
+| Full headline | 463 | 0.740 | 0.181 | 0.988 | 0.0091 | 0.995 | 0.878 |
+| All accepted GOOD, including the held-out blocks | 555 | 0.405 | 0.262 | 0.991 | 0.0083 | 0.975 | 1.772 |
+
+A recovery falls as the held-out blocks enter because those families
+deliberately contain amplitudes a Gompertz asymptote is not meant to recover;
+μ and λ recovery improved roughly threefold over the previous suite.
+
+Two cautions belong with these numbers and are printed in the generated summary
+as well:
+
+* **They are conditioned on the pipeline's own verdict.** Over every fitted
+  GOOD curve, without the pipeline's filter, A RMSE is 0.786 against 0.262 on
+  the accepted subset — a factor of 3.0. The gap is selection, not accuracy:
+  tightening any gate would raise the accepted-only figure without changing the
+  estimator.
+* **The pipeline's parameter standard errors are not confidence intervals.** A
+  nominal 95% interval covers the truth for 11.9% of accepted curves for A,
+  25.4% for μ and 10.3% for λ; the median |z| is 8.2, 3.7 and 9.5. The
+  least-squares covariance assumes independent residuals and the residuals are
+  correlated, so the intervals are too narrow by roughly an order of magnitude
+  for A and λ. Treat them as a relative precision indicator.
 
 ---
 
@@ -1347,20 +1419,19 @@ Raw OD data
 ### Training
 
 - **Model:** `HistGradientBoostingClassifier` (max_depth=5, min_samples_leaf=5, class_weight='balanced')
-- **Data:** 480 synthetic + 85 real audited curves (7 "unsure" excluded) = 565 total
-- **Split:** 70/30 stratified holdout (395 train / 170 test)
+- **Data:** the synthetic suite only. 1059 curves enter training (565 GOOD / 494 BAD), 936 of them reaching the post-fit stage (533 GOOD / 403 BAD). 80 curves are excluded as not trainable — their asymptote is not identifiable from the observed window, so a label on `gompertz_a` would be noise — and 15 train-split rows are dropped by a label-agreement guard, from `short_experiment` and `short_lag`, whose labels are not predictable from their own post-fit features. The 85 audited real curves (7 "unsure" excluded) are an **external test set** and are never trained on.
+- **Split:** stratified holdout plus 5-fold cross-validation
 - **Pre-fit features:** Extracted from actual raw OD data files (not CSV proxies) to avoid train/inference mismatch
-- **Deployment:** After holdout evaluation, final model retrained on all 565 curves
+- **Truncation:** features are built in a named truncation mode (`first_peak` for the committed model) and the mode is recorded in `feature_config.json`
+- **Deployment:** After holdout evaluation, the final model is retrained on the synthetic training rows
 
-### Held-Out Test Results (170 curves, never seen during training)
+### Results (synthetic training set, real audited curves held out)
 
-| Metric | Value |
-|--------|-------|
-| Accuracy | 95.9% |
-| Precision | 95.8% |
-| Recall | 97.4% |
-| F1 Score | 97.0% |
-| Specificity | 94.3% |
+5-fold cross-validation on the synthetic suite (features built with first-peak truncation): post-fit classifier accuracy 91.9 %, precision 91.3 %, recall 94.9 %, specificity 87.9 %; pre-fit gate accuracy 88.3 %. On the 85 audited real curves, which are never trained on (66 of them reach the post-fit stage): accuracy 81.8 %, precision 100.0 %, recall 78.2 %, specificity 100.0 %.
+
+Retraining on the rebuilt suite is a **regression in accuracy on real data and is published as one**: scored by the same code on the same 66 rows, the previous model gave accuracy 90.9 %, precision 98.0 %, recall 90.9 %, specificity 90.9 % (confusion 50/5/1/10) against 81.8 % / 100.0 % / 78.2 % / 100.0 % (43/12/0/11) now. The new model is markedly more conservative: it makes no false-GOOD calls at all on real plates, at the cost of calling 12 real GOOD curves BAD. The training suite went from 71.9 % GOOD to 56.6 % GOOD and gained several families of hard GOOD curves, and the model followed that prior. Whether the trade is wanted is a policy question; the deployed thresholds (0.70 / 0.30) were **not** changed, and the threshold sweep in `feature_config.json` is reported as advisory only.
+
+The exact numbers of the committed model are in `models/feature_config.json`, and section 9 of `docs/BENCHMARK_LEDGER.md` gives the before/after with the command that reproduces it. Two earlier figures are **not** comparable and should not be quoted: 95.9 % / 94.3 % came from a model trained on part of the real audit set, and 94.0 % over 67 fitted curves came from the pre-rebuild training code with a different `fit_attempted` mask.
 
 **Probability distribution:** Strongly bimodal — all predictions are p<0.05 or p>0.95. No borderline cases in current dataset.
 
@@ -1369,7 +1440,7 @@ Raw OD data
 | File | Purpose |
 |------|---------|
 | `scripts/ml_classifier.py` | Runtime module (feature extraction, PreFitGate, PostFitClassifier) |
-| `scripts/09_train_classifier.py` | Training script (70/30 split, real data mixing, metadata) |
+| `scripts/09_train_classifier.py` | Training script (70/30 split on synthetic curves, real audit held out, metadata) |
 | `models/prefit_gate.joblib` | Trained pre-fit gate model (gitignored) |
 | `models/postfit_classifier.joblib` | Trained post-fit classifier (gitignored) |
 | `models/feature_config.json` | Feature names, training metrics, timestamp (committed) |
@@ -1533,7 +1604,7 @@ make run-pipeline         # Run Steps 0-3: preprocess → truncate → fit → c
 make run-haldane          # Run Step 4: Haldane substrate inhibition analysis
 make run-advanced         # Run Step 5: GP + Bootstrap + Bayesian + Ensemble
 make run-all              # Run everything (Steps 0-9)
-make test                 # Run pytest test suite (118 tests)
+make test                 # Run pytest test suite (830 tests)
 make validate             # Interactive curve auditor
 ```
 
@@ -1602,15 +1673,39 @@ python scripts/08_validate_truncation.py --comparison-csv path/to/method_compari
 
 **Step 9: Synthetic validation:**
 
-```bash
-# Generate comprehensive test suite (480 curves)
-python synthetic_data/scripts/generate_comprehensive.py \
-    --output-dir synthetic_data/output/comprehensive_test
+Step 9 does not re-run the analysis on its own: it runs the ordinary pipeline
+over the generated plates and scores the resulting `processing_results.csv`
+against `ground_truth.csv` with `synthetic_data/validation/benchmark.py`. (The
+older `synthetic_data/scripts/validate_pipeline.py`, which re-ran the analysis
+from a path that did not exist and wrote a second, incompatible metrics schema,
+has been removed.)
 
-# Run pipeline on synthetic data and compare to ground truth
-python synthetic_data/scripts/validate_pipeline.py \
-    --test-dir synthetic_data/output/comprehensive_test
+```bash
+# Generate the comprehensive test suite (writes test_data/DATA + ground_truth.csv)
+python synthetic_data/scripts/generate_comprehensive.py \
+    --output synthetic_data/output/comprehensive_test
+
+# Run the pipeline over it and score it, first-peak truncation (the headline)
+make step-9              # = python scripts/run_full_pipeline.py --steps 9
+make step-9-all-modes    # first-peak and adaptive, one run directory each
+
+# Or score a finished run directly
+python synthetic_data/validation/benchmark.py \
+    --results-csv  synthetic_data/output/comprehensive_test/validation/first_peak/processing_results.csv \
+    --ground-truth synthetic_data/output/comprehensive_test/test_data/ground_truth.csv \
+    --out-dir      synthetic_data/output/comprehensive_test/validation/first_peak \
+    --truncation-mode first_peak
+
+# Render the human-readable summary from a scored run (report.json only)
+make validation-summary
+python synthetic_data/scripts/validation_summary.py \
+    --run-dir synthetic_data/output/comprehensive_test/validation/first_peak
 ```
+
+Each mode writes its own directory (`validation/first_peak/`,
+`validation/adaptive/`), so an adaptive run can no longer overwrite the
+first-peak headline in place, and the mode is recorded in the run's
+`run_settings.json` sidecar and in the emitted `report.json`.
 
 ### 13.3 CI/CD
 
@@ -1630,12 +1725,12 @@ The `.github/workflows/test.yml` file configures automatic testing on GitHub:
 | 1 | Bifenthrin, Flupyradifurone, Lambda-Cyhalothrin | 24 | 12 | 12 |
 | 2 | Malathion, Lambda-Cyhalothrin | 24 | 11 | 13 |
 | 3 | Imidacloprid, Lambda-Cyhalothrin | 24 | 12 | 12 |
-| 4 | Permethrin, Lambda-Cyhalothrin | 20 | 9 | 11 |
-| **Total** | | **92** | **44 (48%)** | **48 (52%)** |
+| 4 | Permethrin, Lambda-Cyhalothrin | 20 | 10 | 10 |
+| **Total** | | **92** | **45 (49%)** | **47 (51%)** |
 
-Manual visual audit: **91.3%** of classifications validated correct (84/92).
+These are the committed tables, produced with adaptive (cross-validated) truncation and rule-based classification. The visual audit (`validation_audit.csv`) was recorded against an earlier version of the pipeline; of its 85 confident calls the current adaptive run reproduces 73 and the interactive first-peak rule 74. Almost every difference is a well that rose by 0.05 to 0.13 OD, which that earlier version accepted and the present 0.15 OD minimum-growth gate rejects.
 
-### 15.2 Growth parameter distributions (44 GOOD curves)
+### 15.2 Growth parameter distributions (GOOD curves; see growth_rate_summary_for_collaboration.csv for the current values)
 
 | Parameter | Min | Max | Mean | Std |
 |-----------|-----|-----|------|-----|
@@ -1646,39 +1741,45 @@ Manual visual audit: **91.3%** of classifications validated correct (84/92).
 
 ### 15.3 Haldane analysis (21 pesticide+LB strains)
 
-- **Haldane preferred over Gompertz by AICc:** 16/21 (76%)
-- All 6 pesticides show measurable Ki (inhibition constant)
-- Confirms substrate inhibition kinetics are present in pesticide bioremediators
+- **Haldane preferred over Gompertz by AICc:** 7/22, all in strains whose comparison window is the whole 95-100 h run, where a single Gompertz cannot describe the decline phase (Malathion + LB: Gompertz R² < 0 on the full window against 0.998 on its own growth window)
+- **Ki identified:** 0/22. With S0 fixed and the profile-likelihood test, no strain constrains Ki; the previously reported Ki values (all ~10) were the optimiser's starting value, which it could not move from.
+- The data therefore do not support a substrate-inhibition claim; the model comparison is kept as a documented negative result.
 
 ### 15.4 Truncation method comparison
 
-- **Adaptive R² best overall:** mean R² 0.9959
-- **17/22 bad strains rescued** by alternative truncation methods
+- Methods are now ranked by median R² with failure counts alongside; see `method_summary.csv`
+- A BAD strain counts as rescued only when its refit passes every quality gate; see `rescued_strains.csv`
 
 ### 15.5 Bad strain rescue
 
-17 of 22 candidate bad strains were rescued by alternative truncation methods.
+See `results/tables/Advanced_Analysis/truncation_comparison/rescued_strains.csv` for the current list; the earlier figure of 17 of 22 counted any R² improvement as a rescue, including water controls.
 
 ### 15.6 Pipeline validation
 
 | Validation type | Metric | Value |
 |----------------|--------|-------|
-| **Synthetic validation** (480 curves) | Accuracy | 99.6% |
-| | Precision | 100% |
-| | Recall | 99.4% |
-| | F1 Score | 99.7% |
-| **ML Classifier** (170 held-out curves) | Accuracy | 95.9% |
-| | Precision | 95.8% |
-| | Recall | 97.4% |
-| | F1 Score | 97.0% |
-| | Specificity | 94.3% |
-| **Manual audit** (92 real curves) | Agreement | 91.3% |
+| **Synthetic validation** (1139 curves, 64 scenarios, first-peak rule; 960 scored in the headline) | Balanced accuracy | 87.9% |
+| | Sensitivity | 85.6% |
+| | Specificity | 90.2% |
+| | Accuracy | 87.6% |
+| | Accuracy, the original 32 scenarios (n=532) | 96.1% |
+| | Accuracy, all 1139 under one flat rule | 81.9% |
+| **ML Classifier** (5-fold CV on the synthetic suite, post-fit) | Accuracy | 91.9% |
+| | Precision | 91.3% |
+| | Recall | 94.9% |
+| | Specificity | 87.9% |
+| **ML Classifier** (85 audited real curves, held out; 66 fitted) | Accuracy | 81.8% |
+| | Precision | 100.0% |
+| | Recall | 78.2% |
+| | Specificity | 100.0% |
+| **Visual audit** (85 confident calls, earlier pipeline version) | Reproduced by first-peak rule | 74 |
+| | Reproduced by adaptive rule | 73 |
 
-The ML classifier uses a two-stage HistGradientBoosting architecture trained on 395 curves (70/30 stratified split from 565 total: 480 synthetic + 85 real audited). Probability distribution is bimodal — all predictions are p<0.05 or p>0.95 with no borderline cases. Pre-fit gate rejects 40/53 BAD curves (75%) with 0 false rejects, saving expensive Gompertz fitting.
+The ML classifier uses a two-stage HistGradientBoosting architecture trained on the synthetic suite only; the 85 audited real curves are an external test set. Its real-data accuracy fell from 90.9 % to 81.8 % when it was retrained on the rebuilt suite, while its specificity rose to 100 % — see section 12. It is off by default (`ml_classifier.enabled: false`) and, in the lab interface, only ever a second opinion next to the rule-based call.
 
 ### 15.7 Test suite
 
-118 tests across 7 test files covering Gompertz fitting, Haldane ODE, classification logic, ensemble truncation, GP truncation, bootstrap, MCCV truncation, incomplete curve detection, ML classifier feature extraction, metadata parsing, and integration tests.
+830 tests across 31 test files covering Gompertz fitting, Haldane ODE, classification logic, ensemble truncation, GP truncation, bootstrap, MCCV truncation, incomplete curve detection, ML classifier feature extraction, metadata parsing, the lab interface, the documentation, and — under `tests/synthetic/` — the synthetic generator, its truth schema, its noise and shape libraries, the benchmark validator and the pipeline's run provenance. `python -m pytest tests --collect-only -q` prints the current count.
 
 ---
 

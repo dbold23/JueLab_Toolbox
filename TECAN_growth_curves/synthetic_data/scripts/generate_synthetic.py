@@ -23,9 +23,13 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import pandas as pd
+
 from src.data_generator import (
     SyntheticGrowthCurveGenerator,
-    generate_quick_test_set
+    curve_rows,
+    curve_seed,
+    generate_quick_test_set,
 )
 from src.output_formatter import TECANFormatWriter, BatchExporter
 from src.curve_scenarios import list_scenarios, ALL_SCENARIOS
@@ -98,7 +102,9 @@ Examples:
         '--n-curves',
         type=int,
         default=10,
-        help='Number of curves to generate (default: 10)'
+        help=('Number of curves to generate (default: 10). An artefact '
+              'scenario also emits an artefact-free twin of each curve, so '
+              'it writes 2N rows.')
     )
 
     parser.add_argument(
@@ -212,30 +218,10 @@ Examples:
             seed=args.seed
         )
 
-        # Convert to DataFrame for export
-        rows = []
-        for i, curve in enumerate(curves):
-            rows.append({
-                'curve_id': i,
-                'scenario': args.scenario,
-                'expected_class': curve.metadata.get('expected_class', 'UNKNOWN'),
-                'true_A': curve.parameters['A'],
-                'true_mu': curve.parameters['mu'],
-                'true_lambda': curve.parameters['lambda_'],
-                'model_type': curve.parameters['model_type'],
-                'initial_od': curve.parameters['initial_od'],
-                'noise_level': curve.metadata.get('noise_level'),
-                'actual_r_squared': curve.metadata.get('actual_r_squared'),
-                'rmse': curve.metadata.get('rmse'),
-                'max_od': curve.metadata.get('max_od'),
-                'delta_od': curve.metadata.get('delta_od'),
-                'n_points': len(curve.time),
-                'time': curve.time.tolist(),
-                'od600': curve.od600.tolist(),
-            })
-
-        import pandas as pd
-        curves_df = pd.DataFrame(rows)
+        # One row per curve in the full v2 ground-truth schema (truth.py):
+        # the generator measured every declared column, so the export selects
+        # rather than reconstructs.
+        curves_df = pd.DataFrame(curve_rows(curves))
 
         # Export
         writer = TECANFormatWriter(str(output_dir))
@@ -258,34 +244,15 @@ Examples:
                 noise_level=args.noise,
                 include_death_phase=args.include_death_phase,
                 duration_hours=args.duration,
-                seed=args.seed + i
+                # content-addressed, so curve i does not move when n changes
+                seed=curve_seed(args.seed, 'custom', i),
+                scenario='custom',
+                params={'expected_class': 'GOOD'},
             )
             curves.append(curve)
 
-        # Convert to DataFrame
-        rows = []
-        for i, curve in enumerate(curves):
-            rows.append({
-                'curve_id': i,
-                'scenario': 'custom',
-                'expected_class': 'GOOD',
-                'true_A': curve.parameters['A'],
-                'true_mu': curve.parameters['mu'],
-                'true_lambda': curve.parameters['lambda_'],
-                'model_type': curve.parameters['model_type'],
-                'initial_od': curve.parameters['initial_od'],
-                'noise_level': curve.metadata.get('noise_level'),
-                'actual_r_squared': curve.metadata.get('actual_r_squared'),
-                'rmse': curve.metadata.get('rmse'),
-                'max_od': curve.metadata.get('max_od'),
-                'delta_od': curve.metadata.get('delta_od'),
-                'n_points': len(curve.time),
-                'time': curve.time.tolist(),
-                'od600': curve.od600.tolist(),
-            })
-
-        import pandas as pd
-        curves_df = pd.DataFrame(rows)
+        # Same full v2 schema as every other generation path.
+        curves_df = pd.DataFrame(curve_rows(curves))
 
         # Export
         writer = TECANFormatWriter(str(output_dir))

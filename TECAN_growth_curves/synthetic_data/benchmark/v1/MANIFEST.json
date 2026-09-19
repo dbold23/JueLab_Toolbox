@@ -1,0 +1,69 @@
+{
+  "dataset_version": "v1",
+  "files": {
+    "DATA/SYNTHETIC_100pts_99h_DATA.csv": {
+      "sha256": "66895a5d69fa9187bcf51c38a5b03993073cd60dde0d505b6b3a536f3e2d12da",
+      "bytes": 29334
+    },
+    "DATA/SYNTHETIC_1205pts_99h_DATA.csv": {
+      "sha256": "9633efb86e01b819bbaf52fe5e8bcbb22512a41f17f9219d2e4110c3403a0d20",
+      "bytes": 354095
+    },
+    "DATA/SYNTHETIC_400pts_99h_DATA.csv": {
+      "sha256": "cc454464e7e4fccbb597480fe793d150de927c103f3840c708efedaccd00ba6a",
+      "bytes": 2983605
+    },
+    "DATA/SYNTHETIC_480pts_119h_DATA.csv": {
+      "sha256": "c468b152ad1b0dde9111d2adabfb168c956286f4dd800e5e6e0379dc4989fd49",
+      "bytes": 279492
+    },
+    "DATA/SYNTHETIC_600pts_149h_DATA.csv": {
+      "sha256": "24139d952cf988de98c2073e30dd56dfa2b43509d007c5f63ca7fc0c98548f82",
+      "bytes": 174385
+    },
+    "DATA/SYNTHETIC_80pts_19h_DATA.csv": {
+      "sha256": "35edcd3c465c22401c409ed3113c4f10a65598f3a22736a115dbe9a002cd542a",
+      "bytes": 23799
+    },
+    "HEADLINE.json": {
+      "sha256": "8938a030a94d5a4e88080717e5e04a689bf75eb2150f02bb817d9f6dca94ef7f",
+      "bytes": 3012
+    },
+    "README.md": {
+      "sha256": "a58ff3b687e603c03b54be229085a858aaf41ea1f614623cccf6f0a199a0683a",
+      "bytes": 4009
+    },
+    "VALIDATION_SUMMARY.md": {
+      "sha256": "3588cd2edab4b0965ae48e097e0d5c0edaf93b563329a9a780d54fce0e1afd04",
+      "bytes": 12506
+    },
+    "classification_summary.png": {
+      "sha256": "f244788f154342b55dfcb147cf118091b8645c0b7d7d29d2cfdd6538d1c6d9cc",
+      "bytes": 298791
+    },
+    "config.json": {
+      "sha256": "2cb8b0dfc6212d53663f69711c2da6aade9e6003a4f372562ab3ea12564001ae",
+      "bytes": 1638
+    },
+    "generation_summary.json": {
+      "sha256": "ed2b2cc7dabf5d4c44ea1c1341020015126a2c88cbf7adeff1155bcac9456974",
+      "bytes": 1309
+    },
+    "ground_truth.csv": {
+      "sha256": "596d8321eb4acc8ba93669dd169da69653073103a126247373214ad28568adc5",
+      "bytes": 101500
+    },
+    "processing_results.csv": {
+      "sha256": "960cc7b41e6d5a0e0ad57165ea5860ecbfad841905e8f2382567ac6e1bc4911d",
+      "bytes": 214533
+    },
+    "validation_metrics.json": {
+      "sha256": "51f54cef31882b3742e7d5f74aadebcc2fc8de32f63132d7e543af9ba1aeb542",
+      "bytes": 985
+    },
+    "validation_report.json": {
+      "sha256": "02bc78a0ba203743bebe977f1ad989de7e17b621d26af911645342c592bc3c8e",
+      "bytes": 1359
+    }
+  }
+}

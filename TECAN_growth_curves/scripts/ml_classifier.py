@@ -22,6 +22,30 @@ logger = logging.getLogger(__name__)
 # Feature definitions
 # ---------------------------------------------------------------------------
 
+#: Strain-name metadata. NOT model features -- see the note below. They are
+#: still extracted (and written into the feature dicts) because they are useful
+#: for stratifying a real-plate report by control/treatment, and because the
+#: KEY/plate path may one day supply them honestly.
+#:
+#: They were members of PREFIT_FEATURES and ALL_POSTFIT_FEATURES until the
+#: synthetic-suite audit (M27). Every synthetic training column is named
+#: ``SYNTHETIC_400pts_99h_CURVE0330_blanked``, which
+#: :func:`extract_metadata_features` deliberately refuses to parse, so both
+#: features were NaN for all 480 training rows; the trainer's
+#: ``clean_feature_matrix`` then froze them to the constant 0.0. The shipped
+#: models carry ``_bin_mapper.n_bins_non_missing_ == 1`` for both, and
+#: ``predict_proba`` is bit-identical (max |dp| = 0.0 over 200 random rows)
+#: whether they are 0/0, 1/10 or NaN -- so they are provably inert in training
+#: while taking real values (is_control in {0,1}, concentration 1..10) at
+#: inference: training/serving skew with no upside.
+#:
+#: They are also unsupported on real plates: over the 84 decided curves of
+#: results/tables/validation_audit.csv, is_control has ROC-AUC 0.45 and mutual
+#: information 0.0046 with the audited label, and concentration_numeric has
+#: AUC 0.524. Restore them only if a metadata-only model clears AUC >= 0.55 on
+#: that external test, and then only via the KEY/plate path where media comes
+#: from the KEY file -- never from the column name, which is the exact
+#: mechanism that produced the earlier curve-id leak.
 METADATA_FEATURES = [
     'is_control',           # 1 if H2O/LB control, 0 if treatment, NaN if unknown
     'concentration_numeric', # parsed numeric concentration from strain name
@@ -30,7 +54,7 @@ METADATA_FEATURES = [
 PREFIT_FEATURES = [
     'raw_delta_od', 'raw_max_od', 'raw_snr', 'raw_monotone_fraction',
     'raw_baseline_std', 'raw_baseline_mean', 'n_points', 'time_span',
-] + METADATA_FEATURES
+]
 
 POSTFIT_DIRECT_FEATURES = [
     'fit_r_squared', 'fit_rmse', 'fit_mae',
@@ -52,34 +76,116 @@ POSTFIT_DERIVED_FEATURES = [
 
 ALL_POSTFIT_FEATURES = (
     POSTFIT_DIRECT_FEATURES + POSTFIT_SECONDARY_FEATURES + POSTFIT_DERIVED_FEATURES
-    + METADATA_FEATURES
 )
+
+
+# ---------------------------------------------------------------------------
+# Truncation mode provenance
+# ---------------------------------------------------------------------------
+
+#: Truncation modes a run can resolve to (the vocabulary of
+#: run_settings.json's ``truncation_mode``).
+TRUNCATION_MODES = ('adaptive', 'first_peak', 'global_max')
+
+
+def check_truncation_mode(trained_mode, deployed_mode, source='post-fit classifier'):
+    """Warn when a model is being used under a different truncation mode.
+
+    A model trained on first-peak features sees a different ``truncation_time``,
+    ``points_used`` and fit-quality distribution than an adaptive run produces,
+    so the mode is part of the model's contract. Returns the warning message
+    (also logged) or None when the modes agree or either is unknown.
+    """
+    if not trained_mode or not deployed_mode:
+        return None
+    if str(trained_mode) == str(deployed_mode):
+        return None
+    msg = (
+        f"{source}: truncation mode mismatch -- the model was trained on "
+        f"features built with truncation mode '{trained_mode}' but this run "
+        f"resolves to '{deployed_mode}'. Fit-quality features are not "
+        f"comparable across modes; retrain with --truncation-mode "
+        f"{deployed_mode} or run the pipeline in '{trained_mode}' mode."
+    )
+    logger.warning(msg)
+    return msg
+
+
+def _load_feature_config(path):
+    """Read a models/feature_config.json, or {} when it is absent/unreadable."""
+    try:
+        with open(path) as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
 
 
 # ---------------------------------------------------------------------------
 # Feature extraction
 # ---------------------------------------------------------------------------
 
-def extract_metadata_features(strain_name: Optional[str]) -> Dict[str, float]:
-    """Extract biological metadata from strain name.
+# Media tokens used by the lab naming convention 'MEDIA-STRAINdigits'
+# (e.g. 'H2O-MAL10', 'MALATHIONANDLB-MAL4'). Anything else — synthetic curve
+# ids, plate labels, free-form names — yields NaN metadata rather than a
+# number that happens to be parseable.
+CONTROL_MEDIA_TOKENS = frozenset({'H2O', 'LB'})
 
-    Parses naming conventions like 'H2O-MAL10', 'LB-CISPERM1', 'Bifenthrin-BIF3'.
-    Returns is_control (1/0) and numeric concentration.
+TREATMENT_MEDIA_TOKENS = frozenset({
+    'BIFENTHRIN', 'CISPERMETHRIN', 'CYPERMETHRIN', 'FLUPYRADIFURONE',
+    'IMIDACLOPRID', 'LAMBDACYHALOTHRIN', 'MALATHION', 'PERMETHRIN',
+})
+
+# Pesticide-in-LB media are written '<PESTICIDE>ANDLB' and are treatments,
+# not controls.
+KNOWN_MEDIA_TOKENS = frozenset(
+    CONTROL_MEDIA_TOKENS
+    | TREATMENT_MEDIA_TOKENS
+    | {f'{t}ANDLB' for t in TREATMENT_MEDIA_TOKENS}
+)
+
+# Strain part of the lab convention: letters then at most 3 digits of
+# concentration (the real names top out at 2, e.g. 'MAL10', 'LCY01').
+_STRAIN_CONCENTRATION_RE = re.compile(r'^[A-Z]+(\d{1,3})$')
+
+
+def extract_metadata_features(strain_name: Optional[str]) -> Dict[str, float]:
+    """Extract biological metadata from a strain name.
+
+    Only the lab naming convention 'MEDIA-STRAINdigits' is parsed, where MEDIA
+    is a known media token (see KNOWN_MEDIA_TOKENS): 'H2O-MAL10' -> control,
+    concentration 10; 'MALATHIONANDLB-MAL4' -> treatment, concentration 4.
+
+    Names that do not follow the convention return NaN for both features. This
+    matters for synthetic training curves ('CURVE0330'): parsing their trailing
+    digits would hand the model the curve id, which encodes the scenario and
+    therefore the label.
+
+    Returns is_control (1/0/NaN) and concentration_numeric (float/NaN).
     """
+    nan = float('nan')
+    features = {'is_control': nan, 'concentration_numeric': nan}
+
     if not strain_name:
-        return {'is_control': float('nan'), 'concentration_numeric': float('nan')}
+        return features
 
     name = str(strain_name).strip().upper()
 
-    # Detect controls: H2O or LB prefix (before the dash)
-    prefix = name.split('-')[0] if '-' in name else name
-    is_control = 1.0 if prefix in ('H2O', 'LB') else 0.0
+    # Exactly one dash separates media from strain in the lab convention
+    if name.count('-') != 1:
+        return features
 
-    # Extract trailing number as concentration
-    m = re.search(r'(\d+)\s*$', name)
-    concentration = float(m.group(1)) if m else float('nan')
+    media, strain = name.split('-')
+    if media not in KNOWN_MEDIA_TOKENS:
+        return features
 
-    return {'is_control': is_control, 'concentration_numeric': concentration}
+    features['is_control'] = 1.0 if media in CONTROL_MEDIA_TOKENS else 0.0
+
+    m = _STRAIN_CONCENTRATION_RE.match(strain)
+    if m:
+        features['concentration_numeric'] = float(m.group(1))
+
+    return features
 
 
 def extract_prefit_features(
@@ -197,9 +303,17 @@ class PreFitGate:
         self,
         model_path: Optional[str] = None,
         reject_threshold: float = 0.2,
+        feature_config_path: Optional[str] = None,
+        truncation_mode: Optional[str] = None,
     ):
         self.reject_threshold = reject_threshold
         self.model = None
+        #: Feature order the *loaded* model was trained with. Read from
+        #: feature_config.json when present so a model shipped with an older
+        #: feature list keeps working after the list changes in code.
+        self.feature_names = list(PREFIT_FEATURES)
+        self.trained_truncation_mode = None
+        self.truncation_mode_warning = None
 
         self._good_class_idx = 1  # Default: class 1 = GOOD
 
@@ -214,9 +328,30 @@ class PreFitGate:
         else:
             logger.warning(f"Pre-fit gate model not found at {path}, gate disabled")
 
+        cfg_path = Path(feature_config_path) if feature_config_path else self._default_config_path()
+        cfg = _load_feature_config(cfg_path)
+        names = cfg.get('prefit_feature_names')
+        if names:
+            self.feature_names = list(names)
+            if list(names) != list(PREFIT_FEATURES):
+                logger.warning(
+                    "Pre-fit gate was trained on a different feature list than "
+                    "this code defines (model: %s; code: %s). Using the model's "
+                    "list; retrain to bring them back in step.",
+                    list(names), list(PREFIT_FEATURES),
+                )
+        self.trained_truncation_mode = cfg.get('truncation_mode')
+        self.truncation_mode_warning = check_truncation_mode(
+            self.trained_truncation_mode, truncation_mode, source='pre-fit gate'
+        )
+
     @staticmethod
     def _default_path() -> Path:
         return Path(__file__).parent.parent / 'models' / 'prefit_gate.joblib'
+
+    @staticmethod
+    def _default_config_path() -> Path:
+        return Path(__file__).parent.parent / 'models' / 'feature_config.json'
 
     def should_skip(
         self,
@@ -229,7 +364,7 @@ class PreFitGate:
             return False
 
         features = extract_prefit_features(time, od600, strain_name=strain_name)
-        X = np.array([[features.get(f, float('nan')) for f in PREFIT_FEATURES]])
+        X = np.array([[features.get(f, float('nan')) for f in self.feature_names]])
 
         p_good = self.model.predict_proba(X)[0, self._good_class_idx]
         return p_good <= self.reject_threshold
@@ -249,17 +384,30 @@ class PostFitClassifier:
       otherwise           → BORDERLINE (needs manual review)
     """
 
+    #: The DEPLOYED decision gate. These are policy, not a model artefact:
+    #: changing them changes which curves a run calls GOOD, so they move only
+    #: by an explicit config/caller value, never because a retrain wrote a
+    #: different number into feature_config.json. A model's own
+    #: ``recommended_thresholds`` are read and reported (see
+    #: :attr:`recommended_thresholds`) but are advisory only.
+    DEFAULT_GOOD_THRESHOLD = 0.7
+    DEFAULT_BAD_THRESHOLD = 0.3
+
     def __init__(
         self,
         model_path: Optional[str] = None,
         feature_config_path: Optional[str] = None,
-        good_threshold: float = 0.7,
-        bad_threshold: float = 0.3,
+        good_threshold: Optional[float] = DEFAULT_GOOD_THRESHOLD,
+        bad_threshold: Optional[float] = DEFAULT_BAD_THRESHOLD,
+        truncation_mode: Optional[str] = None,
     ):
-        self.good_threshold = good_threshold
-        self.bad_threshold = bad_threshold
         self.model = None
-        self.feature_names = ALL_POSTFIT_FEATURES
+        self.feature_names = list(ALL_POSTFIT_FEATURES)
+        self.trained_truncation_mode = None
+        self.truncation_mode_warning = None
+        #: Thresholds the trainer re-derived on a lab-weighted validation
+        #: split, or None when the model predates the sweep.
+        self.recommended_thresholds = None
         self._good_class_idx = 1  # Default: class 1 = GOOD
 
         path = Path(model_path) if model_path else self._default_model_path()
@@ -273,10 +421,59 @@ class PostFitClassifier:
 
         # Load feature config if available
         cfg_path = Path(feature_config_path) if feature_config_path else self._default_config_path()
-        if cfg_path.exists():
-            with open(cfg_path) as f:
-                cfg = json.load(f)
-            self.feature_names = cfg.get('postfit_feature_names', self.feature_names)
+        cfg = _load_feature_config(cfg_path)
+        self.feature_names = list(cfg.get('postfit_feature_names', self.feature_names))
+
+        # Thresholds. The active gate is the caller's value, and nothing else:
+        # a model card's recommendation is recorded and logged for the operator
+        # but never applied, so a retrain cannot silently move the deployed
+        # GOOD gate (e.g. 0.70 -> 0.15) without a policy decision.
+        rec = cfg.get('recommended_thresholds') or {}
+        if rec.get('good_threshold') is not None and rec.get('bad_threshold') is not None:
+            self.recommended_thresholds = {
+                'good_threshold': float(rec['good_threshold']),
+                'bad_threshold': float(rec['bad_threshold']),
+            }
+        self.good_threshold = self._resolve_threshold(
+            good_threshold, 'good_threshold', self.DEFAULT_GOOD_THRESHOLD
+        )
+        self.bad_threshold = self._resolve_threshold(
+            bad_threshold, 'bad_threshold', self.DEFAULT_BAD_THRESHOLD
+        )
+
+        # Truncation mode: the fit-quality features a model was trained on are
+        # mode-specific, so using it under another mode is a provenance error.
+        self.trained_truncation_mode = cfg.get('truncation_mode')
+        self.truncation_mode_warning = check_truncation_mode(
+            self.trained_truncation_mode, truncation_mode,
+            source='post-fit classifier',
+        )
+
+    def _resolve_threshold(self, supplied, key, fallback):
+        """Resolve one decision threshold.
+
+        The caller's value wins; ``None`` (a caller or config field that never
+        got filled in) falls back to the deployed default, NOT to the model's
+        recommendation. A model that recommends something else is reported, so
+        an operator can decide to adopt it, but adopting it is a config change.
+        """
+        rec = (self.recommended_thresholds or {}).get(key)
+        if supplied is None:
+            active = float(fallback)
+            logger.warning(
+                "Post-fit %s was not supplied; using the deployed default "
+                "%.3f.", key, active,
+            )
+        else:
+            active = float(supplied)
+        if rec is not None and abs(active - float(rec)) > 1e-9:
+            logger.info(
+                "Post-fit %s: using %.3f; the loaded model recommends %.3f "
+                "(recommended_thresholds in feature_config.json). The "
+                "recommendation is advisory - set it in config.yaml to adopt "
+                "it.", key, active, float(rec),
+            )
+        return active
 
     @staticmethod
     def _default_model_path() -> Path:
