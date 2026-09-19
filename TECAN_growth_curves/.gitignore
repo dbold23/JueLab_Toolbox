@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+.claude/
+
+# Trained models (regenerate with: make train-classifier)
+models/*.joblib
+
+# Bayesian MCMC traces (large; regenerate with: make advanced)
+*.nc
+
+# Regenerable per-strain diagnostic plots (regenerate with: make full-pipeline)
+results/tables/*_Results/plots/
+results/tables/Haldane_Analysis/plots/
+results/tables/Advanced_Analysis/ensemble_truncation/plots/
+results/tables/Advanced_Analysis/gp_truncation/plots/
+results/tables/Advanced_Analysis/truncation_comparison/overlay_plots/
+results/tables/Advanced_Analysis/truncation_comparison/bad_strain_overlay_plots/
+synthetic_data/output/**/plots/
+# ML training features (rebuilt by scripts/09_train_classifier.py)
+synthetic_data/output/comprehensive_test/training_features/
+# Step 9 benchmark run directories (regenerate with: make step-9).
+# One directory per truncation mode under validation/, plus the opt-in
+# in-sample ML pass; each holds a per-curve plot for every synthetic curve
+# (~96 MB a run), which is why `make clean` removes them and git never sees
+# them. The tracked benchmark snapshot is not one of these run directories:
+# it is the three committed files inside validation_latest/, which git keeps
+# tracked despite this pattern and `make clean` (git clean) never deletes.
+synthetic_data/output/comprehensive_test/validation/
+synthetic_data/output/comprehensive_test/validation_*/
+
+# App runtime
+.streamlit/secrets.toml
+app/.cache/
+
+# App run folders and saved keys (export page); keep them out of the repository
+runs/
+keys/

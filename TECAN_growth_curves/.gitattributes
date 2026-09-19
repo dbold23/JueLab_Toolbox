@@ -1,0 +1,19 @@
+# Normalise line endings: store LF in the repository, check out LF everywhere.
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.csv text eol=lf
+Makefile text eol=lf
+
+# Binary content
+*.png binary
+*.jpg binary
+*.svg text
+*.xlsx binary
+*.pptx binary
+*.joblib binary
+*.nc binary
+*.ipynb text

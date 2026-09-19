@@ -198,9 +198,17 @@ class TestMetadataFeatures:
         assert meta['is_control'] == 0.0
         assert meta['concentration_numeric'] == 3.0
 
-    def test_synthetic_name_not_control(self):
+    def test_synthetic_name_gives_no_metadata(self):
+        # 'CURVE0005' is a synthetic curve id, not a lab strain name: parsing it
+        # would hand the model the curve id (which encodes the label).
         meta = extract_metadata_features('CURVE0005')
+        assert np.isnan(meta['is_control'])
+        assert np.isnan(meta['concentration_numeric'])
+
+    def test_treatment_in_lb_is_not_a_control(self):
+        meta = extract_metadata_features('MALATHIONANDLB-MAL4')
         assert meta['is_control'] == 0.0
+        assert meta['concentration_numeric'] == 4.0
 
     def test_none_returns_nan(self):
         meta = extract_metadata_features(None)

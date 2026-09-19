@@ -102,20 +102,23 @@ inclusion of diauxic shifts, death phase, or other non-Gompertz behavior.
 
 ## Validation Results
 
-The pipeline was validated on **480 synthetic growth curves** generated with
-known Gompertz parameters across a range of A, mu, and lambda values, with
-realistic levels of biological noise.
+The pipeline was validated on **1139 synthetic growth curves** across 64 scenarios with known Gompertz, logistic, Richards, Baranyi and Haldane parameters, generated with realistic noise, artefacts and blanks calibrated to the plates in this study.
+
+Numbers below are read from `synthetic_data/benchmark/v2/report.json` at export time (`first_peak` truncation, seed 42, dataset `760a04062cf2`, git `7fec4fe1ae4c`). They are not typed into this script.
 
 | Metric | Value |
 |--------|-------|
-| Overall classification accuracy | 84.4% |
-| Parameter recovery R^2 (A) | > 0.90 |
-| Parameter recovery R^2 (mu) | > 0.90 |
-| Parameter recovery R^2 (lambda) | > 0.90 |
+| Curves in the scored headline | 960 |
+| Balanced accuracy | 87.9% |
+| Sensitivity | 85.6% |
+| Specificity | 90.2% |
+| Accuracy | 87.6% |
+| Parameter recovery R^2 (A) | 0.405 |
+| Parameter recovery R^2 (mu) | 0.991 |
+| Parameter recovery R^2 (lambda) | 0.975 |
 
-Synthetic curves with parameters near classification boundaries (e.g., very
-low growth, high noise) accounted for most misclassifications. For curves
-with clear sigmoid growth, accuracy exceeded 95%.
+Parameter recovery is pooled over the curves the pipeline accepted and the truth calls good; it is conditioned on the pipeline's own verdict, so it is not an unbiased measure of the estimator. The R^2 for A is the lowest of the three because the suite deliberately contains families whose asymptote is not identifiable from the observed window -- runs that stop before the plateau. The full account, including which scenarios are missed and why, is in `docs/BENCHMARK_LEDGER.md` and in the rendered `VALIDATION_SUMMARY.md`.
+
 
 ---
 
@@ -181,11 +184,11 @@ only **Good** fits and uses human-readable column names:
 
 | Group | Pesticide(s) | Strains | Total Curves | Good | Bad |
 |-------|-------------|---------|--------------|------|-----|
-| Group1 | Bifenthrin, Flupyradifurone, LambdaCyhalothrin | BIF2, BIF6, BIF9, BiF7, FLUPC8, LCY4 | 24 | 13 | 11 |
+| Group1 | Bifenthrin, Flupyradifurone, LambdaCyhalothrin | BIF2, BIF6, BIF9, BiF7, FLUPC8, LCY4 | 24 | 12 | 12 |
 | Group2 | LAMBDACYHALOTHRIN, MALATHION | LCY1, MAL1, MAL10, MAL4, MAL5, MAL8 | 24 | 11 | 13 |
 | Group3 | IMIDACLOPRID, LAMBDACYHALOTHRIN | IMID2, IMID3, IMID5, IMID8, LCY01, LCY2 | 24 | 12 | 12 |
-| Group4 | LAMBDACYHALOTHRIN, PERMETHRIN | CISPERM1, CYPERM2, LCY3, PERM4, PERM7 | 20 | 12 | 8 |
-| **Total** | | | **92** | **48** | **44** |
+| Group4 | LAMBDACYHALOTHRIN, PERMETHRIN | CISPERM1, CYPERM2, LCY3, PERM4, PERM7 | 20 | 10 | 10 |
+| **Total** | | | **92** | **45** | **47** |
 
 ### Treatment Conditions per Strain
 

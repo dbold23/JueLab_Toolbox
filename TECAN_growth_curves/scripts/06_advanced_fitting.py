@@ -41,6 +41,12 @@ import yaml
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 warnings.filterwarnings('ignore', category=FutureWarning)
 
+# Shared exact curve lookup (see tecan_growth/legacy_data.py)
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from tecan_growth.legacy_data import find_curve  # noqa: E402
+
 # Optional: ruptures for changepoint detection
 try:
     import ruptures as rpt
@@ -90,12 +96,20 @@ class EnsembleTruncationResult:
 # =============================================================================
 
 def load_config(config_path=None):
-    """Load pipeline configuration from YAML."""
+    """Load pipeline configuration from YAML.
+
+    ``config_path`` may be a str or a Path: 07_compare_truncation_methods.py
+    passes ``--config`` straight through as a string, and run_full_pipeline.py
+    forwards ``--config`` to it, so a str used to crash step 7 with
+    ``AttributeError: 'str' object has no attribute 'exists'``.
+    """
     if config_path is None:
         config_path = Path(__file__).parent / 'config.yaml'
+    else:
+        config_path = Path(config_path)
     if config_path.exists():
         with open(config_path) as f:
-            return yaml.safe_load(f)
+            return yaml.safe_load(f) or {}
     return {}
 
 
@@ -152,41 +166,50 @@ def gompertz_model(t, A, mu, lam):
     return A * np.exp(-np.exp((mu * np.e / A) * (lam - t) + 1))
 
 
+#: Where each group's processed *_DATA.csv files live, relative to data/raw.
+#: Only used when config.yaml has no ``groups`` section.
+FALLBACK_GROUP_DIRS = {
+    'Group1': 'Group1/Group_1_DATA',
+    'Group2': 'Group 2/Group_2_DATA',
+    'Group3': 'Group 3/Group_3_DATA',
+    'Group4': 'Group 4/Group4_DATA',
+}
+
+
+def resolve_group_dir(data_dir, group, config=None):
+    """
+    Directory holding a group's processed ``*_DATA.csv`` files.
+
+    Read from ``config.yaml`` (``groups.<Group>.data_dir``); the literal map
+    above is used only when the config has no ``groups`` section. A configured
+    path under ``paths.raw_data`` is re-anchored on ``data_dir`` so a custom
+    ``--data-dir`` keeps working.
+    """
+    if config is None:
+        config = load_config() or {}
+    entry = ((config.get('groups') or {}).get(group) or {})
+    configured = entry.get('data_dir')
+    if not configured:
+        return Path(data_dir) / FALLBACK_GROUP_DIRS.get(group, group)
+
+    configured = Path(configured)
+    raw_base = Path((config.get('paths') or {}).get('raw_data', 'data/raw'))
+    try:
+        return Path(data_dir) / configured.relative_to(raw_base)
+    except ValueError:
+        return configured if configured.is_absolute() else _REPO_ROOT / configured
+
+
 def load_raw_data(data_dir, strain_name, group):
     """Load raw time-series for a strain. Returns (time, od) or (None, None)."""
-    group_dirs = {
-        'Group1': 'Group1/Group_1_DATA',
-        'Group2': 'Group 2/Group_2_DATA',
-        'Group3': 'Group 3/Group_3_DATA',
-        'Group4': 'Group 4/Group4_DATA',
-    }
-    group_path = data_dir / group_dirs.get(group, group)
+    group_path = resolve_group_dir(data_dir, group)
     if not group_path.exists():
         return None, None
 
-    for csv_path in group_path.glob("*_DATA.csv"):
-        try:
-            df = pd.read_csv(csv_path)
-            time_col = [c for c in df.columns if 'TIME' in c.upper()]
-            if not time_col:
-                continue
-            time = df[time_col[0]].values
-            for col in df.columns:
-                col_norm = col.replace('_blanked', '').replace('_', '-').upper()
-                strain_norm = strain_name.replace('_', '-').upper()
-                if col_norm == strain_norm:
-                    return time, df[col].values
-                # Partial match
-                parts = strain_name.upper().split('-')
-                col_upper = col.upper().replace('_BLANKED', '')
-                if len(parts) >= 2:
-                    prefix = parts[0].replace('-', '')
-                    suffix = parts[-1]
-                    if prefix in col_upper and suffix in col_upper:
-                        return time, df[col].values
-        except Exception:
-            continue
-    return None, None
+    # Exact, index-based column lookup shared with 05 (see
+    # tecan_growth.legacy_data). 07 and 08 import this function.
+    time, od, _csv_path, _column = find_curve(group_path, strain_name)
+    return time, od
 
 
 def thin_strain_data(strain_data, max_points=50):
@@ -576,29 +599,44 @@ def stationary_phase_truncate_wrapper(time, od, config=None):
 
 
 def adaptive_r2_truncate_wrapper(time, od, config=None):
-    """Wrapper around 01_gca.find_optimal_truncation_v2() (MCCV-based)."""
+    """
+    Wrapper around ``01_gca.truncate_at_max(use_adaptive=True)`` — the window
+    ``01_growth_curve_analysis.py --adaptive`` actually fits.
+
+    This used to call ``find_optimal_truncation_v2()`` directly, which skips
+    01's incomplete-curve guard (a curve still rising at the end is kept whole,
+    not cut at the MCCV optimum) and drops ``best_start_idx`` entirely, so the
+    "adaptive_r2" row of the comparison described a window the pipeline never
+    uses. Both ends of the window are returned now: the end index as the
+    method's index (what the consensus needs) and the start index in the
+    metadata, which 07 fits from.
+
+    Confidence is the Gompertz R² of that window, clipped to [0, 1]. The MCCV
+    landscape's own confidence is not available here without running the (very
+    slow) scan a second time, and it does not exist at all on the
+    incomplete-curve branch, where 01 keeps the whole curve without scanning.
+    """
     if _gca is None:
         return None, 0.0, {}
     try:
-        if hasattr(_gca, 'find_optimal_truncation_v2'):
-            landscape = _gca.find_optimal_truncation_v2(time, od)
-            idx = int(landscape.best_end_idx)
-            confidence = float(landscape.confidence)
-            return idx, confidence, {
-                'best_cv_score': landscape.best_cv_score,
-                'best_model': landscape.best_model,
-                'n_candidates': len(landscape.candidates),
-            }
-        else:
-            # Fallback to v1
-            result = _gca.find_optimal_truncation(time, od)
-            if isinstance(result, tuple) and len(result) >= 3:
-                idx = int(result[1])
-                confidence = float(result[2])
-            else:
-                idx = int(result)
-                confidence = 0.5
-            return idx, confidence, {'best_r2': confidence}
+        result = _gca.truncate_at_max(time, od, use_adaptive=True)
+        start_idx = int(getattr(result, 'start_index', 0) or 0)
+        end_idx = int(result.truncation_index)
+
+        confidence = 0.5
+        try:
+            fit = _gca.fit_gompertz(time[start_idx:end_idx + 1], od[start_idx:end_idx + 1])
+            if fit.success and np.isfinite(fit.r_squared):
+                confidence = float(min(max(fit.r_squared, 0.0), 1.0))
+        except Exception:
+            pass
+
+        return end_idx, confidence, {
+            'start_idx': start_idx,
+            'end_idx': end_idx,
+            'source': 'truncate_at_max(use_adaptive=True)',
+            'confidence_source': 'gompertz_r2_on_window',
+        }
     except Exception:
         return None, 0.0, {}
 
@@ -1724,6 +1762,11 @@ Methods applied:
                     row[f'{method_name}_idx'] = mdata.get('idx')
                     row[f'{method_name}_time'] = mdata.get('time')
                     row[f'{method_name}_confidence'] = mdata.get('confidence')
+                    # Methods that trim a noisy baseline (adaptive_r2) report
+                    # where their window starts; 07 has to fit from there.
+                    row[f'{method_name}_start_idx'] = (
+                        (mdata.get('metadata') or {}).get('start_idx')
+                    )
                 ens_rows.append(row)
 
                 # Plot

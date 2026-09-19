@@ -1,186 +1,159 @@
 #!/usr/bin/env python3
 """
-Preprocess Group 1 data from raw plate reader format to analysis-ready format.
+Turn a raw TECAN plate-reader export into the analysis-ready ``{MEDIA}_DATA.csv``
+files that ``01_growth_curve_analysis.py`` reads.
 
-Group 1 data format:
-- Raw file: 96-well plate format with columns A1-H12, Time in seconds
-- Key file: Maps wells to Media and Strain
+Input
+    * a values table  — SparkControl/i-control export (``.xlsx``) or the same
+      kinetic table saved as CSV (``Cycle Nr., Time [s], Temp. [°C], A1 … H12``)
+    * a key file      — ``Cell, Media, Strain`` (CSV or a sheet of the export)
 
-Output format (matches Groups 2-4):
-- Separate CSV per media type
-- Columns: TIME[H], {MEDIA}_{STRAIN}_blanked (averaged triplicates, blank-subtracted)
+Output (one file per media, matching the committed Group_*_DATA layout)
+    ``TIME[H]`` plus one ``{MEDIA}_{STRAIN}_blanked`` column per condition:
+    the media's blank wells averaged and subtracted at every time point, then
+    the replicate wells averaged.
+
+This script is a thin command-line wrapper: every numerical step lives in
+:mod:`tecan_growth.io` and :mod:`tecan_growth.preprocess`, which the lab
+interface and the test-suite use as well, so the CLI and the app cannot drift
+apart. Going through the package also fixes what the old stand-alone
+implementation got wrong on real plates:
+
+  * blank labels match case-insensitively (``Blank`` and ``BLANK``),
+  * key rows with no media/strain are ignored instead of writing ``nan_DATA.csv``,
+  * the time column is found by header (``Time [s]``, ``Time [min]``, ``Time [h]``),
+  * a key well with no data column is a readable error, not a bare ``KeyError``,
+  * missing/non-numeric cells are ignored in the averages instead of poisoning
+    the whole curve with ``NaN``.
+
+Usage:
+    python 02_preprocess_raw_plate_data.py VALUES.csv KEY.csv -o OUTPUT_DIR
 """
 
-import pandas as pd
-import numpy as np
-from pathlib import Path
-from collections import defaultdict
 import os
+import sys
+from pathlib import Path
+from typing import List
+
+# Allow running the script directly from anywhere (scripts/ is not a package).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from tecan_growth.io import load_plate           # noqa: E402
+from tecan_growth.preprocess import preprocess_plate  # noqa: E402
 
 
-def load_key_file(key_path: str) -> pd.DataFrame:
-    """Load the well mapping key file."""
-    key_df = pd.read_csv(key_path)
-    return key_df
-
-
-def load_data_file(data_path: str) -> pd.DataFrame:
-    """Load the raw plate reader data."""
-    data_df = pd.read_csv(data_path)
-    return data_df
-
-
-def get_wells_for_condition(key_df: pd.DataFrame, media: str, strain: str) -> list:
-    """Get all wells matching a media+strain combination."""
-    mask = (key_df['Media'] == media) & (key_df['Strain'] == strain)
-    return key_df[mask]['Cell'].tolist()
+class PreprocessError(RuntimeError):
+    """Raised when the values/key pair cannot be preprocessed."""
 
 
 def preprocess_group1(
     data_path: str,
     key_path: str,
     output_dir: str,
-    verbose: bool = True
-):
+    verbose: bool = True,
+) -> List[Path]:
     """
-    Convert Group 1 raw plate reader data to analysis-ready format.
+    Convert a raw plate-reader export to the analysis-ready ``{MEDIA}_DATA.csv``
+    files.
 
-    Steps:
-    1. Load key file and data file
-    2. Convert time from seconds to hours
-    3. Group wells by Media type
-    4. For each Media type:
-       a. Find blank wells (Strain == 'Blank')
-       b. Calculate blank average for each timepoint
-       c. For each non-blank strain:
-          - Find triplicate wells
-          - Average the triplicates
-          - Subtract the blank average
-       d. Save as {MEDIA}_DATA.csv
+    The name is historical (this started as a Group 1 helper); it works for any
+    group's export.
 
     Parameters
     ----------
     data_path : str
-        Path to raw data CSV (e.g., GrowthRate_ Group1_Values.csv)
+        Raw values file — ``.xlsx`` export or values CSV.
     key_path : str
-        Path to key CSV (e.g., GROUP1_KEY_V2.csv)
+        Key file mapping wells to media/strain (``Cell, Media, Strain``).
     output_dir : str
-        Directory to save processed files
+        Directory to write ``{MEDIA}_DATA.csv`` into (created if needed).
     verbose : bool
-        Print progress messages
-    """
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
+        Print progress and QC messages.
 
-    # Load files
-    if verbose:
-        print(f"Loading key file: {key_path}")
-    key_df = load_key_file(key_path)
+    Returns
+    -------
+    list of Path
+        The files written, one per media.
+
+    Raises
+    ------
+    PreprocessError
+        If a file is missing or the key does not match the data.
+    """
+    for label, p in (("data", data_path), ("key", key_path)):
+        if not Path(p).exists():
+            raise PreprocessError(f"{label} file not found: {p}")
 
     if verbose:
         print(f"Loading data file: {data_path}")
-    data_df = load_data_file(data_path)
+        print(f"Loading key file:  {key_path}")
 
-    # Convert time from seconds to hours
-    time_hours = data_df['Time [s]'] / 3600.0
+    try:
+        run = load_plate(data_path, key_path)
+    except (ValueError, KeyError) as exc:
+        raise PreprocessError(f"Could not read {data_path} / {key_path}: {exc}") from exc
 
-    if verbose:
-        print(f"Time range: {time_hours.min():.2f} to {time_hours.max():.2f} hours")
-        print(f"Number of timepoints: {len(time_hours)}")
-
-    # Get unique media types and strains
-    media_types = key_df['Media'].unique()
-    all_strains = key_df['Strain'].unique()
-    non_blank_strains = [s for s in all_strains if s != 'Blank']
-
-    if verbose:
-        print(f"\nMedia types found: {list(media_types)}")
-        print(f"Strains found: {list(non_blank_strains)}")
-
-    # Process each media type
-    for media in media_types:
+    for w in run.warnings:
         if verbose:
-            print(f"\n{'='*50}")
+            print(f"  NOTE: {w}")
+
+    try:
+        processed = preprocess_plate(run)
+    except (ValueError, KeyError) as exc:
+        raise PreprocessError(str(exc)) from exc
+
+    if verbose:
+        t = processed.time_h
+        print(f"Time range: {t.min():.2f} to {t.max():.2f} hours")
+        print(f"Number of timepoints: {len(t)}")
+        media_names = list(dict.fromkeys(processed.conditions.media))
+        print(f"\nMedia types found: {media_names}")
+        print(f"Strains found: {sorted(set(processed.conditions.strain))}")
+
+        for media in media_names:
+            print(f"\n{'=' * 50}")
             print(f"Processing media: {media}")
-
-        # Get strains for this media
-        media_key = key_df[key_df['Media'] == media]
-        strains_in_media = media_key['Strain'].unique()
-
-        # Start building output dataframe
-        output_data = {'TIME[H]': time_hours.values}
-
-        # Get blank wells and calculate blank average
-        blank_wells = get_wells_for_condition(key_df, media, 'Blank')
-
-        if len(blank_wells) > 0:
-            blank_data = data_df[blank_wells].values
-            blank_avg = np.mean(blank_data, axis=1)
-            if verbose:
-                print(f"  Blank wells: {blank_wells}")
-                print(f"  Blank average OD range: {blank_avg.min():.4f} to {blank_avg.max():.4f}")
-        else:
-            blank_avg = np.zeros(len(time_hours))
-            if verbose:
+            b = processed.blanks[processed.blanks.media == media]
+            if len(b) and b.blank_source.iloc[0] != "none":
+                print(f"  Blank wells: {int(b.n_blank_wells.iloc[0])} ({b.blank_source.iloc[0]})")
+                print(f"  Blank average OD range: {b.blank_mean.min():.4f} to {b.blank_mean.max():.4f}")
+            else:
                 print(f"  WARNING: No blank wells found for {media}, using zeros")
+            for _, row in processed.conditions[processed.conditions.media == media].iterrows():
+                _, od = processed.curve(row.curve_id)
+                print(f"  {row.strain}: wells {row.wells}, "
+                      f"blanked OD range: {od.min():.4f} to {od.max():.4f}")
 
-        # Process each non-blank strain
-        for strain in strains_in_media:
-            if strain == 'Blank':
-                continue
+        for msg in processed.qc:
+            print(f"  QC: {msg}")
 
-            wells = get_wells_for_condition(key_df, media, strain)
-
-            if len(wells) == 0:
-                if verbose:
-                    print(f"  No wells found for {strain}, skipping")
-                continue
-
-            # Get data for these wells
-            strain_data = data_df[wells].values
-
-            # Average triplicates
-            strain_avg = np.mean(strain_data, axis=1)
-
-            # Subtract blank
-            strain_blanked = strain_avg - blank_avg
-
-            # Ensure non-negative (can happen with noise)
-            strain_blanked = np.maximum(strain_blanked, 0)
-
-            # Column name matches expected format
-            col_name = f"{media}_{strain}_blanked"
-            output_data[col_name] = strain_blanked
-
-            if verbose:
-                print(f"  {strain}: wells {wells}, blanked OD range: {strain_blanked.min():.4f} to {strain_blanked.max():.4f}")
-
-        # Create output dataframe
-        output_df = pd.DataFrame(output_data)
-
-        # Save to file
-        output_path = os.path.join(output_dir, f"{media}_DATA.csv")
-        output_df.to_csv(output_path, index=False)
-
-        if verbose:
-            print(f"  Saved: {output_path}")
-            print(f"  Columns: {list(output_df.columns)}")
+    paths = processed.write_legacy_csvs(output_dir)
 
     if verbose:
-        print(f"\n{'='*50}")
-        print(f"Preprocessing complete!")
-        print(f"Output directory: {output_dir}")
+        print(f"\n{'=' * 50}")
+        for p in paths:
+            print(f"  Saved: {p}")
+        print("Preprocessing complete!")
+        print(f"Output directory: {os.fspath(output_dir)}")
+
+    return paths
+
+
+#: Backwards-compatible alias for the group-agnostic name.
+preprocess_plate_export = preprocess_group1
 
 
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='Preprocess Group 1 plate reader data for growth curve analysis'
+        description='Preprocess raw plate reader data for growth curve analysis'
     )
     parser.add_argument(
         'data_file',
-        help='Path to raw data CSV (e.g., GrowthRate_ Group1_Values.csv)'
+        help='Path to raw data (.xlsx export or values CSV, e.g. GrowthRate_ Group1_Values.csv)'
     )
     parser.add_argument(
         'key_file',
@@ -199,12 +172,16 @@ def main():
 
     args = parser.parse_args()
 
-    preprocess_group1(
-        data_path=args.data_file,
-        key_path=args.key_file,
-        output_dir=args.output,
-        verbose=not args.quiet
-    )
+    try:
+        preprocess_group1(
+            data_path=args.data_file,
+            key_path=args.key_file,
+            output_dir=args.output,
+            verbose=not args.quiet,
+        )
+    except PreprocessError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
