@@ -1,5 +1,7 @@
 # Jue Lab Toolbox
 
+> **Note:** the actively maintained TECAN growth-curve pipeline and Streamlit app now live in their own repository: [TECAN-Growth-Curve-Analysis-Pipeline](https://github.com/dbold23/TECAN-Growth-Curve-Analysis-Pipeline). The `TECAN_growth_curves/` folder here is an earlier snapshot kept for reference. Generated plots (`*.png`) and MCMC traces (`*.nc`) are no longer tracked; regenerate them with the pipeline.
+
 A shared collection of scripts, pipelines, and utilities developed for the Jue Lab. This repository serves as a reusable toolbox across multiple projects, organized by tool or workflow.
 
 ## Repository Structure
@@ -37,8 +39,8 @@ End-to-end pipeline for TECAN plate reader growth curve analysis:
 ## Getting Started
 
 ```bash
-git clone <https://github.com/dbold23/JueLab_Toolbox>
-cd JueLab_toolbox
+git clone https://github.com/dbold23/JueLab_Toolbox.git
+cd JueLab_Toolbox
 ```
 
 ## Contributing
