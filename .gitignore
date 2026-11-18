@@ -4,3 +4,8 @@ __pycache__/
 .claude/
 .pytest_cache/
 *.joblib
+
+# Regenerable outputs (rebuild with the TECAN pipeline)
+*.nc
+*.png
+!docs/**/*.png
